@@ -364,6 +364,7 @@ import { useCraftingStore } from "../../stores/craftingStore";
 import { useGameStateStore } from "../../stores/gameStateStore";
 import type { RecipeInfo } from "../../types/gameData/recipes";
 import type { FlattenedMaterial } from "../../types/crafting";
+import { xpDropOffMultiplier } from "../../utils/craftingXp";
 import EmptyState from "../Shared/EmptyState.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
@@ -422,6 +423,8 @@ interface EnrichedRecipe {
   isTooHigh: boolean
   xpPerCraft: number
   firstTimeXp: number
+  /** XP drop-off multiplier (0..1) at the current planning level */
+  dropOffMult: number
   effectiveXp: number
   effectiveFirstTimeXp: number
   cost: number | null
@@ -590,6 +593,7 @@ async function loadRecipes() {
 
       const xpPerCraft = recipe.reward_skill_xp ?? 0;
       const firstTimeXp = isCrafted ? 0 : (recipe.reward_skill_xp_first_time ?? 0);
+      const dropOffMult = xpDropOffMultiplier(pLevel, recipe.reward_skill_xp_drop_off_level);
 
       return {
         recipe,
@@ -599,7 +603,8 @@ async function loadRecipes() {
         isTooHigh,
         xpPerCraft,
         firstTimeXp,
-        effectiveXp: Math.round(xpPerCraft * multiplier.value),
+        dropOffMult,
+        effectiveXp: Math.round(xpPerCraft * multiplier.value * dropOffMult),
         effectiveFirstTimeXp: firstTimeXp,
         cost: costMap.get(recipe.id) ?? null,
       };
@@ -640,12 +645,14 @@ function refreshRecipeState() {
     const dropOff = r.recipe.reward_skill_xp_drop_off_level;
     const isDropOff = dropOff !== null && dropOff !== undefined && pLevel >= dropOff;
     const isTooHigh = (r.recipe.skill_level_req ?? 0) > pLevel;
+    const dropOffMult = xpDropOffMultiplier(pLevel, dropOff);
 
     return {
       ...r,
       isDropOff,
       isTooHigh,
-      effectiveXp: Math.round(r.xpPerCraft * mult),
+      dropOffMult,
+      effectiveXp: Math.round(r.xpPerCraft * mult * dropOffMult),
       effectiveFirstTimeXp: r.firstTimeXp,
     };
   });
@@ -773,6 +780,7 @@ function addOnce(r: EnrichedRecipe) {
     craft_count: 1,
     xp_per_craft: r.xpPerCraft,
     xp_first_time: r.firstTimeXp,
+    xp_drop_off_mult: r.dropOffMult,
     total_xp: totalXpForOne,
     estimated_cost: costForOne,
   });
@@ -838,6 +846,7 @@ function addMultiple(r: EnrichedRecipe, count: number) {
       craft_count: craftsThisLevel,
       xp_per_craft: r.xpPerCraft,
       xp_first_time: firstTimeUsed ? r.firstTimeXp : 0,
+      xp_drop_off_mult: r.dropOffMult,
       total_xp: xpThisLevel,
       estimated_cost: costPerCraft * craftsThisLevel,
     });
@@ -880,6 +889,7 @@ function addToLevel(r: EnrichedRecipe) {
         craft_count: 1,
         xp_per_craft: r.xpPerCraft,
         xp_first_time: r.firstTimeXp,
+        xp_drop_off_mult: r.dropOffMult,
         total_xp: xpFromFirst,
         estimated_cost: costForOne,
       });
@@ -906,6 +916,7 @@ function addToLevel(r: EnrichedRecipe) {
     craft_count: planTotalCrafts,
     xp_per_craft: r.xpPerCraft,
     xp_first_time: craftsUsed > 0 ? r.firstTimeXp : 0,
+    xp_drop_off_mult: r.dropOffMult,
     total_xp: totalXp,
     estimated_cost: entryCost,
   });
@@ -981,10 +992,12 @@ function updateEntryCount(levelIdx: number, entryIdx: number, newCount: number) 
   const oldCost = entry.estimated_cost;
   const costPerCraft = entry.craft_count > 0 ? oldCost / entry.craft_count : 0;
 
-  // Recalculate XP: first-time bonus applies once, rest is per-craft
+  // Recalculate XP: first-time bonus applies once, rest is per-craft.
+  // Honor the drop-off penalty captured when the entry was added.
   const mult = 1 + (state.value.xpBuffPercent || 0) / 100;
+  const dropOffMult = entry.xp_drop_off_mult ?? 1;
   const effectiveFirstTime = entry.xp_first_time;
-  const effectiveXpPerCraft = Math.floor(entry.xp_per_craft * mult);
+  const effectiveXpPerCraft = Math.floor(entry.xp_per_craft * mult * dropOffMult);
 
   entry.craft_count = newCount;
   entry.total_xp = (entry.xp_first_time > 0 ? effectiveFirstTime : 0) + newCount * effectiveXpPerCraft;

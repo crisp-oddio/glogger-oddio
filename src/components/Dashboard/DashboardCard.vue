@@ -1,5 +1,5 @@
 <template>
-  <div class="card flex flex-col h-100" ref="cardRef">
+  <div class="card dashboard-card-bg flex flex-col h-100" ref="cardRef">
     <!-- Title bar — drag handle -->
     <div class="dashboard-card-handle flex items-center gap-2 px-3 py-1 border-b border-border-default cursor-grab active:cursor-grabbing bg-surface-base/30 select-none">
       <span class="text-xs font-bold text-text-secondary uppercase tracking-wide truncate">{{ title }}</span>
@@ -82,3 +82,18 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)
 })
 </script>
+
+<style scoped>
+/* Override the opaque .card background with a user-adjustable opacity so the
+   page background shows through. --dashboard-widget-bg-opacity (0..1) is set at
+   runtime from the App Settings "Widget background opacity" control; it
+   defaults to 1 (fully opaque) when unset. The scoped selector outranks the
+   layered .card utility, so this wins. */
+.dashboard-card-bg {
+  background-color: color-mix(
+    in srgb,
+    var(--color-surface-card) calc(var(--dashboard-widget-bg-opacity, 1) * 100%),
+    transparent
+  );
+}
+</style>

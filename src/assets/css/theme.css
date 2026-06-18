@@ -1,4 +1,9 @@
 @theme {
+  /* Make Tailwind's `font-mono` utility (used app-wide as the UI font) follow
+     the user-selected font. Defaults to monospace, so the default look is
+     unchanged. Set at runtime via --app-font-family (see settingsStore). */
+  --font-mono: var(--app-font-family, monospace);
+
   /* Dark UI palette */
   --color-surface-base: #1a1a1a;
   --color-surface-dark: #111111;

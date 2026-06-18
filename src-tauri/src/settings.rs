@@ -154,6 +154,35 @@ pub struct AppSettings {
     /// When false, use 12-hour format with AM/PM (e.g. "2:30 PM").
     #[serde(default = "default_true")]
     pub use_24_hour_time: bool,
+
+    /// CSS font-family stack used for the app UI. Defaults to "monospace"
+    /// to preserve the original appearance. Frontend-managed and applied
+    /// via the --app-font-family CSS variable.
+    #[serde(default = "default_ui_font_family")]
+    pub ui_font_family: String,
+
+    /// Base UI font size in pixels. Defaults to 14. Frontend-managed and
+    /// applied via the --app-font-size CSS variable.
+    #[serde(default = "default_ui_font_size")]
+    pub ui_font_size: u32,
+
+    /// Dashboard widget background opacity as a percentage (0–100). 100 = fully
+    /// opaque (default). Frontend-managed; applied via the
+    /// --dashboard-widget-bg-opacity CSS variable.
+    #[serde(default = "default_dashboard_widget_opacity")]
+    pub dashboard_widget_opacity: u32,
+}
+
+fn default_dashboard_widget_opacity() -> u32 {
+    100
+}
+
+fn default_ui_font_family() -> String {
+    "monospace".to_string()
+}
+
+fn default_ui_font_size() -> u32 {
+    16
 }
 
 fn default_timestamp_display_mode() -> String {
@@ -296,6 +325,9 @@ impl Default for AppSettings {
             manual_timezone_override: None,
             auto_start_survey_sessions: true,
             use_24_hour_time: true,
+            ui_font_family: default_ui_font_family(),
+            ui_font_size: default_ui_font_size(),
+            dashboard_widget_opacity: default_dashboard_widget_opacity(),
         }
     }
 }

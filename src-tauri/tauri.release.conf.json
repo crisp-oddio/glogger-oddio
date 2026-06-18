@@ -3,7 +3,7 @@
   "app": {
     "windows": [
       {
-        "title": "glogger beta v0.8.7"
+        "title": "glogger v0.9.0 (oddio fork)"
       }
     ]
   }

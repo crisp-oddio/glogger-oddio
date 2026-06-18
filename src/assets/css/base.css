@@ -5,12 +5,44 @@
     box-sizing: border-box;
   }
 
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  /* Root font-size drives ALL rem-based sizing (Tailwind text-*, spacing, etc.),
+     so changing it scales the entire UI uniformly. 16px is the default base, so
+     the default appearance is unchanged. */
+  html {
+    font-size: var(--app-font-size, 16px);
+  }
+
   body {
     margin: 0;
     background: theme(--color-surface-dark);
     color: theme(--color-text-primary);
-    font-family: monospace;
-    font-size: 14px;
+    font-family: var(--app-font-family, monospace);
+    font-size: 1rem;
+    /* Allow the whole app to scroll when the viewport is smaller than the
+       minimum usable size (e.g. high Windows display scaling), so the bottom
+       bar and any bottom-anchored buttons always remain reachable. */
+    overflow: auto;
+  }
+
+  /* Form controls don't inherit font by default — force them to use the app
+     font and size so typography is uniform across the whole interface. */
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+  }
+
+  /* Minimum usable app size. Below this the body scrollbars engage instead of
+     clipping content off-screen. */
+  #app {
+    min-width: 900px;
+    min-height: 600px;
   }
 
   button {
@@ -19,7 +51,7 @@
     color: theme(--color-text-primary);
     border: 1px solid theme(--color-border-light);
     cursor: pointer;
-    font-family: monospace;
+    font-family: var(--app-font-family, monospace);
     border-radius: 4px;
   }
 

@@ -45,7 +45,8 @@
   }
 
   .input {
-    @apply bg-surface-card border border-border-default rounded px-3 py-1.5 text-text-primary font-mono text-sm focus:outline-none focus:border-accent-gold;
+    @apply bg-surface-card border border-border-default rounded px-3 py-1.5 text-text-primary text-sm focus:outline-none focus:border-accent-gold;
+    font-family: inherit;
   }
 
   .tab {

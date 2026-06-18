@@ -37,6 +37,9 @@ export interface AppSettings {
   manualTimezoneOverride: number | null;
   autoStartSurveySessions: boolean;
   use24HourTime: boolean;
+  uiFontFamily: string;
+  uiFontSize: number;
+  dashboardWidgetOpacity: number;
   viewPreferences: Record<string, Record<string, unknown>>;
 }
 
@@ -75,6 +78,9 @@ interface BackendSettings {
   manual_timezone_override: number | null;
   auto_start_survey_sessions: boolean;
   use_24_hour_time: boolean;
+  ui_font_family: string;
+  ui_font_size: number;
+  dashboard_widget_opacity: number;
   view_preferences: Record<string, Record<string, unknown>>;
 }
 
@@ -114,6 +120,9 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     manual_timezone_override: settings.manualTimezoneOverride,
     auto_start_survey_sessions: settings.autoStartSurveySessions,
     use_24_hour_time: settings.use24HourTime,
+    ui_font_family: settings.uiFontFamily,
+    ui_font_size: settings.uiFontSize,
+    dashboard_widget_opacity: settings.dashboardWidgetOpacity,
     view_preferences: settings.viewPreferences,
   };
 }
@@ -121,6 +130,58 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
 const DEFAULT_EXCLUDED_CHANNELS = [
   "System", "Error", "Emotes", "Action Emotes", "NPC Chatter", "Status", "Combat"
 ];
+
+// Default UI font. "monospace" preserves the app's original appearance.
+export const DEFAULT_FONT_FAMILY = "monospace";
+
+// Selectable UI font options. The `value` is used directly as a CSS
+// font-family stack; each falls back to monospace/sans-serif as appropriate.
+export const FONT_FAMILY_OPTIONS: { value: string; label: string }[] = [
+  { value: "monospace", label: "Monospace (default)" },
+  { value: "Consolas, monospace", label: "Consolas" },
+  { value: "'Cascadia Code', 'Cascadia Mono', monospace", label: "Cascadia Code" },
+  { value: "'Courier New', Courier, monospace", label: "Courier New" },
+  { value: "'Lucida Console', monospace", label: "Lucida Console" },
+  { value: "Expressway, 'Segoe UI', sans-serif", label: "Expressway" },
+  { value: "'Segoe UI', system-ui, sans-serif", label: "Segoe UI" },
+  { value: "system-ui, sans-serif", label: "System Default (sans-serif)" },
+  { value: "Arial, Helvetica, sans-serif", label: "Arial" },
+  { value: "Georgia, 'Times New Roman', serif", label: "Georgia (serif)" },
+  { value: "Verdana, Geneva, sans-serif", label: "Verdana" },
+];
+
+// Apply the chosen font family to the document by setting the CSS variable
+// consumed in base.css (--app-font-family).
+export function applyFontFamily(fontFamily: string) {
+  const value = fontFamily && fontFamily.trim().length > 0 ? fontFamily : DEFAULT_FONT_FAMILY;
+  document.documentElement.style.setProperty("--app-font-family", value);
+}
+
+// Default root font size in pixels (matches base.css / Tailwind's 16px base).
+// This drives all rem-based sizing, so it scales the whole UI uniformly.
+export const DEFAULT_FONT_SIZE = 16;
+export const MIN_FONT_SIZE = 12;
+export const MAX_FONT_SIZE = 24;
+
+// Apply the chosen root font size to the document by setting the CSS variable
+// consumed in base.css (--app-font-size on the html element).
+export function applyFontSize(fontSize: number) {
+  const clamped = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, fontSize || DEFAULT_FONT_SIZE));
+  document.documentElement.style.setProperty("--app-font-size", `${clamped}px`);
+}
+
+// Dashboard widget background opacity, as a percentage (0–100). 100 = fully
+// opaque (default), lower values let the page background show through.
+export const DEFAULT_WIDGET_OPACITY = 100;
+export const MIN_WIDGET_OPACITY = 0;
+export const MAX_WIDGET_OPACITY = 100;
+
+// Apply the dashboard widget background opacity by setting the CSS variable
+// consumed by DashboardCard (--dashboard-widget-bg-opacity, a 0..1 fraction).
+export function applyDashboardWidgetOpacity(percent: number) {
+  const clamped = Math.min(MAX_WIDGET_OPACITY, Math.max(MIN_WIDGET_OPACITY, percent ?? DEFAULT_WIDGET_OPACITY));
+  document.documentElement.style.setProperty("--dashboard-widget-bg-opacity", `${clamped / 100}`);
+}
 
 // Convert backend format to frontend format
 function fromBackendSettings(settings: BackendSettings): AppSettings {
@@ -158,6 +219,9 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     manualTimezoneOverride: settings.manual_timezone_override ?? null,
     autoStartSurveySessions: settings.auto_start_survey_sessions ?? true,
     use24HourTime: settings.use_24_hour_time ?? true,
+    uiFontFamily: settings.ui_font_family ?? DEFAULT_FONT_FAMILY,
+    uiFontSize: settings.ui_font_size ?? DEFAULT_FONT_SIZE,
+    dashboardWidgetOpacity: settings.dashboard_widget_opacity ?? DEFAULT_WIDGET_OPACITY,
     viewPreferences: settings.view_preferences ?? {},
   };
 }
@@ -198,6 +262,9 @@ function getDefaultSettings(): AppSettings {
     manualTimezoneOverride: null,
     autoStartSurveySessions: true,
     use24HourTime: true,
+    uiFontFamily: DEFAULT_FONT_FAMILY,
+    uiFontSize: DEFAULT_FONT_SIZE,
+    dashboardWidgetOpacity: DEFAULT_WIDGET_OPACITY,
     viewPreferences: {},
   };
 }
@@ -231,6 +298,9 @@ export const useSettingsStore = defineStore("settings", () => {
     if (isLoaded.value) return;
 
     settings.value = await loadSettings();
+    applyFontFamily(settings.value.uiFontFamily);
+    applyFontSize(settings.value.uiFontSize);
+    applyDashboardWidgetOpacity(settings.value.dashboardWidgetOpacity);
     isLoaded.value = true;
 
     // Get settings file path for user reference
@@ -262,6 +332,15 @@ export const useSettingsStore = defineStore("settings", () => {
 
   async function updateSettings(newSettings: Partial<AppSettings>) {
     settings.value = { ...settings.value, ...newSettings };
+    if (newSettings.uiFontFamily !== undefined) {
+      applyFontFamily(settings.value.uiFontFamily);
+    }
+    if (newSettings.uiFontSize !== undefined) {
+      applyFontSize(settings.value.uiFontSize);
+    }
+    if (newSettings.dashboardWidgetOpacity !== undefined) {
+      applyDashboardWidgetOpacity(settings.value.dashboardWidgetOpacity);
+    }
     await saveSettings(settings.value);
   }
 
