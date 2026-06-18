@@ -2,18 +2,22 @@
 
 **Date:** 2026-06-18
 **Machine:** Windows 11 (primary dev box)
-**Outcome:** New **XP Rate** dashboard widget — tracks combat vs. prodigy XP per hour and
-ETA to the next prodigy level. Backend prodigy-XP parsing + store wiring + widget, all
-type-checked and unit-tested. Verified live in the dev build.
+**Outcome:** Two new dashboard widgets — **XP Rate** (combat vs. prodigy XP/hr + generalized
+ETA) and **Prodigy Tracker** (same rates + a user-entered current-XP baseline for a precise
+ETA). Backend prodigy-XP parsing + store wiring + widgets, all type-checked and unit-tested.
+Verified live in the dev build.
 
 ---
 
 ## TL;DR
 
-- Added a dashboard widget (`xp-rate`, "XP Rate") that shows, in three divided sections:
-  Combat XP/hr + Combat XP/session, Prodigy XP/hr + Prodigy XP/session, and Next prodigy
-  level ETA. Combat lines white, prodigy lines gold. Has a Reset button.
-- New backend parser for prodigy XP, new store accumulator, new Vue widget. No coordinator
+- **XP Rate** widget (`xp-rate`): three divided sections — Combat XP/hr + Combat XP/session,
+  Prodigy XP/hr + Prodigy XP/session, and Next prodigy level ETA (generalized: assumes a full
+  250M). Combat lines white, prodigy lines gold. Reset button.
+- **Prodigy Tracker** widget (`prodigy-tracker`): identical rate sections, plus a persisted
+  "Current prodigy XP" input, a progress line + bar (`current / 250M (%)`), and a Next-prodigy-
+  level ETA based on *actual remaining* XP. `current = entered baseline + session prodigy XP`.
+- New backend parser for prodigy XP, new store accumulator, two new Vue widgets. No coordinator
   change needed (it already broadcasts every `chat-status-event`).
 
 ---
@@ -40,10 +44,16 @@ type-checked and unit-tested. Verified live in the dev build.
   `get_combat_skills` (CDN `Combat: true`), loaded lazily in `loadAll` and cached in
   `combatSkillNames`. Helpers: `accrueXpRate`, `xpRateOf(kind, nowMs)`, `prodigyEta`,
   `resetXpRateSession` (also called from `resetSessionSkills`, i.e. on character login).
+  `formatEta` (shared ETA formatter) and `prodigyEta` exported for the widgets.
   Cases added in `handleChatStatusEvent` for `XpGained` (combat-filtered) and `ProdigyXpGained`.
-- **UI** — `src/components/Dashboard/widgets/XpRateWidget.vue`, registered as `xp-rate` in
-  `dashboardWidgets.ts` (small, right after Live Skill Tracking). 1s ticking clock recomputes
-  rates/ETA. Compact K/M number formatting.
+- **UI** — both widgets registered in `dashboardWidgets.ts` (small, right after Live Skill
+  Tracking), each with a 1s ticking clock and compact K/M number formatting:
+  - `XpRateWidget.vue` (`xp-rate`) — generalized ETA (assumes a full 250M).
+  - `ProdigyTrackerWidget.vue` (`prodigy-tracker`) — adds a "Current prodigy XP" input persisted
+    via `useViewPrefs('widget.prodigy-tracker', { startXp })`; `currentXp = startXp + session
+    prodigy XP` (capped at 250M); ETA = `(250M − currentXp) ÷ prodigy XP/hr`. Shows a progress
+    bar + `Ready!` at cap. NOTE: Reset zeroes the shared session accumulator, so after a Reset
+    you must re-enter your current in-game prodigy total.
 
 ## Design decisions (from the user)
 
@@ -54,8 +64,9 @@ type-checked and unit-tested. Verified live in the dev build.
 
 ## Open items / next steps
 
-- ETA assumes a fresh 250M each level. If a current-prodigy-progress value is ever found
-  (an attribute, UI value, or log line), wire it so the ETA counts down from real remaining XP.
+- The Prodigy Tracker's current-XP baseline is entered by hand. If a current-prodigy-progress
+  value is ever found in the logs (an attribute, UI value, or log line), auto-populate it so the
+  XP Rate widget's ETA can also count down from real remaining XP without manual input.
 - The rate window is session-start → now (noisy in the first few seconds, settles as you play);
   Reset restarts it. Could add a rolling/“last N minutes” window if the lifetime average feels stale.
 - Per the previous handoff, the crafting flat-4×-first-craft / repeat-craft drop-off model still

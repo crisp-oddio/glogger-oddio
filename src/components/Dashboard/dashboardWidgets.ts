@@ -5,6 +5,7 @@ import ZoneNpcsWidgetConfig from "./widgets/ZoneNpcsWidgetConfig.vue";
 import PlayerNotes from "./PlayerNotes.vue";
 import SkillTrackingWidget from "./widgets/SkillTrackingWidget.vue";
 import XpRateWidget from "./widgets/XpRateWidget.vue";
+import ProdigyTrackerWidget from "./widgets/ProdigyTrackerWidget.vue";
 import ItemsIncomingWidget from "./widgets/ItemsIncomingWidget.vue";
 import ItemsOutgoingWidget from "./widgets/ItemsOutgoingWidget.vue";
 import CouncilsWidget from "./widgets/CouncilsWidget.vue";
@@ -73,6 +74,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     id: "xp-rate",
     name: "XP Rate",
     component: XpRateWidget,
+    defaultSize: "small",
+  },
+  {
+    id: "prodigy-tracker",
+    name: "Prodigy Tracker",
+    component: ProdigyTrackerWidget,
     defaultSize: "small",
   },
   {

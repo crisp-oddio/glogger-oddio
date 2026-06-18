@@ -1018,6 +1018,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     PRODIGY_XP_PER_LEVEL,
     xpRateOf,
     prodigyEta,
+    formatEta,
     resetXpRateSession,
 
     // Tracked skills
