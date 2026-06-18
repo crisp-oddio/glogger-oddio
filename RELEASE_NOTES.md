@@ -1,7 +1,10 @@
-## What's Changed since v0.9.2
+## What's Changed since v0.9.3
+
+### Features
+- feat: enable auto-updater with fork signing key (`d0fd6cd`)
 
 ### Fixes
-- fix: correct crafting leveling XP math (first-time bonus + synergy) (`1c22ae4`)
+- fix: apply static first-time bonus to leveling restore path (0.9.3.1) (`df4b9cc`)
 
 ---
-*3 commits since v0.9.2*
+*2 commits since v0.9.3*
