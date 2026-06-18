@@ -27,15 +27,21 @@ build-options:
     CARGO_HOME: /run/build/glogger/cargo
     # Disable LTO to avoid linker memory spikes on the Actions runner
     CARGO_PROFILE_RELEASE_LTO: "off"
-    npm_config_cache: /run/build/glogger/npm-cache
-    # Use the release identifier so app data goes to glogger.Release, not glogger.Dev
-    TAURI_CONFIG: '{"identifier":"glogger.Release","app":{"windows":[{"title":"glogger (oddio fork)"}]}}'
+    # flatpak-node-generator unpacks the offline npm cache to flatpak-node/npm-cache,
+    # so npm_config_cache must point there (not a bare npm-cache dir) or `npm ci` misses it.
+    npm_config_cache: /run/build/glogger/flatpak-node/npm-cache
+    # - identifier: app data goes to glogger.Release, not glogger.Dev
+    # - devUrl:null: force Tauri to embed frontendDist (tauri://localhost) instead of
+    #   baking in the dev server URL, which would leave a blank window in production.
+    TAURI_CONFIG: '{"identifier":"glogger.Release","build":{"devUrl":null},"app":{"windows":[{"title":"glogger (oddio fork)"}]}}'
 
 modules:
   - name: glogger
     buildsystem: simple
     build-commands:
       # 1. Build the Vue frontend (outputs to dist/)
+      # Link the Node SDK headers into the offline cache (needed by native npm builds)
+      - bash flatpak-node/setup_sdk_node_headers.sh
       - npm ci --offline
       - npm run build
 
