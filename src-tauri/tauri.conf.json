@@ -28,7 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "app", "dmg", "deb", "appimage"],
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,7 +39,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU1ODA5MTNCMjk3MEZCQUMKUldTcyszQXBPNUdBNWRnbGc0TlY0MkVldUJHM1VUVHZCWHhFSFJ1aFUvYTI1QVFhckxhdTlEVDYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU0MEYzNUNCNjUzNzY4NzkKUldSNWFEZGx5elVQNUxNUmNPeGowa3ZhZUZnRU0vR0p4bjBIb0Y4N1QvZE1taEVzVmN2OWpyQ3MK",
       "endpoints": [
         "https://github.com/crisp-oddio/glogger-oddio/releases/latest/download/latest.json"
       ],
