@@ -15,6 +15,11 @@ jobs:
   flatpak:
     name: Build Flatpak bundle
     runs-on: ubuntu-latest
+    # The flatpak-builder action needs flatpak-builder + the GNOME SDK, which only
+    # exist inside the official Flatpak builder image (not on the bare runner).
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:gnome-47
+      options: --privileged
 
     steps:
       - name: Checkout
@@ -29,10 +34,12 @@ jobs:
       # The node generator has moved into a Python package upstream — the old
       # single-file URL now 404s — so install it from the git subdirectory, which
       # also handles newer nested node_modules layouts (e.g. Tailwind's oxide-wasi).
+      # Use a venv so pip works regardless of the container's PEP 668 policy.
       - name: Install offline-source generators
         run: |
-          pip3 install aiohttp tomlkit
-          pip3 install "git+https://github.com/flatpak/flatpak-builder-tools.git#subdirectory=node"
+          python3 -m venv /tmp/gen
+          /tmp/gen/bin/pip install --quiet aiohttp tomlkit \
+            "git+https://github.com/flatpak/flatpak-builder-tools.git#subdirectory=node"
 
       - name: Download flatpak-cargo-generator
         run: |
@@ -41,13 +48,13 @@ jobs:
 
       - name: Generate Cargo offline sources
         run: |
-          python3 /tmp/flatpak-cargo-generator.py \
+          /tmp/gen/bin/python /tmp/flatpak-cargo-generator.py \
             src-tauri/Cargo.lock \
             -o flatpak/generated-cargo-sources.json
 
       - name: Generate npm offline sources
         run: |
-          flatpak-node-generator npm package-lock.json \
+          /tmp/gen/bin/flatpak-node-generator npm package-lock.json \
             -o flatpak/generated-node-sources.json
 
       # ── Build Flatpak ───────────────────────────────────────────────────
