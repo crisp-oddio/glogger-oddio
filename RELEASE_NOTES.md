@@ -1,10 +1,11 @@
-## What's Changed since v0.9.3
+## What's Changed since v0.9.4
 
 ### Features
-- feat: enable auto-updater with fork signing key (`d0fd6cd`)
+- feat: add Prodigy Tracker widget with manual current-XP baseline (`45cee9e`)
+- feat: add XP Rate dashboard widget (combat + prodigy XP/hr & prodigy ETA) (`dfdacec`)
 
 ### Fixes
-- fix: apply static first-time bonus to leveling restore path (0.9.3.1) (`df4b9cc`)
+- fix: correct crafting leveling XP model (flat 4x first craft + repeat-craft drop-off) (`adc6565`)
 
 ---
-*2 commits since v0.9.3*
+*3 commits since v0.9.4*
