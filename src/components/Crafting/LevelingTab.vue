@@ -419,13 +419,19 @@ interface EnrichedRecipe {
   recipe: RecipeInfo
   isKnown: boolean
   isCrafted: boolean
+  /** True when the base skill level is at/past the recipe's drop-off level */
   isDropOff: boolean
   isTooHigh: boolean
+  /** Base XP per craft (before buff) */
   xpPerCraft: number
+  /** Extra XP added on top of one regular (buffed + drop-off) craft so the
+   *  first-craft total is base × FIRST_CRAFT_XP_MULTIPLIER. 0 once crafted. */
   firstTimeXp: number
-  /** XP drop-off multiplier (0..1) at the current planning level */
+  /** XP drop-off multiplier (0..1) at the current planning base level — repeat crafts only */
   dropOffMult: number
+  /** Per-craft XP for the 2nd+ crafts: base × buff × drop-off */
   effectiveXp: number
+  /** Same as firstTimeXp; the first-craft bonus is never buffed or dropped off */
   effectiveFirstTimeXp: number
   cost: number | null
 }
@@ -445,6 +451,11 @@ const effectiveMultiplier = computed(() =>
 );
 
 const multiplier = computed(() => 1 + (state.value.xpBuffPercent || 0) / 100);
+
+// A recipe's first craft awards a flat 4× its base XP. This first-craft total is
+// fixed: it is NOT scaled by the XP buff and NOT reduced by the skill-level drop-off.
+// The over-level drop-off applies only to repeat (2nd+) crafts.
+const FIRST_CRAFT_XP_MULTIPLIER = 4;
 
 /** Base level (total minus bonus) — used for XP table indexing */
 const baseLevel = computed(() => state.value.currentLevel - state.value.bonusLevels);
@@ -585,8 +596,8 @@ async function loadRecipes() {
 
   // Effective level (base + synergy/bonus) gates which recipes are unlocked.
   const pLevel = planningLevel.value;
-  // XP drop-off is computed from the BASE skill level only — synergy/bonus levels do NOT
-  // count toward the over-level penalty (you earn XP as if at your real, unboosted level).
+  // The over-level drop-off is computed from the BASE skill level only — synergy/bonus
+  // levels do NOT count toward it. It applies to repeat crafts, never the first craft.
   const pBaseLevel = planningBaseLevel.value;
 
   allRecipes.value = relevant
@@ -600,13 +611,16 @@ async function loadRecipes() {
       const isTooHigh = levelReq > pLevel;
 
       const xpPerCraft = recipe.reward_skill_xp ?? 0;
-      // reward_skill_xp_first_time is the *total* XP for the first craft, not an additive bonus.
-      // Subtract base to get the extra bonus so effectiveXp + effectiveFirstTimeXp = correct total.
-      // The first-time bonus is STATIC: it is NOT scaled by the XP buff and NOT reduced by the
-      // over-level drop-off — only the per-craft base XP is. So effectiveFirstTimeXp == firstTimeXp.
-      const rawFirstTime = isCrafted ? 0 : (recipe.reward_skill_xp_first_time ?? 0);
-      const firstTimeXp = Math.max(0, rawFirstTime - xpPerCraft);
-      const dropOffMult = xpDropOffMultiplier(pBaseLevel, recipe.reward_skill_xp_drop_off_level);
+      const dropOffMult = xpDropOffMultiplier(pBaseLevel, dropOff);
+      // Repeat (2nd+) crafts: base × buff × drop-off.
+      const effectiveXp = Math.round(xpPerCraft * multiplier.value * dropOffMult);
+      // The first craft awards a flat 4× base XP total (unbuffed, no drop-off).
+      // Store the first-time bonus as the amount added on top of one repeat craft so
+      // that effectiveXp + firstTimeXp == base × FIRST_CRAFT_XP_MULTIPLIER.
+      const hasFirstTime = !isCrafted && (recipe.reward_skill_xp_first_time ?? 0) > 0;
+      const firstTimeXp = hasFirstTime
+        ? Math.max(0, xpPerCraft * FIRST_CRAFT_XP_MULTIPLIER - effectiveXp)
+        : 0;
 
       return {
         recipe,
@@ -617,7 +631,7 @@ async function loadRecipes() {
         xpPerCraft,
         firstTimeXp,
         dropOffMult,
-        effectiveXp: Math.round(xpPerCraft * multiplier.value * dropOffMult),
+        effectiveXp,
         effectiveFirstTimeXp: firstTimeXp,
         cost: costMap.get(recipe.id) ?? null,
       };
@@ -660,15 +674,21 @@ function refreshRecipeState() {
     const isDropOff = dropOff !== null && dropOff !== undefined && pBaseLevel >= dropOff;
     const isTooHigh = (r.recipe.skill_level_req ?? 0) > pLevel;
     const dropOffMult = xpDropOffMultiplier(pBaseLevel, dropOff);
+    const effectiveXp = Math.round(r.xpPerCraft * mult * dropOffMult);
+    // First craft total stays at base × 4 (unbuffed, no drop-off); recompute the bonus
+    // so effectiveXp + firstTimeXp keeps equalling that total as buff/level change.
+    const firstTimeXp = r.firstTimeXp > 0
+      ? Math.max(0, r.xpPerCraft * FIRST_CRAFT_XP_MULTIPLIER - effectiveXp)
+      : 0;
 
     return {
       ...r,
       isDropOff,
       isTooHigh,
       dropOffMult,
-      effectiveXp: Math.round(r.xpPerCraft * mult * dropOffMult),
-      // First-time bonus is static — never scaled by buff or drop-off.
-      effectiveFirstTimeXp: r.firstTimeXp,
+      effectiveXp,
+      firstTimeXp,
+      effectiveFirstTimeXp: firstTimeXp,
     };
   });
 }
@@ -983,14 +1003,13 @@ function removeEntry(levelIdx: number, entryIdx: number) {
       l.entries.some(e => e.recipe_id === entry.recipe_id && e.xp_first_time > 0),
     );
     if (!stillUsed) {
+      // Restore the exact static bonus that was consumed by this entry. The
+      // entry already stored it as `xp_first_time` (= total first-craft XP − base)
+      // when it was added, with no buff multiplier and no drop-off applied. Reusing
+      // it avoids recomputing from the mutated recipe copy.
+      const restored = entry.xp_first_time;
       allRecipes.value = allRecipes.value.map(ar => {
         if (ar.recipe.id !== entry.recipe_id) return ar;
-        // reward_skill_xp_first_time is the *total* first-craft XP, so the bonus
-        // is total − base. The bonus is STATIC: no buff multiplier, no drop-off.
-        const restored = Math.max(
-          0,
-          (ar.recipe.reward_skill_xp_first_time ?? 0) - ar.xpPerCraft,
-        );
         return {
           ...ar,
           isCrafted: false,
@@ -1012,12 +1031,13 @@ function updateEntryCount(levelIdx: number, entryIdx: number, newCount: number) 
   const oldCost = entry.estimated_cost;
   const costPerCraft = entry.craft_count > 0 ? oldCost / entry.craft_count : 0;
 
-  // Recalculate XP: first-time bonus applies once, rest is per-craft.
-  // Honor the drop-off penalty captured when the entry was added.
+  // Recalculate XP: the first-time bonus applies once (it already encodes the flat
+  // base × 4 first-craft total, unbuffed and drop-off-free). Repeat crafts get the
+  // buff and the over-level drop-off captured when the entry was added.
   const mult = 1 + (state.value.xpBuffPercent || 0) / 100;
   const dropOffMult = entry.xp_drop_off_mult ?? 1;
   const effectiveFirstTime = entry.xp_first_time;
-  const effectiveXpPerCraft = Math.floor(entry.xp_per_craft * mult * dropOffMult);
+  const effectiveXpPerCraft = Math.round(entry.xp_per_craft * mult * dropOffMult);
 
   entry.craft_count = newCount;
   entry.total_xp = (entry.xp_first_time > 0 ? effectiveFirstTime : 0) + newCount * effectiveXpPerCraft;

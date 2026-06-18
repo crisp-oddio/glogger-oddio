@@ -179,11 +179,12 @@ export interface LevelingPlanEntry {
   craft_count: number
   /** Base XP per craft (before buff) */
   xp_per_craft: number
-  /** First-time bonus XP (0 if already crafted) */
+  /** First-craft bonus: the XP added on top of one repeat craft so the first-craft
+   *  total equals base × 4 (unbuffed, no drop-off). 0 if already crafted. */
   xp_first_time: number
-  /** XP drop-off multiplier (0..1) applied at the level this entry was planned for */
+  /** XP drop-off multiplier (0..1) for repeat crafts at the level this entry was planned for */
   xp_drop_off_mult?: number
-  /** Effective total XP for all crafts (with buff applied) */
+  /** Effective total XP for all crafts (with buff + drop-off applied) */
   total_xp: number
   /** Total estimated ingredient cost */
   estimated_cost: number
