@@ -75,8 +75,19 @@ jobs:
           name: glogger-flatpak
           path: glogger.flatpak
 
+  # Attaching runs on a bare runner because the builder container has no gh CLI.
+  attach:
+    name: Attach bundle to release
+    needs: flatpak
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download built bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: glogger-flatpak
+
       - name: Attach bundle to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
