@@ -51,6 +51,7 @@ const INVENTORY_EVENT_LOG_MAX = 50
 export type ChatStatusEvent =
   | { kind: 'ItemGained'; timestamp: string; item_name: string; quantity: number }
   | { kind: 'XpGained'; timestamp: string; skill: string; amount: number }
+  | { kind: 'ProdigyXpGained'; timestamp: string; skill: string; amount: number }
   | { kind: 'LevelUp'; timestamp: string; skill: string; level: number; xp: number }
   | { kind: 'CoinsLooted'; timestamp: string; amount: number }
   | { kind: 'CouncilsChanged'; timestamp: string; amount: number }
@@ -120,6 +121,24 @@ export const useGameStateStore = defineStore('gameState', () => {
 
   // ── Session Skill State (in-memory, not persisted) ────────────────────
   const sessionSkills = ref<Record<string, SkillSessionData>>({})
+
+  // ── Session XP-rate tracking (driven by [Status] chat events) ─────────
+  // Separate from sessionSkills (which tracks per-skill XP from skill-update
+  // events). This aggregates combat vs prodigy XP for the XP/hr widget, using
+  // wall-clock time so the rate stays live during play.
+  const xpRateSession = ref<{
+    combatXp: number
+    prodigyXp: number
+    firstSeenMs: number | null
+    lastSeenMs: number | null
+  }>({ combatXp: 0, prodigyXp: 0, firstSeenMs: null, lastSeenMs: null })
+
+  /** Display names of combat skills (from CDN). Used to filter the
+   *  non-prodigy combat XP line. Loaded lazily on first loadAll. */
+  const combatSkillNames = ref<Set<string>>(new Set())
+
+  /** XP required to gain one Prodigy level (per the Prodigy Potential wiki). */
+  const PRODIGY_XP_PER_LEVEL = 250_000_000
 
   // ── Tracked Skills (persisted per character) ────────────────────────────
   const trackedSkillNames = ref<string[]>([])
@@ -460,6 +479,69 @@ export const useGameStateStore = defineStore('gameState', () => {
   /** Reset session skill tracking (e.g., on manual log parse or session restart) */
   function resetSessionSkills() {
     sessionSkills.value = {}
+    resetXpRateSession()
+  }
+
+  /** Reset the combat/prodigy XP-rate accumulator. */
+  function resetXpRateSession() {
+    xpRateSession.value = {
+      combatXp: 0,
+      prodigyXp: 0,
+      firstSeenMs: null,
+      lastSeenMs: null,
+    }
+  }
+
+  /** Lazily load the set of combat-skill display names from the CDN. */
+  async function loadCombatSkillNames() {
+    if (combatSkillNames.value.size > 0) return
+    try {
+      const skills = await invoke<{ name: string }[]>('get_combat_skills')
+      combatSkillNames.value = new Set(skills.map((s) => s.name))
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load combat skills:', e)
+    }
+  }
+
+  /** Accrue a live XP gain into the combat or prodigy bucket. */
+  function accrueXpRate(kind: 'combat' | 'prodigy', amount: number) {
+    const s = xpRateSession.value
+    const now = Date.now()
+    if (s.firstSeenMs === null) s.firstSeenMs = now
+    s.lastSeenMs = now
+    if (kind === 'combat') s.combatXp += amount
+    else s.prodigyXp += amount
+  }
+
+  /** XP/hr over the active window, against a caller-supplied "now" (ms) so the
+   *  widget can tick it live. Returns 0 until at least a few seconds elapse. */
+  function xpRateOf(kind: 'combat' | 'prodigy', nowMs: number): number {
+    const s = xpRateSession.value
+    if (s.firstSeenMs === null) return 0
+    const elapsedHours = (nowMs - s.firstSeenMs) / 3_600_000
+    if (elapsedHours <= 0) return 0
+    const total = kind === 'combat' ? s.combatXp : s.prodigyXp
+    return Math.round(total / elapsedHours)
+  }
+
+  /** Format an hours-to-go value as a compact ETA string. */
+  function formatEta(hours: number): string {
+    if (!isFinite(hours) || hours <= 0) return '—'
+    const totalMinutes = Math.round(hours * 60)
+    if (totalMinutes < 1) return '< 1 min'
+    if (totalMinutes < 60) return `~${totalMinutes} min`
+    const h = Math.floor(totalMinutes / 60)
+    const m = totalMinutes % 60
+    if (h < 24) return m > 0 ? `~${h}h ${m}m` : `~${h}h`
+    const d = Math.floor(h / 24)
+    const rh = h % 24
+    return rh > 0 ? `~${d}d ${rh}h` : `~${d}d`
+  }
+
+  /** ETA to the next prodigy level (one full 250M) at the given prodigy rate. */
+  function prodigyEta(prodigyPerHour: number): string {
+    if (prodigyPerHour <= 0) return '—'
+    return formatEta(PRODIGY_XP_PER_LEVEL / prodigyPerHour)
   }
 
   // ── Tracked Skills Methods ──────────────────────────────────────────
@@ -707,6 +789,17 @@ export const useGameStateStore = defineStore('gameState', () => {
           amount: event.amount,
         })
         break
+
+      case 'XpGained':
+        // Only combat-skill XP feeds the non-prodigy combat rate line.
+        if (combatSkillNames.value.has(event.skill)) {
+          accrueXpRate('combat', event.amount)
+        }
+        break
+
+      case 'ProdigyXpGained':
+        accrueXpRate('prodigy', event.amount)
+        break
     }
   }
 
@@ -757,6 +850,8 @@ export const useGameStateStore = defineStore('gameState', () => {
       initialized.value = true
       // Load tracked skills separately (non-blocking)
       loadTrackedSkills()
+      // Load combat-skill names for the XP-rate widget (non-blocking)
+      loadCombatSkillNames()
     } catch (e) {
       console.error('[gameStateStore] Failed to load game state:', e)
     } finally {
@@ -917,6 +1012,13 @@ export const useGameStateStore = defineStore('gameState', () => {
     xpPerHour,
     timeToNextLevel,
     resetSessionSkills,
+
+    // Session XP-rate tracking (combat vs prodigy)
+    xpRateSession,
+    PRODIGY_XP_PER_LEVEL,
+    xpRateOf,
+    prodigyEta,
+    resetXpRateSession,
 
     // Tracked skills
     trackedSkillNames,

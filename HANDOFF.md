@@ -2,59 +2,69 @@
 
 **Date:** 2026-06-18
 **Machine:** Windows 11 (primary dev box)
-**Outcome:** Crafting leveling XP math corrected (again) to the right model — first craft is a flat 4× base, with diminishing returns applying to repeat crafts only. Verified live in the dev build.
+**Outcome:** New **XP Rate** dashboard widget — tracks combat vs. prodigy XP per hour and
+ETA to the next prodigy level. Backend prodigy-XP parsing + store wiring + widget, all
+type-checked and unit-tested. Verified live in the dev build.
 
 ---
 
 ## TL;DR
 
-- Corrected the crafting **XP Leveling Optimizer** math in `src/components/Crafting/LevelingTab.vue`.
-- The v0.9.3 model (treat `RewardSkillXpFirstTime` as the first-craft total; static first-time bonus) was **wrong**. Replaced with the rules below.
-- Verified the fixes live in the running dev build.
+- Added a dashboard widget (`xp-rate`, "XP Rate") that shows, in three divided sections:
+  Combat XP/hr + Combat XP/session, Prodigy XP/hr + Prodigy XP/session, and Next prodigy
+  level ETA. Combat lines white, prodigy lines gold. Has a Reset button.
+- New backend parser for prodigy XP, new store accumulator, new Vue widget. No coordinator
+  change needed (it already broadcasts every `chat-status-event`).
 
 ---
 
-## The crafting XP model (corrected — supersedes v0.9.3)
+## Prodigy XP model (confirmed from a real Chat.log)
 
-Project Gorgon's crafting XP rules, confirmed by Cheb/oddio (who designs this):
+- A **maxed combat skill** earns **Prodigy XP** as overflow. Each kill emits a PAIR of
+  `[Status]` lines: `You earned N Prodigy XP in <Skill>.` (prodigy, from the maxed skill —
+  e.g. "Pig") and `You earned N XP in <Skill>.` (normal XP for the skill being leveled).
+- **One prodigy level = 250,000,000 combat XP** (per the Prodigy Potential wiki). The game
+  does **not** report current progress within a level, so the ETA assumes a full 250M:
+  `ETA = 250,000,000 ÷ prodigy XP/hr`.
+- Wiki (https://wiki.projectgorgon.com/wiki/Prodigy_Potential) is sparse; the format above
+  came from the user's own log.
 
-1. **First craft = flat 4× base XP, total.** A recipe's first-ever craft awards exactly `base × 4`
-   (e.g. base 10 → 40). The CDN `RewardSkillXpFirstTime` field is **not** used for this.
+## Implementation
 
-2. **The first-craft 4× total is fixed.** It is **not** scaled by the XP buff and **not** reduced by the
-   over-level drop-off. It is always `base × 4`.
+- **Backend** — `src-tauri/src/chat_status_parser.rs`: new `ChatStatusEvent::ProdigyXpGained`
+  variant + `try_prodigy_xp_gained` (runs before `try_xp_gained`; normal XP lines are unaffected
+  because `"N Prodigy"` fails the u32 parse). Two new unit tests. Emitted via the existing
+  `chat-status-event` (coordinator `_ => {}` arm already forwards it — no change there).
+- **Store** — `src/stores/gameStateStore.ts`: `xpRateSession` accumulator (combat vs prodigy,
+  wall-clock keyed so the rate stays live). Combat line is filtered to combat skills only via
+  `get_combat_skills` (CDN `Combat: true`), loaded lazily in `loadAll` and cached in
+  `combatSkillNames`. Helpers: `accrueXpRate`, `xpRateOf(kind, nowMs)`, `prodigyEta`,
+  `resetXpRateSession` (also called from `resetSessionSkills`, i.e. on character login).
+  Cases added in `handleChatStatusEvent` for `XpGained` (combat-filtered) and `ProdigyXpGained`.
+- **UI** — `src/components/Dashboard/widgets/XpRateWidget.vue`, registered as `xp-rate` in
+  `dashboardWidgets.ts` (small, right after Live Skill Tracking). 1s ticking clock recomputes
+  rates/ETA. Compact K/M number formatting.
 
-3. **Diminishing returns apply to repeat crafts only.** Crafts 2..N award `base × buff × dropOff`. The
-   XP buff and the over-level drop-off both apply here — never to the first craft.
+## Design decisions (from the user)
 
-4. **Synergy/bonus levels don't count toward XP.** XP (and the drop-off) is computed from the *base* skill
-   level. `planningLevel` (base + synergy) gates recipe *unlock*; `planningBaseLevel` drives the drop-off.
-
-**Implementation:** `FIRST_CRAFT_XP_MULTIPLIER = 4`. `effectiveXp = round(base × buff × dropOff)` is the
-repeat-craft value; the first-time bonus is stored as `base×4 − effectiveXp` so that
-`effectiveXp + firstTimeXp` always lands on the flat `base × 4` regardless of buff/drop-off. The over-level
-drop-off curve lives in `src/utils/craftingXp.ts` (full XP until recipe level + 10, linear decline to 0 at
-recipe level + 65).
-
-**Display:** the recipe list shows a single combined XP number — the first-craft total (gold) while the
-first-time bonus is still available, then the repeat XP (muted) once the recipe has been crafted. Hover for
-the full breakdown.
-
-These rules apply uniformly across all crafting disciplines.
-
-## Release / CI note
-
-`release.yml` (workflow_dispatch) is the only path that builds Windows/macOS/Linux and creates the release;
-a bare tag push only triggers `flatpak.yml`. Pushing a tag manually is what left **v0.9.2 without a Windows
-`.exe`** — do not do that. Always run the **Release** workflow.
-
-The Flatpak `attach` job now waits (up to 30 min, polling) for the release to exist before
-`gh release upload`, because `release.yml` pushes the tag early (prepare job) but only creates the release
-after its ~15-20 min multi-platform build — well after the ~9.5 min Flatpak build finishes.
+1. **Split:** non-prodigy line = non-maxed **combat** skills only (crafting/tradeskill excluded);
+   prodigy line = the maxed-skill overflow.
+2. **ETA:** assume a full 250M per level (no current-progress source in the logs).
+3. Session totals are shown as their own line items grouped with the matching rate.
 
 ## Open items / next steps
 
-- The same XP rules (flat 4× first craft, repeat-craft drop-off) likely belong in **Quick Calc** and any
-  live skill-XP tracking, but `xpDropOffMultiplier` is currently only wired into the Leveling tab. Quick
-  Calc's `resolveRecipeIngredients` sets `xp_first_time = base × 3` (so first craft = 4×) but does not model
-  the repeat-craft drop-off yet — worth a follow-up pass.
+- ETA assumes a fresh 250M each level. If a current-prodigy-progress value is ever found
+  (an attribute, UI value, or log line), wire it so the ETA counts down from real remaining XP.
+- The rate window is session-start → now (noisy in the first few seconds, settles as you play);
+  Reset restarts it. Could add a rolling/“last N minutes” window if the lifetime average feels stale.
+- Per the previous handoff, the crafting flat-4×-first-craft / repeat-craft drop-off model still
+  wants wiring into **Quick Calc** (`resolveRecipeIngredients` only sets `xp_first_time = base × 3`
+  and doesn't model repeat-craft drop-off yet).
+
+## Release / CI note (unchanged)
+
+Always use the **Release** workflow (`release.yml`, workflow_dispatch) — it's the only path that
+builds Windows/macOS/Linux and creates the release. A bare tag push only triggers `flatpak.yml`
+(this is what left v0.9.2 without a Windows `.exe`). The Flatpak `attach` job waits (up to 30 min,
+polling) for the release to exist before `gh release upload`.

@@ -4,6 +4,7 @@ import ContextBarConfig from "./ContextBarConfig.vue";
 import ZoneNpcsWidgetConfig from "./widgets/ZoneNpcsWidgetConfig.vue";
 import PlayerNotes from "./PlayerNotes.vue";
 import SkillTrackingWidget from "./widgets/SkillTrackingWidget.vue";
+import XpRateWidget from "./widgets/XpRateWidget.vue";
 import ItemsIncomingWidget from "./widgets/ItemsIncomingWidget.vue";
 import ItemsOutgoingWidget from "./widgets/ItemsOutgoingWidget.vue";
 import CouncilsWidget from "./widgets/CouncilsWidget.vue";
@@ -67,6 +68,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     name: "Live Skill Tracking",
     component: SkillTrackingWidget,
     defaultSize: "large",
+  },
+  {
+    id: "xp-rate",
+    name: "XP Rate",
+    component: XpRateWidget,
+    defaultSize: "small",
   },
   {
     id: "zone-npcs",

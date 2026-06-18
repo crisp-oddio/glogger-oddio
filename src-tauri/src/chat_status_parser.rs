@@ -21,6 +21,14 @@ pub enum ChatStatusEvent {
         amount: u32,
     },
 
+    /// "You earned N Prodigy XP in Skill." — combat XP overflow earned by a
+    /// maxed combat skill, which feeds Prodigy Potential rather than skill XP.
+    ProdigyXpGained {
+        timestamp: String,
+        skill: String,
+        amount: u32,
+    },
+
     /// "You earned N XP and reached level L in Skill!"
     LevelUp {
         timestamp: String,
@@ -75,6 +83,7 @@ pub fn parse_status_message(msg: &ChatMessage) -> Option<ChatStatusEvent> {
 
     // Try each pattern in order of frequency/importance
     try_item_gained(text, &ts)
+        .or_else(|| try_prodigy_xp_gained(text, &ts))
         .or_else(|| try_xp_gained(text, &ts))
         .or_else(|| try_level_up(text, &ts))
         .or_else(|| try_treasure_distance(text, &ts))
@@ -101,6 +110,25 @@ fn try_item_gained(text: &str, ts: &str) -> Option<ChatStatusEvent> {
         timestamp: ts.to_string(),
         item_name: item_name.to_string(),
         quantity,
+    })
+}
+
+/// "You earned N Prodigy XP in Skill."
+fn try_prodigy_xp_gained(text: &str, ts: &str) -> Option<ChatStatusEvent> {
+    if !text.starts_with("You earned ") || !text.ends_with('.') {
+        return None;
+    }
+
+    // "You earned 45 Prodigy XP in Pig."
+    let inner = &text["You earned ".len()..text.len() - 1]; // strip trailing "."
+    let xp_pos = inner.find(" Prodigy XP in ")?;
+    let amount: u32 = inner[..xp_pos].parse().ok()?;
+    let skill = &inner[xp_pos + " Prodigy XP in ".len()..];
+
+    Some(ChatStatusEvent::ProdigyXpGained {
+        timestamp: ts.to_string(),
+        skill: skill.to_string(),
+        amount,
     })
 }
 
@@ -356,6 +384,30 @@ mod tests {
         } else {
             panic!("Expected XpGained, got {:?}", event);
         }
+    }
+
+    #[test]
+    fn test_prodigy_xp_gained() {
+        let msg = status_msg("You earned 45 Prodigy XP in Pig.");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::ProdigyXpGained { skill, amount, .. } = event {
+            assert_eq!(skill, "Pig");
+            assert_eq!(amount, 45);
+        } else {
+            panic!("Expected ProdigyXpGained, got {:?}", event);
+        }
+    }
+
+    #[test]
+    fn test_normal_xp_not_parsed_as_prodigy() {
+        // A normal combat XP line must not be swallowed by the prodigy parser.
+        let msg = status_msg("You earned 45 XP in Battle Chemistry.");
+        let event = parse_status_message(&msg).unwrap();
+        assert!(
+            matches!(event, ChatStatusEvent::XpGained { .. }),
+            "Expected XpGained, got {:?}",
+            event
+        );
     }
 
     #[test]
