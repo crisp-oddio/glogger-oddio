@@ -25,8 +25,14 @@ jobs:
       # pre-fetch all Cargo and npm dependencies into source lists that
       # flatpak-builder can cache-populate before the build runs.
 
-      - name: Install Python deps for generators
-        run: pip3 install aiohttp toml
+      # The cargo generator is still a standalone script (needs aiohttp + tomlkit).
+      # The node generator has moved into a Python package upstream — the old
+      # single-file URL now 404s — so install it from the git subdirectory, which
+      # also handles newer nested node_modules layouts (e.g. Tailwind's oxide-wasi).
+      - name: Install offline-source generators
+        run: |
+          pip3 install aiohttp tomlkit
+          pip3 install "git+https://github.com/flatpak/flatpak-builder-tools.git#subdirectory=node"
 
       - name: Download flatpak-cargo-generator
         run: |
@@ -39,15 +45,9 @@ jobs:
             src-tauri/Cargo.lock \
             -o flatpak/generated-cargo-sources.json
 
-      - name: Download flatpak-node-generator
-        run: |
-          curl -sSL -o /tmp/flatpak-node-generator.py \
-            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/node/flatpak-node-generator.py
-
       - name: Generate npm offline sources
         run: |
-          python3 /tmp/flatpak-node-generator.py \
-            npm package-lock.json \
+          flatpak-node-generator npm package-lock.json \
             -o flatpak/generated-node-sources.json
 
       # ── Build Flatpak ───────────────────────────────────────────────────
