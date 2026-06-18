@@ -174,16 +174,16 @@
             <span class="truncate min-w-0">
               <RecipeInline :reference="r.recipe.name" inherit-color />
             </span>
-            <!-- XP info -->
-            <span v-if="showXp" class="text-text-muted text-[0.6rem] shrink-0 ml-auto">
-              {{ r.effectiveXp.toLocaleString() }}xp
-            </span>
-            <!-- First-time badge -->
+            <!-- XP info — show the combined first-craft total while the first-time bonus
+                 is still available, then fall back to base XP once it's been used. -->
             <span
-              v-if="showXp && r.firstTimeXp > 0"
-              class="text-accent-gold text-[0.55rem] shrink-0"
-              :title="`+${r.effectiveFirstTimeXp.toLocaleString()} first-time bonus XP`">
-              +{{ r.effectiveFirstTimeXp.toLocaleString() }}
+              v-if="showXp"
+              class="text-[0.6rem] shrink-0 ml-auto"
+              :class="r.firstTimeXp > 0 ? 'text-accent-gold' : 'text-text-muted'"
+              :title="r.firstTimeXp > 0
+                ? `${(r.effectiveXp + r.effectiveFirstTimeXp).toLocaleString()} XP first craft (incl. +${r.effectiveFirstTimeXp.toLocaleString()} first-time bonus), ${r.effectiveXp.toLocaleString()} XP thereafter`
+                : `${r.effectiveXp.toLocaleString()} XP per craft`">
+              {{ (r.firstTimeXp > 0 ? r.effectiveXp + r.effectiveFirstTimeXp : r.effectiveXp).toLocaleString() }}xp
             </span>
           </div>
         </div>
@@ -456,7 +456,11 @@ const planningBaseLevel = computed(() => {
   return top.from_level;
 });
 
-/** Total level (planning base + bonus) for recipe unlock and drop-off checks */
+/**
+ * Total level (planning base + synergy/bonus) — used for recipe-unlock checks only.
+ * Do NOT use this for XP drop-off: the over-level penalty is based on base level, since
+ * synergy/bonus levels don't count toward it. Use planningBaseLevel for drop-off.
+ */
 const planningLevel = computed(() => planningBaseLevel.value + state.value.bonusLevels);
 
 const currentLevelComplete = computed(() => {
@@ -579,7 +583,11 @@ async function loadRecipes() {
     await loadCosts(relevant, costMap);
   }
 
+  // Effective level (base + synergy/bonus) gates which recipes are unlocked.
   const pLevel = planningLevel.value;
+  // XP drop-off is computed from the BASE skill level only — synergy/bonus levels do NOT
+  // count toward the over-level penalty (you earn XP as if at your real, unboosted level).
+  const pBaseLevel = planningBaseLevel.value;
 
   allRecipes.value = relevant
     .map((recipe) => {
@@ -588,12 +596,17 @@ async function loadRecipes() {
       const isCrafted = knownKeys.has(key);
       const levelReq = recipe.skill_level_req ?? 0;
       const dropOff = recipe.reward_skill_xp_drop_off_level;
-      const isDropOff = dropOff !== null && dropOff !== undefined && pLevel >= dropOff;
+      const isDropOff = dropOff !== null && dropOff !== undefined && pBaseLevel >= dropOff;
       const isTooHigh = levelReq > pLevel;
 
       const xpPerCraft = recipe.reward_skill_xp ?? 0;
-      const firstTimeXp = isCrafted ? 0 : (recipe.reward_skill_xp_first_time ?? 0);
-      const dropOffMult = xpDropOffMultiplier(pLevel, recipe.reward_skill_xp_drop_off_level);
+      // reward_skill_xp_first_time is the *total* XP for the first craft, not an additive bonus.
+      // Subtract base to get the extra bonus so effectiveXp + effectiveFirstTimeXp = correct total.
+      // The first-time bonus is STATIC: it is NOT scaled by the XP buff and NOT reduced by the
+      // over-level drop-off — only the per-craft base XP is. So effectiveFirstTimeXp == firstTimeXp.
+      const rawFirstTime = isCrafted ? 0 : (recipe.reward_skill_xp_first_time ?? 0);
+      const firstTimeXp = Math.max(0, rawFirstTime - xpPerCraft);
+      const dropOffMult = xpDropOffMultiplier(pBaseLevel, recipe.reward_skill_xp_drop_off_level);
 
       return {
         recipe,
@@ -638,14 +651,15 @@ watch(showCosts, async (show) => {
 });
 
 function refreshRecipeState() {
-  const pLevel = planningLevel.value;
+  const pLevel = planningLevel.value;       // effective (base + synergy) — recipe unlock
+  const pBaseLevel = planningBaseLevel.value; // base only — XP drop-off
   const mult = multiplier.value;
 
   allRecipes.value = allRecipes.value.map((r) => {
     const dropOff = r.recipe.reward_skill_xp_drop_off_level;
-    const isDropOff = dropOff !== null && dropOff !== undefined && pLevel >= dropOff;
+    const isDropOff = dropOff !== null && dropOff !== undefined && pBaseLevel >= dropOff;
     const isTooHigh = (r.recipe.skill_level_req ?? 0) > pLevel;
-    const dropOffMult = xpDropOffMultiplier(pLevel, dropOff);
+    const dropOffMult = xpDropOffMultiplier(pBaseLevel, dropOff);
 
     return {
       ...r,
@@ -653,6 +667,7 @@ function refreshRecipeState() {
       isTooHigh,
       dropOffMult,
       effectiveXp: Math.round(r.xpPerCraft * mult * dropOffMult),
+      // First-time bonus is static — never scaled by buff or drop-off.
       effectiveFirstTimeXp: r.firstTimeXp,
     };
   });

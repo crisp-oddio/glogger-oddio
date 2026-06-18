@@ -365,7 +365,7 @@ export const useCraftingStore = defineStore("crafting", () => {
       desired_quantity: desiredQuantity,
       output_per_craft: outputPerCraft,
       xp_per_craft: recipe.reward_skill_xp ?? 0,
-      xp_first_time: recipe.reward_skill_xp_first_time ?? 0,
+      xp_first_time: Math.max(0, (recipe.reward_skill_xp_first_time ?? 0) - (recipe.reward_skill_xp ?? 0)),
       total_xp: (recipe.reward_skill_xp ?? 0) * craftCount,
       reward_skill: recipe.reward_skill,
       ingredients,

@@ -27,7 +27,8 @@ const DROP_OFF_SPAN = 55;
  * The XP reward multiplier (0..1) for crafting a recipe at the given skill
  * level, based on the recipe's drop-off level.
  *
- * @param skillLevel   The crafter's effective skill level (incl. bonus levels).
+ * @param skillLevel   The crafter's BASE skill level. Synergy/bonus levels must NOT
+ *                     be included — they don't count toward the over-level penalty.
  * @param dropOffLevel The recipe's `reward_skill_xp_drop_off_level` (recipe
  *                     level + 10). When null (no drop-off data) full XP is
  *                     assumed.
