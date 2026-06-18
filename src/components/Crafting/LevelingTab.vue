@@ -985,12 +985,17 @@ function removeEntry(levelIdx: number, entryIdx: number) {
     if (!stillUsed) {
       allRecipes.value = allRecipes.value.map(ar => {
         if (ar.recipe.id !== entry.recipe_id) return ar;
-        const restored = ar.recipe.reward_skill_xp_first_time ?? 0;
+        // reward_skill_xp_first_time is the *total* first-craft XP, so the bonus
+        // is total − base. The bonus is STATIC: no buff multiplier, no drop-off.
+        const restored = Math.max(
+          0,
+          (ar.recipe.reward_skill_xp_first_time ?? 0) - ar.xpPerCraft,
+        );
         return {
           ...ar,
           isCrafted: false,
           firstTimeXp: restored,
-          effectiveFirstTimeXp: Math.round(restored * multiplier.value),
+          effectiveFirstTimeXp: restored,
         };
       });
     }
