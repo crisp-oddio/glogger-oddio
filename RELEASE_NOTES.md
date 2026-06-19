@@ -1,11 +1,10 @@
-## What's Changed since v0.9.4
+## What's Changed since v0.9.8-exp
 
 ### Features
-- feat: add Prodigy Tracker widget with manual current-XP baseline (`45cee9e`)
-- feat: add XP Rate dashboard widget (combat + prodigy XP/hr & prodigy ETA) (`dfdacec`)
+- feat(settings): path auto-detect buttons + startup auto-detect (`69523ff`)
 
 ### Fixes
-- fix: correct crafting leveling XP model (flat 4x first craft + repeat-craft drop-off) (`adc6565`)
+- fix: parse signed 32-bit item instance IDs; update handoff (`5c49423`)
 
 ---
-*3 commits since v0.9.4*
+*2 commits since v0.9.8-exp*
