@@ -653,6 +653,22 @@ const DELAY_LOOP_SLACK_SECS: u32 = 2;
 /// activity typically closes via an explicit signal sooner.
 const DEFAULT_CONTEXT_LIFETIME_SECS: u32 = 30;
 
+/// Parse a Project: Gorgon item instance ID.
+///
+/// The game logs item instance IDs as **signed 32-bit** integers, so they are
+/// frequently negative (e.g. `ProcessDeleteItem(-1796085135)`). We store them
+/// as `u64` via a bit-preserving `as` cast so the same source string always
+/// maps to the same registry key across Add/Delete/UpdateItemCode lines.
+///
+/// Parsing as `u64` directly (the historical behavior) failed on every
+/// negative ID, causing the parser to silently drop the entire line — which
+/// lost roughly half of all item add/delete/loot events (those whose hashed
+/// instance ID happened to have the sign bit set). That in turn made survey
+/// tracking, which keys off these events, fire only intermittently.
+fn parse_instance_id(s: &str) -> Option<u64> {
+    s.trim().parse::<i64>().ok().map(|v| v as u64)
+}
+
 /// Convert "HH:MM:SS" to seconds-of-day. Returns 0 on malformed input — safe
 /// because mis-parsed contexts will expire immediately.
 fn timestamp_to_secs(ts: &str) -> u32 {
@@ -1326,7 +1342,7 @@ impl PlayerEventParser {
 
         let id_start = inner_paren + 1;
         let id_end = args_section[id_start..].find(')')? + id_start;
-        let instance_id: u64 = args_section[id_start..id_end].parse().ok()?;
+        let instance_id = parse_instance_id(&args_section[id_start..id_end])?;
 
         // After the closing paren of InternalName(id), we have ", slotIndex, isNew)"
         let after_name = &args_section[id_end + 1..];
@@ -1396,7 +1412,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let instance_id: u64 = parts.get(0)?.trim().parse().ok()?;
+        let instance_id = parse_instance_id(parts.get(0)?)?;
         let encoded_value: u32 = parts.get(1)?.trim().parse().ok()?;
         let from_server = parts.get(2)?.trim() == "True";
 
@@ -1492,9 +1508,9 @@ impl PlayerEventParser {
             Some(i) => args_start + i,
             None => return,
         };
-        let instance_id: u64 = match line[args_start..args_end].trim().parse() {
-            Ok(id) => id,
-            Err(_) => return,
+        let instance_id = match parse_instance_id(&line[args_start..args_end]) {
+            Some(id) => id,
+            None => return,
         };
 
         let item_name = self
@@ -1640,7 +1656,7 @@ impl PlayerEventParser {
 
         let id_start = inner_paren + 1;
         let id_end = rest[id_start..].find(')')? + id_start;
-        let instance_id: u64 = rest[id_start..id_end].parse().ok()?;
+        let instance_id = parse_instance_id(&rest[id_start..id_end])?;
 
         // Third arg: isFromBuyback
         let after_id = &rest[id_end + 1..];
@@ -1665,7 +1681,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let instance_id: u64 = parts.get(0)?.trim().parse().ok()?;
+        let instance_id = parse_instance_id(parts.get(0)?)?;
         let encoded_value: u32 = parts.get(1)?.trim().parse().ok()?;
         let price: u32 = parts.get(2)?.trim().parse().ok()?;
 
@@ -1700,7 +1716,7 @@ impl PlayerEventParser {
 
         let id_start = inner_paren + 1;
         let id_end = name_part[id_start..].find(')')? + id_start;
-        let instance_id: u64 = name_part[id_start..id_end].parse().ok()?;
+        let instance_id = parse_instance_id(&name_part[id_start..id_end])?;
 
         let vault_key = self
             .current_interaction
@@ -1728,7 +1744,7 @@ impl PlayerEventParser {
         let parts: Vec<&str> = args.split(',').collect();
         let npc_id: u32 = parts.get(0)?.trim().parse().ok()?;
         // parts[1] = -1 (skip)
-        let instance_id: u64 = parts.get(2)?.trim().parse().ok()?;
+        let instance_id = parse_instance_id(parts.get(2)?)?;
         let quantity: u32 = parts.get(3)?.trim().parse().ok()?;
 
         // Seed stack size from the vault's known quantity.
@@ -1782,7 +1798,7 @@ impl PlayerEventParser {
         let ts = parse_timestamp(line)?;
         let args_start = line.find("ProcessRemoveLoot(")? + "ProcessRemoveLoot(".len();
         let args_end = line[args_start..].find(')')? + args_start;
-        let instance_id: u64 = line[args_start..args_end].trim().parse().ok()?;
+        let instance_id = parse_instance_id(&line[args_start..args_end])?;
 
         // Attach the most recent CorpseSearch context (last = most recently opened).
         // Multiple corpse searches can be active simultaneously (30s timeout each),
@@ -3495,6 +3511,47 @@ mod tests {
             }
             _ => panic!("Expected ItemDeleted with VendorSale"),
         }
+    }
+
+    #[test]
+    fn test_negative_instance_id_add_and_delete_resolve() {
+        // Regression: Project: Gorgon item instance IDs are signed 32-bit and
+        // are frequently negative. The parser used to read them as u64, which
+        // failed the parse and silently dropped the entire ProcessAddItem /
+        // ProcessDeleteItem line — losing ~half of all item events and making
+        // survey tracking fire only intermittently. These are the exact lines
+        // from a real Serbule Rubywall geology survey use.
+        let mut parser = PlayerEventParser::new();
+
+        // Survey map enters inventory (crafted) — negative instance id.
+        parser.process_line(
+            r#"[23:54:27] LocalPlayer: ProcessAddItem(GeologySurveySerbule0(-1796085135), -1, True)"#,
+        );
+
+        // Survey map consumed (used) — same negative instance id. Buffered.
+        let events = parser.process_line(r#"[23:55:24] LocalPlayer: ProcessDeleteItem(-1796085135)"#);
+        assert!(events.is_empty(), "delete is buffered until the next line");
+
+        // Any subsequent line flushes the pending delete.
+        let events =
+            parser.process_line(r#"[23:55:24] LocalPlayer: ProcessScreenText(ImportantInfo, "x")"#);
+
+        let deleted = events
+            .iter()
+            .find_map(|e| match e {
+                PlayerEvent::ItemDeleted {
+                    item_name,
+                    instance_id,
+                    ..
+                } => Some((item_name.clone(), *instance_id)),
+                _ => None,
+            })
+            .expect("expected an ItemDeleted event");
+
+        // Name must resolve from the registry seeded by the negative-id add,
+        // and the instance id must round-trip via the bit-preserving cast.
+        assert_eq!(deleted.0.as_deref(), Some("GeologySurveySerbule0"));
+        assert_eq!(deleted.1, -1796085135i64 as u64);
     }
 
     #[test]
