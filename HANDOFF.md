@@ -1,5 +1,91 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-19
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (created from `main` @ v0.9.9; both synced to v0.9.9)
+**Outcome:** **Economics → Farming** session overhaul. The active-session item view is now a
+4-column layout — **Skills | Looted Items | Gathered | Activity Log** — where each item is
+hover-interactable (0.5s) and pops a per-source drop-rate breakdown. New backend
+`CorpseExtract` event distinguishes skinning/butchering yields from loot-table drops. Mining
+and survey gains are tracked by source in the Gathered column. Type-checked; 105 parser tests
+pass; verified live in the dev build.
+
+---
+
+## TL;DR (this session)
+
+- **Looted Items** column = true corpse loot only (`LootPickedUp`, i.e. `ProcessRemoveLoot`).
+  Headline = total quantity looted this session. Hover → [ItemDropBreakdown](src/components/Farming/ItemDropBreakdown.vue):
+  per-enemy session drops **+ all-time drop rate & loot-table share** from the DB
+  (`get_enemy_kill_stats`).
+- **Gathered** column = everything that isn't a loot-table drop, tagged by source skill:
+  `SKINNING`/`BUTCHERING` (corpse extracts), `MINING`, `SURVEY`. Hover → session-only per-source
+  breakdown (no all-time DB data exists for these).
+- Removed the old kill-gate that silently dropped corpse loot when the kill wasn't tracked this
+  session — loot now always shows (creates the enemy entry with `count: 0`).
+
+## What is a "looted item" vs not (decided with the user)
+
+- **Looted Items** = `LootPickedUp` only (fires from the corpse loot window; excludes
+  skinning/butchering, which grant Butchering/Skinning XP and produce **no** `ProcessRemoveLoot`).
+- **Gathered** = skinning/butchering extracts + Mining/SurveyMapUse provenance gains. Filtered by
+  **provenance, not item type** — so it captures everything a node/survey yields, not just things
+  named "ore/metal." (User accepted this; motherlodes often log no node name → bucket
+  "Mining (unknown node)".)
+- Vendor buys, storage withdrawals, and craft outputs are excluded from both columns (they still
+  appear in the Activity Log via `ItemAdded`/`ItemStackChanged`).
+
+## Implementation (this session)
+
+- **Backend** — [player_event_parser.rs](src-tauri/src/player_event_parser.rs):
+  - New `PlayerEvent::CorpseExtract { item_name, item_type_id, quantity, skill, corpse_name }`.
+  - `parse_corpse_extract` hooks `ProcessUpdateSkill` lines: when `type=Butchering`/`Skinning`,
+    the just-added item (`last_item_event`) is the extract — emit `CorpseExtract` and consume it.
+  - `parse_remove_loot` now sets `last_item_event = None` after resolving, so a true loot drop can
+    never leak into the extract path.
+  - Coordinator needs no change — `PlayerEventParsed` events are batched/forwarded regardless of
+    kind (`_ => {}` arms); `CorpseExtract` is **not** persisted to the DB (session-only).
+- **Frontend store** — [farmingStore.ts](src/stores/farmingStore.ts):
+  - `LootPickedUp` handler de-gated (records even for untracked kills; falls back to
+    "Unknown enemy" when no corpse-search context).
+  - `CorpseExtract` handler + `recordGathered(s, provenance, item, qty)` helper that routes
+    Mining/SurveyMapUse gains into `extracts` keyed by source (node name / survey map).
+  - `s.extracts: Record<sourceName, Record<itemName, { quantity, drops, skill }>>` (new session
+    field). Computeds: `lootedItems`, `extractedItems`; helpers: `sessionEnemiesForItem`,
+    `sessionEnemiesForExtract`, `fetchEnemyStats` (DB cache keyed by enemy name).
+  - Loot tally type changed to `{ quantity, drops }` (per-item drop count for drop-rate math).
+- **Frontend UI**:
+  - [FarmingSessionCard.vue](src/components/Farming/FarmingSessionCard.vue) — grid is now
+    `240px 1fr 1fr 280px`; Looted Items + Gathered are separate boxes; each row uses
+    `EntityTooltipWrapper` (`:delay="500"`, interactive) with the breakdown in `#tooltip`. Item
+    names are resolved to display names via a local `displayName()` (plain text, **not**
+    `ItemInline`, to avoid a competing nested tooltip on the hover target).
+  - [ItemDropBreakdown.vue](src/components/Farming/ItemDropBreakdown.vue) — `mode: 'loot' | 'extract'`.
+    Loot mode fetches all-time DB stats and shows a drop-rate bar + "% of table"; extract mode is
+    session-only (source shown as plain text since it may be a node/survey, not an enemy).
+
+## Caveats / known limits
+
+- `CorpseExtract`/Gathered are **session-only** — no all-time history (the `enemy_kill_loot` DB
+  table only records `LootPickedUp`).
+- `ItemAdded` carries no quantity to the frontend, so new-stack gains count as `+1` (existing
+  `itemDeltas` behavior); stack growth via `ItemStackChanged` uses the real delta.
+- Survey source names are the raw internal map name (not yet resolved to a display name).
+- A stale HMR session object (created before `extracts` existed) once blanked the panel via
+  `Object.values(undefined)`; computeds/handlers now guard with `?? {}`. A clean restart clears it.
+
+## Verification (this session)
+
+1. `npx vue-tsc --noEmit` clean; `cargo test --lib player_event_parser` → 105 passed.
+2. Confirmed against a real Player.log: corpse loot (`Goblin Calling Card`, `Goblin Skirt`,
+   `Health Potion`) → Looted Items; butchering extracts (`Goblin Skull`, `Impressive Goblin
+   Skull`, which have Butchering XP and no `RemoveLoot`) → Gathered.
+3. App runs interactive in the dev build; Start Session + both columns render.
+
+---
+
+# Previous Session
+
 **Date:** 2026-06-18
 **Machine:** Windows 11 (primary dev box)
 **Outcome:** Two new dashboard widgets — **XP Rate** (combat vs. prodigy XP/hr + generalized

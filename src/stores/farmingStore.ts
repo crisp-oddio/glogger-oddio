@@ -6,8 +6,9 @@ import type {
   FarmingLogEntry,
   FarmingLogKind,
   SaveFarmingSessionInput,
+  EnemyKillStats,
 } from "../types/farming";
-import type { PlayerEvent } from "../types/playerEvents";
+import type { PlayerEvent, ItemProvenance } from "../types/playerEvents";
 import { useGameDataStore } from "./gameDataStore";
 import { formatTimeFull, formatDuration } from "../composables/useTimestamp";
 
@@ -15,6 +16,10 @@ export const useFarmingStore = defineStore("farming", () => {
   const sessionActive = ref(false);
   const session = ref<FarmingSession | null>(null);
   const log = ref<FarmingLogEntry[]>([]);
+
+  // All-time per-enemy loot stats, fetched lazily from the DB on hover and
+  // cached by enemy name (shared across items that drop from the same enemy).
+  const enemyStatsCache = ref<Record<string, EnemyKillStats>>({});
 
   // Live timer tick — increments every second to drive reactive elapsed display
   const timerTick = ref(0);
@@ -49,6 +54,10 @@ export const useFarmingStore = defineStore("farming", () => {
         const kind: FarmingLogKind = event.delta > 0 ? "item-gained" : "item-lost";
         const sign = event.delta > 0 ? "+" : "";
         pushLog(kind, event.timestamp, `${name} ${sign}${event.delta}`);
+
+        // Mining/survey yields are gathered, not corpse loot — track them with
+        // their source (node/survey) in the "Gathered" column.
+        if (event.delta > 0) recordGathered(s, event.provenance, name, event.delta);
         break;
       }
 
@@ -59,18 +68,45 @@ export const useFarmingStore = defineStore("farming", () => {
         const addedName = event.item_name;
         s.itemDeltas[addedName] = (s.itemDeltas[addedName] ?? 0) + 1;
         pushLog("item-gained", event.timestamp, `${addedName} +1`);
+
+        recordGathered(s, event.provenance, addedName, 1);
         break;
       }
 
       case "LootPickedUp": {
         // Ground truth: this item was picked up from a corpse loot window
-        // (skinning/butchering items do NOT produce LootPickedUp)
-        if (!event.corpse_name || !event.item_name) break;
-        const enemyName = event.corpse_name;
-        if (!s.kills[enemyName]) break;
+        // (skinning/butchering items do NOT produce LootPickedUp).
+        if (!event.item_name) break;
+        // Attribute to the searched corpse. Fall back to a generic bucket when
+        // the corpse-search context wasn't captured, so the item still appears.
+        const enemyName = event.corpse_name ?? "Unknown enemy";
+        // Create the enemy entry even if the kill wasn't tracked this session
+        // (count stays 0). Corpse loot must never be silently dropped just
+        // because we didn't see the kill — it still shows with an empty
+        // per-session breakdown, backed by all-time DB stats on hover.
+        if (!s.kills[enemyName]) s.kills[enemyName] = { count: 0, loot: {} };
 
-        s.kills[enemyName].loot[event.item_name] =
-          (s.kills[enemyName].loot[event.item_name] ?? 0) + event.quantity;
+        const tally = s.kills[enemyName].loot[event.item_name] ?? { quantity: 0, drops: 0 };
+        tally.quantity += event.quantity;
+        tally.drops += 1;
+        s.kills[enemyName].loot[event.item_name] = tally;
+        break;
+      }
+
+      case "CorpseExtract": {
+        // Skinning/butchering yield — tracked as its own category, NOT loot.
+        const enemyName = event.corpse_name ?? "Unknown enemy";
+        if (!s.extracts) s.extracts = {};
+        if (!s.extracts[enemyName]) s.extracts[enemyName] = {};
+        const tally = s.extracts[enemyName][event.item_name] ?? {
+          quantity: 0,
+          drops: 0,
+          skill: event.skill,
+        };
+        tally.quantity += event.quantity;
+        tally.drops += 1;
+        tally.skill = event.skill;
+        s.extracts[enemyName][event.item_name] = tally;
         break;
       }
 
@@ -209,6 +245,7 @@ export const useFarmingStore = defineStore("farming", () => {
       ignoredItems: new Set(),
       favorDeltas: {},
       kills: {},
+      extracts: {},
       vendorGold: 0,
     };
     log.value = [];
@@ -378,8 +415,8 @@ export const useFarmingStore = defineStore("farming", () => {
         count: v.count,
         perHour: Math.round(v.count / activeHours),
         loot: Object.entries(v.loot)
-          .filter(([, qty]) => qty > 0)
-          .map(([itemName, qty]) => ({ name: itemName, quantity: qty }))
+          .filter(([, l]) => l.quantity > 0)
+          .map(([itemName, l]) => ({ name: itemName, quantity: l.quantity }))
           .sort((a, b) => b.quantity - a.quantity),
       }))
       .sort((a, b) => b.count - a.count);
@@ -429,6 +466,89 @@ export const useFarmingStore = defineStore("farming", () => {
         return b.netQuantity - a.netQuantity;
       });
   });
+
+  // Items looted from corpses this session, aggregated across all enemy types.
+  // Drives the simplified "item — Looted N" list on the session tab.
+  const lootedItems = computed(() => {
+    void timerTick.value;
+    if (!session.value) return [];
+    const agg: Record<string, number> = {};
+    for (const kill of Object.values(session.value.kills)) {
+      for (const [itemName, l] of Object.entries(kill.loot)) {
+        agg[itemName] = (agg[itemName] ?? 0) + l.quantity;
+      }
+    }
+    return Object.entries(agg)
+      .filter(([, qty]) => qty > 0)
+      .map(([name, quantity]) => ({ name, quantity }))
+      .sort((a, b) => b.quantity - a.quantity);
+  });
+
+  // Session enemies that dropped a given item, with this-session tallies.
+  // Used by the hover popover; all-time figures are layered on via fetchEnemyStats.
+  function sessionEnemiesForItem(itemName: string) {
+    if (!session.value) return [];
+    return Object.entries(session.value.kills)
+      .map(([enemyName, kill]) => ({ enemyName, kill, loot: kill.loot[itemName] }))
+      .filter((e) => e.loot && e.loot.quantity > 0)
+      .map((e) => ({
+        enemyName: e.enemyName,
+        sessionQuantity: e.loot!.quantity,
+        sessionDrops: e.loot!.drops,
+        sessionKills: e.kill.count,
+      }))
+      .sort((a, b) => b.sessionQuantity - a.sessionQuantity);
+  }
+
+  // Items extracted via skinning/butchering this session, aggregated across
+  // enemy types. Separate category from corpse loot.
+  const extractedItems = computed(() => {
+    void timerTick.value;
+    if (!session.value) return [];
+    const agg: Record<string, { quantity: number; skill: string }> = {};
+    for (const byItem of Object.values(session.value.extracts ?? {})) {
+      for (const [itemName, l] of Object.entries(byItem)) {
+        const cur = agg[itemName] ?? { quantity: 0, skill: l.skill };
+        cur.quantity += l.quantity;
+        cur.skill = l.skill;
+        agg[itemName] = cur;
+      }
+    }
+    return Object.entries(agg)
+      .filter(([, v]) => v.quantity > 0)
+      .map(([name, v]) => ({ name, quantity: v.quantity, skill: v.skill }))
+      .sort((a, b) => b.quantity - a.quantity);
+  });
+
+  // Session enemies a given item was extracted from, with this-session tallies.
+  function sessionEnemiesForExtract(itemName: string) {
+    if (!session.value) return [];
+    const kills = session.value.kills;
+    return Object.entries(session.value.extracts ?? {})
+      .map(([enemyName, byItem]) => ({ enemyName, loot: byItem[itemName], kills }))
+      .filter((e) => e.loot && e.loot.quantity > 0)
+      .map((e) => ({
+        enemyName: e.enemyName,
+        sessionQuantity: e.loot!.quantity,
+        sessionDrops: e.loot!.drops,
+        sessionKills: e.kills[e.enemyName]?.count ?? 0,
+      }))
+      .sort((a, b) => b.sessionQuantity - a.sessionQuantity);
+  }
+
+  // Lazily fetch (and cache) all-time loot stats for an enemy from the DB.
+  async function fetchEnemyStats(enemyName: string): Promise<EnemyKillStats | null> {
+    const cached = enemyStatsCache.value[enemyName];
+    if (cached) return cached;
+    try {
+      const stats = await invoke<EnemyKillStats>("get_enemy_kill_stats", { enemyName });
+      enemyStatsCache.value[enemyName] = stats;
+      return stats;
+    } catch (e) {
+      console.error("[farming] Failed to fetch enemy stats:", e);
+      return null;
+    }
+  }
 
   function toggleIgnoreItem(name: string) {
     if (!session.value) return;
@@ -480,6 +600,11 @@ export const useFarmingStore = defineStore("farming", () => {
     itemSummary,
     killSummary,
     favorSummary,
+    lootedItems,
+    extractedItems,
+    sessionEnemiesForItem,
+    sessionEnemiesForExtract,
+    fetchEnemyStats,
     xpPerHour,
     getActiveSeconds,
     handlePlayerEvent,
@@ -496,6 +621,40 @@ export const useFarmingStore = defineStore("farming", () => {
 });
 
 // ── Module helpers ────────────────────────────────────────────────────────
+
+// Record a mining/survey gathered item into the session's "Gathered" category,
+// keyed by its source (node name or survey map). Non-gathered provenances
+// (corpse loot, vendor, storage, craft, unknown) are ignored here — corpse
+// loot/extracts have their own paths.
+function recordGathered(
+  s: FarmingSession,
+  provenance: ItemProvenance | undefined,
+  itemName: string,
+  quantity: number
+): void {
+  if (quantity <= 0 || !provenance || provenance.kind !== "Attributed") return;
+
+  const src = provenance.source;
+  let sourceName: string;
+  let skill: string;
+  if (src.kind === "Mining") {
+    sourceName = src.node_name ?? "Mining (unknown node)";
+    skill = "Mining";
+  } else if (src.kind === "SurveyMapUse") {
+    sourceName = src.survey_map_internal_name ?? "Survey";
+    skill = "Survey";
+  } else {
+    return;
+  }
+
+  if (!s.extracts) s.extracts = {};
+  if (!s.extracts[sourceName]) s.extracts[sourceName] = {};
+  const tally = s.extracts[sourceName][itemName] ?? { quantity: 0, drops: 0, skill };
+  tally.quantity += quantity;
+  tally.drops += 1;
+  tally.skill = skill;
+  s.extracts[sourceName][itemName] = tally;
+}
 
 function tsToSeconds(ts: string): number {
   const [h, m, s] = ts.split(":").map(Number);

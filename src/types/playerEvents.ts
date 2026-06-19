@@ -311,6 +311,17 @@ export interface LootPickedUpEvent {
   quantity: number
 }
 
+// Item extracted from a corpse via Butchering/Skinning (no loot-table roll).
+export interface CorpseExtractEvent {
+  kind: 'CorpseExtract'
+  timestamp: string
+  item_name: string
+  item_type_id: number | null
+  quantity: number
+  skill: string // "Butchering" | "Skinning"
+  corpse_name: string | null
+}
+
 // === Union Type ===
 
 export type PlayerEvent =
@@ -342,3 +353,4 @@ export type PlayerEvent =
   | EffectsRemovedEvent
   | EffectNameUpdatedEvent
   | LootPickedUpEvent
+  | CorpseExtractEvent
