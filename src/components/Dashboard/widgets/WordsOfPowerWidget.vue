@@ -22,41 +22,51 @@
       </button>
     </div>
 
-    <!-- Word list grouped by power name -->
+    <!-- Word list grouped by category, sub-grouped by level -->
     <div class="flex-1 overflow-y-auto min-h-0 flex flex-col gap-2">
       <div
         v-for="group in filteredGroups"
-        :key="group.powerName"
+        :key="group.category"
         class="rounded bg-surface-2/50 px-2 py-1.5">
         <div
           class="text-xs font-semibold text-accent-gold flex items-center gap-1 cursor-pointer select-none"
-          :class="{ 'mb-1': !collapsedGroups.has(group.powerName) }"
-          @click="toggleGroup(group.powerName)">
-          <span class="text-[10px] text-text-dim w-3 inline-block">{{ collapsedGroups.has(group.powerName) ? '▶' : '▼' }}</span>
-          {{ group.powerName }}
-          <span class="text-[10px] text-text-dim font-normal ml-auto">{{ group.words.length }}</span>
+          :class="{ 'mb-1': !collapsedGroups.has(group.category) }"
+          @click="toggleGroup(group.category)">
+          <span class="text-[10px] text-text-dim w-3 inline-block">{{ collapsedGroups.has(group.category) ? '▶' : '▼' }}</span>
+          {{ group.category }}
+          <span class="text-[10px] text-text-dim font-normal ml-auto">{{ group.count }}</span>
         </div>
-        <div v-show="!collapsedGroups.has(group.powerName)" class="flex flex-col gap-1">
-          <div
-            v-for="word in group.words"
-            :key="word.id"
-            class="flex items-center gap-2 py-0.5 group">
-            <span
-              class="font-mono text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors"
-              :class="wordAgeClass(word)"
-              :title="'Click to copy — Discovered ' + formatWordAge(word)"
-              @click="copyWord(word.word)">
-              {{ word.word }}
-            </span>
-            <span class="text-[11px] text-text-dim flex-1 truncate" :title="word.description ?? ''">
-              {{ formatWordAge(word) }}
-            </span>
-            <button
-              class="text-text-dim hover:text-value-negative opacity-0 group-hover:opacity-100 transition-opacity text-xs shrink-0 cursor-pointer"
-              title="Remove word"
-              @click="removeWord(word.id)">
-              &times;
-            </button>
+        <div v-show="!collapsedGroups.has(group.category)" class="flex flex-col gap-1.5">
+          <div v-for="sub in group.levels" :key="sub.level ?? -1">
+            <div class="text-[11px] font-medium text-text-dim mb-0.5">
+              {{ sub.level !== null ? `Level ${sub.level}` : 'Level unknown' }}
+            </div>
+            <div class="flex flex-col gap-1">
+              <div
+                v-for="word in sub.words"
+                :key="word.id"
+                class="flex items-center gap-2 py-0.5 group">
+                <span
+                  class="font-mono text-xs px-1.5 py-0.5 rounded cursor-pointer transition-colors shrink-0"
+                  :class="wordAgeClass(word)"
+                  :title="'Click to copy — Discovered ' + formatWordAge(word)"
+                  @click="copyWord(word.word)">
+                  {{ word.word }}
+                </span>
+                <span class="text-[11px] text-text-primary truncate" :title="word.description ?? ''">
+                  {{ word.power_name }}
+                </span>
+                <span class="text-[11px] text-text-dim flex-1 truncate text-right">
+                  {{ formatWordAge(word) }}
+                </span>
+                <button
+                  class="text-text-dim hover:text-value-negative opacity-0 group-hover:opacity-100 transition-opacity text-xs shrink-0 cursor-pointer"
+                  title="Remove word"
+                  @click="removeWord(word.id)">
+                  &times;
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -74,6 +84,17 @@
       v-if="copiedWord"
       class="text-xs text-value-positive text-center shrink-0 transition-opacity">
       Copied "{{ copiedWord }}" to clipboard
+    </div>
+
+    <!-- Export -->
+    <div class="shrink-0">
+      <button
+        class="text-xs text-text-dim hover:text-text-primary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        :disabled="words.length === 0"
+        @click="exportCsv">
+        Export to CSV
+      </button>
+      <span v-if="exportStatus" class="text-[11px] text-text-dim ml-2">{{ exportStatus }}</span>
     </div>
 
     <!-- Add manually -->
@@ -129,11 +150,19 @@ interface WordOfPower {
   description: string | null
   discovered_at: string
   source: string
+  category: string
+  level: number | null
 }
 
-interface WordGroup {
-  powerName: string
+interface LevelGroup {
+  level: number | null
   words: WordOfPower[]
+}
+
+interface CategoryGroup {
+  category: string
+  count: number
+  levels: LevelGroup[]
 }
 
 const settings = useSettingsStore()
@@ -143,6 +172,7 @@ const showAddForm = ref(false)
 const newWord = ref('')
 const newPowerName = ref('')
 const copiedWord = ref('')
+const exportStatus = ref('')
 const now = ref(Date.now())
 const collapsedGroups = ref(new Set<string>())
 
@@ -150,35 +180,49 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null
 let copiedTimeout: ReturnType<typeof setTimeout> | null = null
 let unlisten: UnlistenFn | null = null
 
-const filteredGroups = computed<WordGroup[]>(() => {
+const filteredGroups = computed<CategoryGroup[]>(() => {
   const q = search.value.toLowerCase().trim()
   const filtered = q
     ? words.value.filter(
         w =>
           w.word.toLowerCase().includes(q) ||
-          w.power_name.toLowerCase().includes(q),
+          w.power_name.toLowerCase().includes(q) ||
+          w.category.toLowerCase().includes(q),
       )
     : words.value
 
-  const groups = new Map<string, WordOfPower[]>()
+  const byCategory = new Map<string, WordOfPower[]>()
   for (const w of filtered) {
-    const list = groups.get(w.power_name) || []
+    const list = byCategory.get(w.category) || []
     list.push(w)
-    groups.set(w.power_name, list)
+    byCategory.set(w.category, list)
   }
 
-  return [...groups.entries()]
-    .map(([powerName, groupWords]) => ({
-      powerName,
-      words: groupWords.sort(
-        (a, b) => parseUtc(b.discovered_at).getTime() - parseUtc(a.discovered_at).getTime(),
-      ),
-    }))
-    .sort((a, b) => {
-      const aNewest = parseUtc(a.words[0].discovered_at).getTime()
-      const bNewest = parseUtc(b.words[0].discovered_at).getTime()
-      return bNewest - aNewest
-    })
+  const groups: CategoryGroup[] = [...byCategory.entries()].map(([category, catWords]) => {
+    const byLevel = new Map<number | null, WordOfPower[]>()
+    for (const w of catWords) {
+      const list = byLevel.get(w.level) || []
+      list.push(w)
+      byLevel.set(w.level, list)
+    }
+
+    const levels = [...byLevel.entries()]
+      .map(([level, levelWords]) => ({
+        level,
+        words: levelWords.sort(
+          (a, b) => parseUtc(b.discovered_at).getTime() - parseUtc(a.discovered_at).getTime(),
+        ),
+      }))
+      .sort((a, b) => (a.level ?? -1) - (b.level ?? -1))
+
+    return { category, count: catWords.length, levels }
+  })
+
+  return groups.sort((a, b) => {
+    const aNewest = Math.max(...a.levels.flatMap(l => l.words.map(w => parseUtc(w.discovered_at).getTime())))
+    const bNewest = Math.max(...b.levels.flatMap(l => l.words.map(w => parseUtc(w.discovered_at).getTime())))
+    return bNewest - aNewest
+  })
 })
 
 function wordAgeMs(word: WordOfPower): number {
@@ -226,7 +270,7 @@ function expandAll() {
 }
 
 function collapseAll() {
-  collapsedGroups.value = new Set(filteredGroups.value.map(g => g.powerName))
+  collapsedGroups.value = new Set(filteredGroups.value.map(g => g.category))
 }
 
 async function copyWord(word: string) {
@@ -285,6 +329,50 @@ async function removeWord(id: number) {
     words.value = words.value.filter(w => w.id !== id)
   } catch (e) {
     console.error('Failed to delete word of power:', e)
+  }
+}
+
+function csvField(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`
+}
+
+async function exportCsv() {
+  exportStatus.value = ''
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const filePath = await save({
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+      defaultPath: 'words-of-power.csv',
+    })
+    if (!filePath) return
+
+    const header = ['Date', 'Time', 'Word', 'Power Name', 'Category', 'Level'].join(',')
+    const rows = words.value
+      .slice()
+      .sort((a, b) => parseUtc(b.discovered_at).getTime() - parseUtc(a.discovered_at).getTime())
+      .map(w => {
+        const d = parseUtc(w.discovered_at)
+        const date = isNaN(d.getTime()) ? '' : d.toLocaleDateString()
+        const time = isNaN(d.getTime()) ? '' : d.toLocaleTimeString()
+        return [
+          csvField(date),
+          csvField(time),
+          csvField(w.word),
+          csvField(w.power_name),
+          csvField(w.category),
+          csvField(w.level !== null ? String(w.level) : ''),
+        ].join(',')
+      })
+
+    const content = [header, ...rows].join('\n') + '\n'
+    await invoke('export_text_file', { filePath, content })
+    exportStatus.value = 'Exported'
+    setTimeout(() => {
+      exportStatus.value = ''
+    }, 2500)
+  } catch (e) {
+    console.error('Failed to export words of power CSV:', e)
+    exportStatus.value = 'Export failed'
   }
 }
 
