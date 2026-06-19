@@ -112,8 +112,8 @@
       </div>
     </div>
 
-    <!-- 3-column layout: Skills | Items | Activity Log -->
-    <div class="grid grid-cols-[240px_1fr_280px] gap-3 flex-1 min-h-0">
+    <!-- 4-column layout: Skills | Looted Items | Gathered | Activity Log -->
+    <div class="grid grid-cols-[240px_1fr_1fr_280px] gap-3 flex-1 min-h-0">
       <!-- LEFT: Skills Panel -->
       <div class="bg-surface-dark border border-border-default rounded-lg p-3 overflow-y-auto">
         <div class="text-[0.65rem] uppercase tracking-widest text-entity-item mb-2 font-bold">Skills</div>
@@ -190,51 +190,56 @@
         </template>
       </div>
 
-      <!-- CENTER: Items Panel -->
+      <!-- CENTER: Looted Items Panel -->
       <div class="bg-surface-dark border border-border-default rounded-lg p-3 overflow-y-auto">
-        <div class="flex items-center justify-between mb-2">
-          <div class="text-[0.65rem] uppercase tracking-widest text-text-dim font-bold">Items</div>
-          <button
-            v-if="hasIgnoredItems"
-            @click="showIgnored = !showIgnored"
-            class="text-[0.6rem] text-text-dim hover:text-text-secondary cursor-pointer transition-colors">
-            {{ showIgnored ? 'Hide' : 'Show' }} ignored ({{ ignoredCount }})
-          </button>
-        </div>
-        <EmptyState v-if="store.itemSummary.length === 0" variant="compact" primary="No item changes yet" />
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-1.5">
-          <div
-            v-for="item in visibleItems"
+        <div class="text-[0.65rem] uppercase tracking-widest text-text-dim font-bold mb-2">Looted Items</div>
+        <EmptyState v-if="store.lootedItems.length === 0" variant="compact" primary="No items looted yet" secondary="Hover an item to see drop rates per enemy." />
+        <div class="flex flex-col gap-1">
+          <EntityTooltipWrapper
+            v-for="item in store.lootedItems"
             :key="item.name"
-            :class="[
-              'group flex items-center justify-between px-2 py-1.5 rounded text-xs border transition-opacity',
-              item.isIgnored
-                ? 'bg-black/10 border-border-default opacity-40'
-                : 'bg-black/20 border-border-default'
-            ]">
-            <ItemInline :reference="item.name" />
-            <div class="flex items-center gap-2">
-              <span
-                :class="[
-                  'font-mono font-bold',
-                  item.netQuantity > 0 ? 'text-value-positive' : 'text-value-negative'
-                ]">
-                {{ item.netQuantity > 0 ? '+' : '' }}{{ item.netQuantity }}
+            :delay="500"
+            :interactive="true"
+            border-class="border-entity-item/40"
+            class="w-full!">
+            <div class="flex items-center justify-between px-2 py-1.5 rounded text-xs bg-black/20 border border-border-default hover:border-entity-item/40 cursor-help w-full">
+              <span class="text-entity-item font-medium truncate">{{ displayName(item.name) }}</span>
+              <span class="text-text-secondary shrink-0 ml-2">
+                Looted <span class="text-value-positive font-mono font-bold">{{ item.quantity }}</span>
               </span>
-              <span class="text-text-dim text-[0.6rem]">{{ item.perHour }}/hr</span>
-              <button
-                @click="store.toggleIgnoreItem(item.name)"
-                :class="[
-                  'opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer text-[0.65rem] px-1 rounded',
-                  item.isIgnored
-                    ? 'text-value-positive hover:text-value-positive'
-                    : 'text-text-dim hover:text-value-negative'
-                ]"
-                :title="item.isIgnored ? 'Show this item' : 'Hide this item'">
-                {{ item.isIgnored ? '👁' : '✕' }}
-              </button>
             </div>
-          </div>
+            <template #tooltip>
+              <ItemDropBreakdown :item-name="item.name" :total-looted="item.quantity" />
+            </template>
+          </EntityTooltipWrapper>
+        </div>
+      </div>
+
+      <!-- CENTER-RIGHT: Gathered Panel (skinning, butchering, mining, survey) -->
+      <div class="bg-surface-dark border border-border-default rounded-lg p-3 overflow-y-auto">
+        <div class="text-[0.65rem] uppercase tracking-widest text-[#c8a47e] font-bold mb-2">Gathered</div>
+        <EmptyState v-if="store.extractedItems.length === 0" variant="compact" primary="Nothing gathered yet" secondary="Skin, butcher, mine, or survey to track yields by source." />
+        <div class="flex flex-col gap-1">
+          <EntityTooltipWrapper
+            v-for="item in store.extractedItems"
+            :key="item.name"
+            :delay="500"
+            :interactive="true"
+            border-class="border-[#c8a47e]/40"
+            class="w-full!">
+            <div class="flex items-center justify-between px-2 py-1.5 rounded text-xs bg-black/20 border border-border-default hover:border-[#c8a47e]/40 cursor-help w-full">
+              <span class="flex items-center gap-1.5 min-w-0">
+                <span class="text-[#c8a47e] font-medium truncate">{{ displayName(item.name) }}</span>
+                <span class="text-[0.55rem] text-text-dim uppercase shrink-0">{{ item.skill }}</span>
+              </span>
+              <span class="text-text-secondary shrink-0 ml-2">
+                Extracted <span class="text-value-positive font-mono font-bold">{{ item.quantity }}</span>
+              </span>
+            </div>
+            <template #tooltip>
+              <ItemDropBreakdown :item-name="item.name" :total-looted="item.quantity" mode="extract" />
+            </template>
+          </EntityTooltipWrapper>
         </div>
       </div>
 
@@ -245,32 +250,36 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, reactive } from "vue";
 import { useFarmingStore } from "../../stores/farmingStore";
+import { useGameDataStore } from "../../stores/gameDataStore";
 import { formatAnyTimestamp as formatTs } from "../../composables/useTimestamp";
 import EmptyState from "../Shared/EmptyState.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 import SkillInline from "../Shared/Skill/SkillInline.vue";
 import NpcInline from "../Shared/NPC/NpcInline.vue";
 import EnemyInline from "../Shared/Enemy/EnemyInline.vue";
+import EntityTooltipWrapper from "../Shared/EntityTooltipWrapper.vue";
+import ItemDropBreakdown from "./ItemDropBreakdown.vue";
 import FarmingLog from "./FarmingLog.vue";
 
 const store = useFarmingStore();
+const gameData = useGameDataStore();
 const s = computed(() => store.session);
 const sessionName = ref("");
-const showIgnored = ref(false);
 
-const hasIgnoredItems = computed(() =>
-  store.itemSummary.some((i) => i.isIgnored)
-);
-
-const ignoredCount = computed(() =>
-  store.itemSummary.filter((i) => i.isIgnored).length
-);
-
-const visibleItems = computed(() =>
-  showIgnored.value
-    ? store.itemSummary
-    : store.itemSummary.filter((i) => !i.isIgnored)
-);
+// Lazily resolve internal item names (e.g. "SpiderLeg") to display names
+// ("Spider Leg") for the looted-items list. The row is the hover target for
+// the drop breakdown, so we render a plain resolved name rather than an
+// ItemInline (which would spawn its own competing tooltip).
+const resolvedNames = reactive<Record<string, string>>({});
+function displayName(reference: string): string {
+  if (!(reference in resolvedNames)) {
+    resolvedNames[reference] = reference;
+    gameData.resolveItem(reference).then((item) => {
+      if (item?.name) resolvedNames[reference] = item.name;
+    }).catch(() => {});
+  }
+  return resolvedNames[reference];
+}
 </script>

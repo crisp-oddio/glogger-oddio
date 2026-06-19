@@ -293,6 +293,19 @@ pub enum PlayerEvent {
         /// Quantity picked up (from preceding AddItem initial_quantity or UpdateItemCode delta)
         quantity: u32,
     },
+    /// Fired when an item is extracted from a corpse via the Butchering or
+    /// Skinning skill. These grant skill XP and produce NO ProcessRemoveLoot,
+    /// so they are tracked as a category separate from loot-table drops.
+    CorpseExtract {
+        timestamp: String,
+        item_name: String,
+        item_type_id: Option<u16>,
+        quantity: u32,
+        /// "Butchering" or "Skinning"
+        skill: String,
+        /// Name of the corpse, if a CorpseSearch context is active
+        corpse_name: Option<String>,
+    },
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
@@ -1086,6 +1099,13 @@ impl PlayerEventParser {
             if let Some(ev) = self.parse_remove_loot(line) {
                 events.push(ev);
             }
+        } else if line.contains("ProcessUpdateSkill(") {
+            // Butchering/Skinning XP correlates to a just-added corpse extract
+            // that never produces a RemoveLoot. Detect those here; all other
+            // skill updates are handled by the separate skill-update parser.
+            if let Some(ev) = self.parse_corpse_extract(line) {
+                events.push(ev);
+            }
         } else if line.contains("ProcessDoDelayLoop(") {
             self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_delay_loop(line) {
@@ -1841,6 +1861,11 @@ impl PlayerEventParser {
                 (None, None, 1)
             };
 
+        // Consume the correlation so a following Butchering/Skinning XP line
+        // (which has no AddItem of its own) can't mistake this loot item for a
+        // corpse extract.
+        self.last_item_event = None;
+
         Some(PlayerEvent::LootPickedUp {
             timestamp: ts,
             instance_id,
@@ -1849,6 +1874,47 @@ impl PlayerEventParser {
             item_name,
             item_type_id,
             quantity,
+        })
+    }
+
+    /// Detect a skinning/butchering extract from a `ProcessUpdateSkill` line.
+    /// Butchering/Skinning grant XP for an item that was just added via
+    /// `ProcessAddItem` but produces no `ProcessRemoveLoot`. We correlate the
+    /// XP line to the immediately-preceding AddItem (last_item_event) and
+    /// consume it, so a stray XP line with no fresh AddItem can't reuse it.
+    fn parse_corpse_extract(&mut self, line: &str) -> Option<PlayerEvent> {
+        // Parse the skill type out of "{type=Butchering,raw=...}"
+        let type_idx = line.find("type=")? + "type=".len();
+        let rest = &line[type_idx..];
+        let type_end = rest.find([',', '}'])?;
+        let skill = rest[..type_end].trim();
+        if skill != "Butchering" && skill != "Skinning" {
+            return None;
+        }
+
+        let ts = parse_timestamp(line)?;
+        // The extracted item is the most recent AddItem not yet consumed by a
+        // RemoveLoot or a prior extract. If absent, this XP granted no item.
+        let last = self.last_item_event.take()?;
+
+        // Best-effort corpse attribution from the active CorpseSearch context.
+        // The first extract on a fresh corpse may precede its search screen, so
+        // this can legitimately be None.
+        let corpse_name = self.activity_contexts.iter().rev().find_map(|c| {
+            if let ActivitySource::CorpseSearch { corpse_name, .. } = &c.source {
+                Some(corpse_name.clone())
+            } else {
+                None
+            }
+        });
+
+        Some(PlayerEvent::CorpseExtract {
+            timestamp: ts,
+            item_name: last.item_name,
+            item_type_id: last.item_type_id,
+            quantity: last.quantity,
+            skill: skill.to_string(),
+            corpse_name,
         })
     }
 
