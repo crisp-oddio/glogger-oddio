@@ -173,6 +173,12 @@ pub struct AppSettings {
     /// --dashboard-widget-bg-opacity CSS variable.
     #[serde(default = "default_dashboard_widget_opacity")]
     pub dashboard_widget_opacity: u32,
+
+    /// When true, re-run platform path auto-detection on every startup,
+    /// overwriting the game data and Player.log paths with the OS defaults.
+    /// Useful when the game install or user profile moves between launches.
+    #[serde(default)]
+    pub auto_detect_paths_on_startup: bool,
 }
 
 fn default_dashboard_widget_opacity() -> u32 {
@@ -330,6 +336,7 @@ impl Default for AppSettings {
             ui_font_family: default_ui_font_family(),
             ui_font_size: default_ui_font_size(),
             dashboard_widget_opacity: default_dashboard_widget_opacity(),
+            auto_detect_paths_on_startup: false,
         }
     }
 }

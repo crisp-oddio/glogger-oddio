@@ -40,6 +40,7 @@ export interface AppSettings {
   uiFontFamily: string;
   uiFontSize: number;
   dashboardWidgetOpacity: number;
+  autoDetectPathsOnStartup: boolean;
   viewPreferences: Record<string, Record<string, unknown>>;
 }
 
@@ -81,6 +82,7 @@ interface BackendSettings {
   ui_font_family: string;
   ui_font_size: number;
   dashboard_widget_opacity: number;
+  auto_detect_paths_on_startup: boolean;
   view_preferences: Record<string, Record<string, unknown>>;
 }
 
@@ -123,6 +125,7 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     ui_font_family: settings.uiFontFamily,
     ui_font_size: settings.uiFontSize,
     dashboard_widget_opacity: settings.dashboardWidgetOpacity,
+    auto_detect_paths_on_startup: settings.autoDetectPathsOnStartup,
     view_preferences: settings.viewPreferences,
   };
 }
@@ -222,6 +225,7 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     uiFontFamily: settings.ui_font_family ?? DEFAULT_FONT_FAMILY,
     uiFontSize: settings.ui_font_size ?? DEFAULT_FONT_SIZE,
     dashboardWidgetOpacity: settings.dashboard_widget_opacity ?? DEFAULT_WIDGET_OPACITY,
+    autoDetectPathsOnStartup: settings.auto_detect_paths_on_startup ?? false,
     viewPreferences: settings.view_preferences ?? {},
   };
 }
@@ -265,6 +269,7 @@ function getDefaultSettings(): AppSettings {
     uiFontFamily: DEFAULT_FONT_FAMILY,
     uiFontSize: DEFAULT_FONT_SIZE,
     dashboardWidgetOpacity: DEFAULT_WIDGET_OPACITY,
+    autoDetectPathsOnStartup: false,
     viewPreferences: {},
   };
 }

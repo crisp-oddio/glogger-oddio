@@ -379,6 +379,34 @@ pub fn run() {
             );
             startup_log!("Settings loaded");
 
+            // Step 2b: Re-run platform path auto-detection on startup if enabled.
+            // Must happen before the coordinator starts the log watchers so the
+            // refreshed paths take effect this launch.
+            {
+                let s = settings_manager.get();
+                if s.auto_detect_paths_on_startup {
+                    let game_path = settings::get_default_game_data_path();
+                    // Player.log default: explicit on macOS, empty on Windows
+                    // (derived from game_data_path/Player.log at read time).
+                    let log_path = settings::get_default_player_log_path();
+                    if !game_path.is_empty()
+                        && (game_path != s.game_data_path || log_path != s.log_file_path)
+                    {
+                        let mut updated = s.clone();
+                        updated.game_data_path = game_path;
+                        updated.log_file_path = log_path;
+                        match settings_manager.update(updated) {
+                            Ok(()) => {
+                                startup_log!("Auto-detected paths on startup (enabled in settings)");
+                            }
+                            Err(e) => {
+                                startup_log!("Auto-detect paths on startup failed to save: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+
             // Step 3: Track app version (database is preserved across upgrades via migrations)
             let db_path = settings_manager.get_db_path(&app_data_dir);
             {

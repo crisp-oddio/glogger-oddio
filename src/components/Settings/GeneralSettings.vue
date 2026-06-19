@@ -25,10 +25,38 @@
         </p>
       </div>
 
-      <div>
-        <button @click="useDefaultPlayerLog" class="btn btn-secondary">
-          Use Default Player.log Location
+      <div class="flex flex-wrap gap-2">
+        <button @click="autoDetectGamePath" class="btn btn-secondary">
+          Auto-Detect Game Path
         </button>
+        <button @click="autoDetectPlayerLogPath" class="btn btn-secondary">
+          Auto-Detect Player.log Path
+        </button>
+        <button @click="resetPaths" class="btn btn-secondary">
+          Reset Paths
+        </button>
+      </div>
+      <p
+        v-if="pathStatus"
+        class="mt-2 text-xs leading-relaxed break-all"
+        :class="pathStatusError ? 'text-red-400' : 'text-text-muted'">
+        {{ pathStatus }}
+      </p>
+
+      <div class="mt-4">
+        <label class="flex items-center gap-2 cursor-pointer text-text-primary">
+          <input
+            type="checkbox"
+            v-model="autoDetectPathsOnStartup"
+            @change="handleAutoDetectPathsToggle"
+            class="size-5 cursor-pointer" />
+          <span>Auto-detect game &amp; Player.log paths on startup</span>
+        </label>
+        <p class="mt-2 text-text-muted text-xs leading-relaxed">
+          When enabled, the game data and Player.log paths are reset to the platform
+          defaults each time the app launches. Enable this if your game install or user
+          profile moves between launches; leave it off if you've set custom paths.
+        </p>
       </div>
     </div>
 
@@ -150,15 +178,19 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settingsStore";
 
 const settingsStore = useSettingsStore();
+const pathStatus = ref("");
+const pathStatusError = ref(false);
 const localGameDataPath = ref(settingsStore.settings.gameDataPath);
 const autoTailChat = ref(settingsStore.settings.autoTailChat);
 const autoTailPlayerLog = ref(settingsStore.settings.autoTailPlayerLog);
 const excludeMaxEnchanted = ref(settingsStore.settings.excludeMaxEnchantedRecipes);
 const timestampMode = ref(settingsStore.settings.timestampDisplayMode);
 const use24Hour = ref(settingsStore.settings.use24HourTime);
+const autoDetectPathsOnStartup = ref(settingsStore.settings.autoDetectPathsOnStartup);
 
 const timestampOptions = [
   { value: 'local' as const, label: 'Local Time' },
@@ -219,6 +251,11 @@ watch(
   (val) => { use24Hour.value = val; }
 );
 
+watch(
+  () => settingsStore.settings.autoDetectPathsOnStartup,
+  (val) => { autoDetectPathsOnStartup.value = val; }
+);
+
 async function browseGameDataFolder() {
   const selected = await open({
     directory: true,
@@ -234,9 +271,66 @@ function handleGameDataPathInput() {
   settingsStore.updateGameDataPath(localGameDataPath.value);
 }
 
-function useDefaultPlayerLog() {
-  const playerLogPath = settingsStore.getPlayerLogPath();
-  settingsStore.updateLogFilePath(playerLogPath);
+// Platform-aware default game data folder (Windows/macOS resolved in the
+// backend; empty on unsupported OSes like Linux).
+async function resolveDefaultGamePath(): Promise<string> {
+  return await invoke<string>("get_default_game_data_path_command");
+}
+
+// Resolve a concrete Player.log path. The backend returns an explicit path on
+// macOS (logs live separately from game data) and empty on Windows, where
+// Player.log sits inside the game data folder — so fall back to that.
+async function resolveDefaultPlayerLogPath(gameDataPath: string): Promise<string> {
+  const direct = await invoke<string>("get_default_player_log_path_command");
+  if (direct) return direct;
+  const base = gameDataPath || (await resolveDefaultGamePath());
+  return base ? base.replace(/[\\/]+$/, "") + "/Player.log" : "";
+}
+
+async function autoDetectGamePath() {
+  const path = await resolveDefaultGamePath();
+  if (!path) {
+    pathStatusError.value = true;
+    pathStatus.value =
+      "Couldn't auto-detect the game data folder on this operating system. Please set it manually with Browse.";
+    return;
+  }
+  localGameDataPath.value = path;
+  await settingsStore.updateGameDataPath(path);
+  pathStatusError.value = false;
+  pathStatus.value = `Game data folder set to: ${path}`;
+}
+
+async function autoDetectPlayerLogPath() {
+  const path = await resolveDefaultPlayerLogPath(settingsStore.settings.gameDataPath);
+  if (!path) {
+    pathStatusError.value = true;
+    pathStatus.value =
+      "Couldn't auto-detect Player.log. Set the game data folder first, or pick the file manually.";
+    return;
+  }
+  await settingsStore.updateLogFilePath(path);
+  pathStatusError.value = false;
+  pathStatus.value = `Player.log path set to: ${path}`;
+}
+
+// Restore both paths to the platform defaults reported by the backend.
+async function resetPaths() {
+  const gamePath = await resolveDefaultGamePath();
+  // Backend default: explicit on macOS, empty on Windows (derived from game
+  // data folder at read time), empty on unsupported OSes.
+  const logPath = await invoke<string>("get_default_player_log_path_command");
+  localGameDataPath.value = gamePath;
+  await settingsStore.updateGameDataPath(gamePath);
+  await settingsStore.updateLogFilePath(logPath);
+  pathStatusError.value = !gamePath;
+  pathStatus.value = gamePath
+    ? "Paths reset to the platform defaults."
+    : "Paths reset, but this operating system has no known default — set them manually.";
+}
+
+function handleAutoDetectPathsToggle() {
+  settingsStore.updateSettings({ autoDetectPathsOnStartup: autoDetectPathsOnStartup.value });
 }
 
 function handleAutoTailChatToggle() {

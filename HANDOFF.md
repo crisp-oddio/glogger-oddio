@@ -194,3 +194,57 @@ version parity). Found and fixed both via live Experimental runs:
   session alongside this HANDOFF.md (390 lib tests green) — no longer dangling in the working tree.
 - No real (non-exp) release cut this session — next real release via the normal `Release` workflow
   will pick up everything from 0.9.8.
+
+---
+
+# Session 4 — Settings path auto-detect buttons + startup auto-detect (2026-06-19, on v0.9.8)
+
+**Outcome:** Added three path-management buttons and an on-startup auto-detect checkbox to
+**Settings → General → Game Data Directory**. All platform-aware (Windows/macOS/Linux), type-checked,
+`cargo check` clean, and **verified live end-to-end** in the dev build (including a restart test).
+
+## What was added (UI: `src/components/Settings/GeneralSettings.vue`)
+
+Replaced the old single "Use Default Player.log Location" button with:
+
+- **Auto-Detect Game Path** — sets `gameDataPath` to the OS default via the existing backend command
+  `get_default_game_data_path_command`.
+- **Auto-Detect Player.log Path** — calls `get_default_player_log_path_command`; that returns an
+  explicit path on macOS and **empty on Windows** (logs live inside the game folder), so it falls
+  back to `<gameDataPath>/Player.log`. Mixed `\`+`/` separators are cosmetic and work fine on Windows.
+- **Reset Paths** — restores both paths to the raw backend defaults (`logFilePath` ends up empty on
+  Windows, i.e. derived at read time by `get_player_log_path`).
+- **Checkbox "Auto-detect game & Player.log paths on startup"** — persists `autoDetectPathsOnStartup`.
+
+Each button writes an inline status line (green = ok, red = unsupported OS / no default found).
+Unsupported OSes (Linux) get a "set it manually" message instead of a blank path.
+
+## Backend wiring
+
+- **`settings.rs`** — new field `auto_detect_paths_on_startup: bool` (`#[serde(default)]`, default
+  `false`); added to the `Default` impl. The platform path helpers (`get_default_game_data_path`,
+  `get_default_player_log_path`) and their `*_command` Tauri wrappers already existed and are
+  registered in `lib.rs`.
+- **`lib.rs` — new "Step 2b"** runs right after `Settings loaded` and **before** the coordinator
+  starts the log watchers (so refreshed paths take effect that same launch). When the flag is on and
+  the default differs, it overwrites `game_data_path`/`log_file_path` and saves. Logs
+  `Auto-detected paths on startup (enabled in settings)`. NOTE: `startup_log!` carries a trailing
+  semicolon, so its match arms must be wrapped in `{ … }` blocks (bare expression form won't compile).
+- **`settingsStore.ts`** — `autoDetectPathsOnStartup` added to both interfaces, both converters
+  (`to`/`fromBackendSettings`), and `getDefaultSettings()`.
+
+## Placement note (for the user)
+
+Buttons/checkbox live under the **General** tab's existing "Game Data Directory" section (next to the
+path field they act on), **not** the separate "App Settings" tab (which holds Appearance/font/opacity).
+This was a deliberate UX call; mentioned to the user, easy to move if they prefer.
+
+## Verification
+
+1. `npx vue-tsc --noEmit` clean; `cargo check` clean.
+2. Live: set the path field to a bogus value → each button restored/derived the correct path with a
+   status line. Reset Paths restored platform defaults.
+3. **Startup test:** enabled the checkbox, set `game_data_path` to `Z:\wrong\on\purpose`, confirmed it
+   persisted, **restarted the dev build** → log showed `Auto-detected paths on startup`, `settings.json`
+   was corrected back to the real LocalLow path, and Player.log catch-up started normally. (Test wrote
+   to the **dev** profile `%APPDATA%\glogger.Dev\settings.json`, separate from the real install.)
