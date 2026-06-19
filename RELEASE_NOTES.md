@@ -1,10 +1,7 @@
-## What's Changed since v0.9.8-exp
+## What's Changed since v0.9.9
 
 ### Features
-- feat(settings): path auto-detect buttons + startup auto-detect (`69523ff`)
-
-### Fixes
-- fix: parse signed 32-bit item instance IDs; update handoff (`5c49423`)
+- feat(farming): looted-items + gathered columns with per-source drop rates (`824423b`)
 
 ---
-*2 commits since v0.9.8-exp*
+*2 commits since v0.9.9*
