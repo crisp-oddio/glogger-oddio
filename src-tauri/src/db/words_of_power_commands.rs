@@ -1,3 +1,4 @@
+use super::word_of_power_catalog;
 use super::DbPool;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -14,6 +15,38 @@ pub struct WordOfPower {
     pub description: Option<String>,
     pub discovered_at: String,
     pub source: String,
+    /// Looked up from the static catalog (`word_of_power_catalog`); "Unknown"
+    /// for names not yet cataloged (e.g. manual entries with a custom name).
+    pub category: String,
+    /// Looked up from the static catalog; `None` if `power_name` is uncataloged.
+    pub level: Option<u32>,
+}
+
+impl WordOfPower {
+    fn with_catalog_lookup(
+        id: i64,
+        character_name: String,
+        server_name: String,
+        word: String,
+        power_name: String,
+        description: Option<String>,
+        discovered_at: String,
+        source: String,
+    ) -> Self {
+        let (category, level) = word_of_power_catalog::lookup(&power_name);
+        Self {
+            id,
+            character_name,
+            server_name,
+            word,
+            power_name,
+            description,
+            discovered_at,
+            source,
+            category: category.to_string(),
+            level,
+        }
+    }
 }
 
 // ── Input types ─────────────────────────────────────────────────────────────
@@ -45,16 +78,16 @@ pub fn get_words_of_power(
 
     let rows = stmt
         .query_map([&character_name, &server_name], |row| {
-            Ok(WordOfPower {
-                id: row.get(0)?,
-                character_name: row.get(1)?,
-                server_name: row.get(2)?,
-                word: row.get(3)?,
-                power_name: row.get(4)?,
-                description: row.get(5)?,
-                discovered_at: row.get(6)?,
-                source: row.get(7)?,
-            })
+            Ok(WordOfPower::with_catalog_lookup(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
         })
         .map_err(|e| e.to_string())?;
 
@@ -90,16 +123,16 @@ pub fn add_word_of_power(
     .map_err(|e| e.to_string())?;
 
     let id = conn.last_insert_rowid();
-    Ok(WordOfPower {
+    Ok(WordOfPower::with_catalog_lookup(
         id,
         character_name,
         server_name,
-        word: input.word,
-        power_name: input.power_name,
-        description: input.description,
-        discovered_at: now,
-        source: "manual".to_string(),
-    })
+        input.word,
+        input.power_name,
+        input.description,
+        now,
+        "manual".to_string(),
+    ))
 }
 
 #[tauri::command]

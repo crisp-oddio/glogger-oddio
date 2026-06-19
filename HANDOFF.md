@@ -2,6 +2,59 @@
 
 **Date:** 2026-06-19
 **Machine:** Windows 11 (primary dev box)
+**Branch:** `dev`
+**Outcome:** **Words of Power widget** — category/level grouping + CSV export.
+
+---
+
+## Session 5 — Words of Power: wiki-sourced categories + CSV export (2026-06-19)
+
+**Outcome:** Widget now groups discovered words by category → level (instead of one flat list per
+power name), and can export the full word list to CSV (date/time discovered, word, power name,
+category, level). `cargo check`, `cargo test`, and `vue-tsc --noEmit` all clean.
+
+- **New: `src-tauri/src/db/word_of_power_catalog.rs`** — static `(power_name → category, level)`
+  lookup table derived from https://wiki.projectgorgon.com/wiki/Words_of_Power (per the user's
+  direction to use the wiki as source of truth). The wiki organizes scrolls into six tiers (levels
+  0/3/5/7/9/19); several effect names recur across tiers with longer durations at higher tiers
+  (e.g. "Super Jumping"). Since the discovery log line only gives the effect name — not which tier
+  scroll produced it — each name is pinned to the **lowest** tier it appears at (documented in the
+  file's module doc-comment as a deliberate, acknowledged approximation). Unknown names fall back
+  to `category: "Unknown", level: None` rather than failing. Two unit tests cover known/unknown
+  lookups.
+- **`words_of_power_commands.rs`** — `WordOfPower` struct gained `category: String` and
+  `level: Option<u32>`; both `get_words_of_power` and `add_word_of_power` now construct rows via a
+  new `WordOfPower::with_catalog_lookup(...)` helper that calls into the catalog.
+- **`WordsOfPowerWidget.vue`** — regrouped: top-level collapsible **category** sections, each with
+  a **Level N** (or "Level unknown") sub-heading, individual words listed underneath (now showing
+  `power_name` inline since it's no longer the group header). New **Export to CSV** button next to
+  the word list, reusing the existing generic `export_text_file` command + `@tauri-apps/plugin-dialog`
+  `save()` pattern (same approach as `craftingStore.ts`/`gourmandStore.ts`).
+
+### Dropped this session: Gourmand real-time tracking investigation
+
+Explored whether "food eaten" could be detected live from Player.log (currently requires a manual/
+auto import of the in-game `/report gourmand` text file). Findings, in case this gets picked up
+again:
+- `DeleteContext::Consumed` in `player_event_parser.rs` is defined but **never constructed** —
+  there's no existing signal.
+- Found a plausible candidate pattern in a live log window (~21:21–21:24 same-day): an item delete
+  immediately followed by `ProcessAddEffects`, occasionally paired with a Gourmand `ProcessUpdateSkill`
+  XP gain. But the item's instance ID had no prior `ProcessAddItem` in that session (item was already
+  in inventory before tailing started), so it never resolved to a name in `item_transactions`, and the
+  corresponding effect ID wasn't in `game_state_effects` either (whose `effect_name` column is mostly
+  `NULL` anyway — effect-ID→name resolution is incomplete project-wide).
+- Conclusion: no reliable signature is in hand yet. To pin one down, would need either (a) exact
+  food name + wall-clock time from the user to search a narrow window, or (b) tail the live log while
+  the user eats something with a fresh PlayerLog session (so the item has a resolvable AddItem first).
+  **Do not guess at a heuristic from ambiguous data** — risks corrupting the eaten-foods table.
+
+---
+
+# Previous Session
+
+**Date:** 2026-06-19
+**Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (created from `main` @ v0.9.9; both synced to v0.9.9)
 **Outcome:** **Economics → Farming** session overhaul. The active-session item view is now a
 4-column layout — **Skills | Looted Items | Gathered | Activity Log** — where each item is
