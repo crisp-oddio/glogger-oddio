@@ -2,8 +2,90 @@
 
 **Date:** 2026-06-19
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev`
-**Outcome:** **Words of Power widget** — category/level grouping + CSV export.
+**Branch:** `dev` (now at v0.9.10)
+**Outcome:** **Gourmand live tracking** — eaten foods now detected in real time
+from Player.log (committed + pushed). In-progress: an all-in-one live-tailing
+toggle button in the header (uncommitted).
+
+---
+
+## Session 6 — Gourmand live tracking + live-tailing button (2026-06-19)
+
+**Committed/pushed:** Gourmand real-time eaten-food tracking — the open
+investigation from Session 5 is **solved**. **In the working tree
+(uncommitted):** an "all-in-one" live-tailing toggle button.
+
+### ✅ Gourmand live tracking (committed `b635038`, pushed to origin/dev)
+
+The Session 5 blocker ("no reliable signature for food-eaten in Player.log")
+turned out to have a clean answer that needs **no** instance-ID/effect-ID
+resolution at all:
+
+```
+[23:19:03] LocalPlayer: ProcessDoDelayLoop(1.5, Eat, "Using Human-Style Pizza with Tofu", 5845, AbortIfAttacked)
+```
+
+`ProcessDoDelayLoop(1.5, Eat, "Using <Food Name>", …)` fires **exactly once per
+food eaten**, with the food name in **plain text**. The parser already emits
+this as `PlayerEvent::DelayLoopStarted { action_type: "Eat", label, .. }`.
+Confirmed against the user's live log with all 3 foods eaten that day
+(Human-Style Pizza with Tofu, Candied Evu Fruit, Ratkin Survival Cheese).
+
+- **`db/gourmand_commands.rs`** — new `record_food_eaten(conn, food_name)`:
+  `INSERT … ON CONFLICT(food_name) DO UPDATE SET times_eaten = times_eaten + 1`.
+  Leaves `manually_marked` untouched so a manual flag survives a live update.
+- **`coordinator.rs`** — new match arm on the `PlayerEvent` side-channel:
+  `DelayLoopStarted { action_type, label, .. } if action_type == "Eat"` strips
+  the `"Using "` prefix and calls `record_food_eaten`, then emits the existing
+  `gourmand-updated` event. The frontend `gourmandStore` already listens for
+  that event, so the UI refreshes live with **zero frontend changes**.
+- **Coexists with the `/report gourmand` import** (no double-count): report
+  import still does `DELETE WHERE manually_marked = 0` + full resync, which
+  cleanly reconciles any live increments to the authoritative report numbers.
+- `cargo check` clean; all 392 lib tests pass.
+
+### 🚧 All-in-one live-tailing button (UNCOMMITTED in working tree)
+
+Goal: one header button (gold 📡, left of the ⚙ gear) to enable/disable live
+tailing of **all** log files at once, and to bake in the old manual workaround
+("save a fresh file in-game, then refresh the app"). User confirmed **both**
+halves of that workaround were needed.
+
+- **glogger can only automate the "refresh" half** — it reads files; it cannot
+  make Project Gorgon flush fresh data to disk. So the button does the
+  automatable half and shows a toast reminding the user to do the in-game save.
+- **`MenuBar.vue`** — new 📡 button; `isAllTailing` computed (both watchers
+  active); `toggleAllTailing()`: if all on → stop both; else start whichever
+  aren't running → `startPolling()` → `pollWatchers()` (forced catch-up read,
+  the "refresh" half) → `refreshStatus()` → info toast. Wired in `useToast`.
+- **`coordinatorStore.ts`** — new `pollWatchers()` action wrapping the existing
+  backend `poll_watchers` command (already registered in `lib.rs`).
+- `vue-tsc --noEmit` clean. **Not yet verified live** — testing was blocked
+  (see gotcha below). Open question for the user: the reminder toast currently
+  fires on *every* enable; consider gating it to once-per-session or a
+  "don't remind me again" pref if noisy.
+
+### ⚠️ Gotchas discovered this session
+
+- **Two `glogger.exe` installs confuse computer-use.** Start-menu "glogger"
+  resolves to a **portable install** at `a:\portableapps\glogger\glogger.exe`,
+  which is a release version **behind** the dev build. The dev build runs from
+  `src-tauri\target\debug\glogger.exe` (different path) → computer-use masks the
+  dev window because the grant locked onto the portable exe. To drive the dev
+  build via computer-use, close the portable install or grant the
+  `target\debug` exe by exact path/basename. Alternative used here: watch the
+  dev build's stdout log for catch-up/poll lines while the user clicks.
+- `npm run tauri dev` auto-rebuilds on `Cargo.toml` change (picked up the
+  v0.9.10 version bump without a manual restart).
+
+### Repo state at end of session
+
+- `dev` fast-forwarded to **v0.9.10** (origin/main had released it; it was just
+  version-string bumps on work dev already had). `origin/dev` now also at
+  v0.9.10 after the push.
+- `dev` is clean except the **uncommitted button work** (`MenuBar.vue`,
+  `coordinatorStore.ts`) + a harmless `Cargo.toml` CRLF artifact (LF↔CRLF only,
+  no content change — safe to `git checkout --`).
 
 ---
 
