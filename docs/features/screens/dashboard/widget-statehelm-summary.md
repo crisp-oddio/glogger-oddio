@@ -21,8 +21,12 @@ Skill-driven summary of weekly Statehelm gift progress:
   section.
 - **Skill → NPC**: a skill can be trained by multiple Statehelm NPCs; the one with the
   **highest current favor standing** represents it.
-- **Falloff**: once an NPC's 5 weekly gifts are donated it drops off the list, and the
-  next-highest skill of that category takes the slot.
+- **Falloff**: an NPC drops off the list (and the next-highest skill of that category
+  takes the slot) when any of these is true:
+  - its 5 weekly gifts have been donated, or
+  - it is at **Soul Mates** (top favor tier), or
+  - it is at **Like Family** *and* offers no storage — storage NPCs keep scaling past
+    Like Family, so those stay on the list.
 
 Weekly reset is Monday 00:00 UTC. Uses the same `useStatehelmTracker` composable as the
 full Statehelm tab — calls `loadGiftLog()` and `loadSkillMeta()` on mount.

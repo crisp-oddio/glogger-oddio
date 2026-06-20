@@ -4,6 +4,7 @@ import { useGameDataStore } from '../stores/gameDataStore'
 import { useGameStateStore } from '../stores/gameStateStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { tierIndex } from './useFavorTiers'
+import { hasStorage } from './useNpcServices'
 import type { NpcInfo } from '../types/gameData/npcs'
 import type { SkillInfo } from '../types/gameData/skills'
 
@@ -199,13 +200,27 @@ export function useStatehelmTracker() {
       .filter((x): x is string => !!x)
   })
 
-  /** Pick the representative non-maxed NPC for a skill: the one whose category
-   *  matches and that has the highest current favor standing. Returns null when
-   *  every trainer is the wrong category or already maxed (5/5 this week). */
+  /** An NPC drops off the widget regardless of remaining gifts when its favor
+   *  standing makes further gifting pointless:
+   *   - SoulMates (the top tier): always excluded.
+   *   - LikeFamily: excluded unless the NPC offers storage (storage capacity keeps
+   *     scaling with favor past LikeFamily, so those stay worth gifting). */
+  function isExcludedByFavor(status: StatehelmNpcStatus): boolean {
+    const tier = status.favorTier
+    if (tier === 'SoulMates') return true
+    if (tier === 'LikeFamily' && !hasStorage(status.npc)) return true
+    return false
+  }
+
+  /** Pick the representative NPC for a skill: the one whose category matches and
+   *  that has the highest current favor standing, skipping NPCs that are maxed
+   *  (5/5 this week) or excluded by favor standing. Returns null when none remain. */
   function representativeFor(internal: string, wantCombat: boolean): StatehelmNpcStatus | null {
     const candidates = (statusesBySkillInternal.value.get(internal) ?? []).filter((st) => {
       if ((npcIsCombatByKey.value.get(st.npc.key) ?? false) !== wantCombat) return false
-      return st.giftsThisWeek < st.maxGifts
+      if (st.giftsThisWeek >= st.maxGifts) return false
+      if (isExcludedByFavor(st)) return false
+      return true
     })
     if (candidates.length === 0) return null
     candidates.sort((a, b) => {
