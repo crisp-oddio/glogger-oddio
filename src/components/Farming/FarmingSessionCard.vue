@@ -85,7 +85,12 @@
       <div class="flex gap-6 mt-2 flex-wrap">
         <div class="text-center">
           <span class="text-[0.6rem] text-text-muted uppercase tracking-wide">Total XP</span>
-          <span class="text-sm font-bold text-text-primary ml-1">{{ store.totalXpGained.toLocaleString() }}</span>
+          <EntityTooltipWrapper :delay="500" :interactive="true" border-class="border-entity-item/40" class="inline-flex!">
+            <span class="text-sm font-bold text-text-primary ml-1 cursor-help">{{ store.totalXpGained.toLocaleString() }}</span>
+            <template #tooltip>
+              <XpBreakdownChart :skills="store.skillSummary" :total-xp="store.totalXpGained" />
+            </template>
+          </EntityTooltipWrapper>
         </div>
         <div class="text-center">
           <span class="text-[0.6rem] text-text-muted uppercase tracking-wide">Items +</span>
@@ -112,7 +117,7 @@
       </div>
     </div>
 
-    <!-- 4-column layout: Skills | Looted Items | Gathered | Activity Log -->
+    <!-- 4-column layout: Skills | Looted Items | (Skinning/Butchering + Mining/Survey stacked) | Activity Log -->
     <div class="grid grid-cols-[240px_1fr_1fr_280px] gap-3 flex-1 min-h-0">
       <!-- LEFT: Skills Panel -->
       <div class="bg-surface-dark border border-border-default rounded-lg p-3 overflow-y-auto">
@@ -215,31 +220,62 @@
         </div>
       </div>
 
-      <!-- CENTER-RIGHT: Gathered Panel (skinning, butchering, mining, survey) -->
-      <div class="bg-surface-dark border border-border-default rounded-lg p-3 overflow-y-auto">
-        <div class="text-[0.65rem] uppercase tracking-widest text-[#c8a47e] font-bold mb-2">Gathered</div>
-        <EmptyState v-if="store.extractedItems.length === 0" variant="compact" primary="Nothing gathered yet" secondary="Skin, butcher, mine, or survey to track yields by source." />
-        <div class="flex flex-col gap-1">
-          <EntityTooltipWrapper
-            v-for="item in store.extractedItems"
-            :key="item.name"
-            :delay="500"
-            :interactive="true"
-            border-class="border-[#c8a47e]/40"
-            class="w-full!">
-            <div class="flex items-center justify-between px-2 py-1.5 rounded text-xs bg-black/20 border border-border-default hover:border-[#c8a47e]/40 cursor-help w-full">
-              <span class="flex items-center gap-1.5 min-w-0">
-                <span class="text-[#c8a47e] font-medium truncate">{{ displayName(item.name) }}</span>
-                <span class="text-[0.55rem] text-text-dim uppercase shrink-0">{{ item.skill }}</span>
-              </span>
-              <span class="text-text-secondary shrink-0 ml-2">
-                Extracted <span class="text-value-positive font-mono font-bold">{{ item.quantity }}</span>
-              </span>
-            </div>
-            <template #tooltip>
-              <ItemDropBreakdown :item-name="item.name" :total-looted="item.quantity" mode="extract" />
-            </template>
-          </EntityTooltipWrapper>
+      <!-- CENTER-RIGHT: Skinning/Butchering (top) + Mining/Survey (bottom), stacked -->
+      <div class="flex flex-col gap-3 min-h-0">
+        <!-- Skinning & Butchering Panel -->
+        <div class="bg-surface-dark border border-border-default rounded-lg p-3 overflow-y-auto flex-1 min-h-0">
+          <div class="text-[0.65rem] uppercase tracking-widest text-[#c8a47e] font-bold mb-2">Skinning &amp; Butchering</div>
+          <EmptyState v-if="store.extractedItems.length === 0" variant="compact" primary="Nothing extracted yet" secondary="Skin or butcher a corpse to track yields." />
+          <div class="flex flex-col gap-1">
+            <EntityTooltipWrapper
+              v-for="item in store.extractedItems"
+              :key="item.name"
+              :delay="500"
+              :interactive="true"
+              border-class="border-[#c8a47e]/40"
+              class="w-full!">
+              <div class="flex items-center justify-between px-2 py-1.5 rounded text-xs bg-black/20 border border-border-default hover:border-[#c8a47e]/40 cursor-help w-full">
+                <span class="flex items-center gap-1.5 min-w-0">
+                  <span class="text-[#c8a47e] font-medium truncate">{{ displayName(item.name) }}</span>
+                  <span class="text-[0.55rem] text-text-dim uppercase shrink-0">{{ item.skill }}</span>
+                </span>
+                <span class="text-text-secondary shrink-0 ml-2">
+                  Extracted <span class="text-value-positive font-mono font-bold">{{ item.quantity }}</span>
+                </span>
+              </div>
+              <template #tooltip>
+                <ItemDropBreakdown :item-name="item.name" :total-looted="item.quantity" mode="extract" />
+              </template>
+            </EntityTooltipWrapper>
+          </div>
+        </div>
+
+        <!-- Mining & Survey Panel -->
+        <div class="bg-surface-dark border border-border-default rounded-lg p-3 overflow-y-auto flex-1 min-h-0">
+          <div class="text-[0.65rem] uppercase tracking-widest text-[#7ea4c8] font-bold mb-2">Mining &amp; Survey</div>
+          <EmptyState v-if="store.gatheredItems.length === 0" variant="compact" primary="Nothing gathered yet" secondary="Mine a node or use a survey map to track yields by source." />
+          <div class="flex flex-col gap-1">
+            <EntityTooltipWrapper
+              v-for="item in store.gatheredItems"
+              :key="item.name"
+              :delay="500"
+              :interactive="true"
+              border-class="border-[#7ea4c8]/40"
+              class="w-full!">
+              <div class="flex items-center justify-between px-2 py-1.5 rounded text-xs bg-black/20 border border-border-default hover:border-[#7ea4c8]/40 cursor-help w-full">
+                <span class="flex items-center gap-1.5 min-w-0">
+                  <span class="text-[#7ea4c8] font-medium truncate">{{ displayName(item.name) }}</span>
+                  <span class="text-[0.55rem] text-text-dim uppercase shrink-0">{{ item.skill }}</span>
+                </span>
+                <span class="text-text-secondary shrink-0 ml-2">
+                  Gathered <span class="text-value-positive font-mono font-bold">{{ item.quantity }}</span>
+                </span>
+              </div>
+              <template #tooltip>
+                <ItemDropBreakdown :item-name="item.name" :total-looted="item.quantity" mode="gathered" />
+              </template>
+            </EntityTooltipWrapper>
+          </div>
         </div>
       </div>
 
@@ -261,6 +297,7 @@ import NpcInline from "../Shared/NPC/NpcInline.vue";
 import EnemyInline from "../Shared/Enemy/EnemyInline.vue";
 import EntityTooltipWrapper from "../Shared/EntityTooltipWrapper.vue";
 import ItemDropBreakdown from "./ItemDropBreakdown.vue";
+import XpBreakdownChart from "./XpBreakdownChart.vue";
 import FarmingLog from "./FarmingLog.vue";
 
 const store = useFarmingStore();

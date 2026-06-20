@@ -257,6 +257,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 46)?;
     }
 
+    if current_version < 47 {
+        migration_v47_imported_kill_loot_data(conn)?;
+        super::record_migration(conn, 47)?;
+    }
+
     Ok(())
 }
 
@@ -2325,6 +2330,47 @@ fn migration_v44_hoplology_dedup(conn: &Connection) -> Result<()> {
 fn migration_v46_gourmand_manually_marked(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE gourmand_eaten_foods ADD COLUMN manually_marked INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
+/// Migration v47: Imported kill/loot drop-rate data, for the community
+/// database sharing feature. Stored separately from the player's own
+/// `enemy_kills`/`enemy_kill_loot` (ground truth) so "mine" / "imported" /
+/// "combined" views can be computed without ever mutating personal data.
+/// Each import is tagged with a `source_label` (the imported file's name);
+/// re-importing the same label replaces just that source's rows, so repeat
+/// imports of the same file never double-count.
+fn migration_v47_imported_kill_loot_data(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE imported_kill_sources (
+            source_label TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE imported_enemy_kills_agg (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_label TEXT NOT NULL,
+            enemy_name TEXT NOT NULL,
+            total_kills INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (source_label) REFERENCES imported_kill_sources(source_label) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_imported_kills_source ON imported_enemy_kills_agg(source_label);
+        CREATE INDEX idx_imported_kills_enemy ON imported_enemy_kills_agg(enemy_name);
+
+        CREATE TABLE imported_enemy_kill_loot_agg (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_label TEXT NOT NULL,
+            enemy_name TEXT NOT NULL,
+            item_name TEXT NOT NULL,
+            total_quantity INTEGER NOT NULL DEFAULT 0,
+            times_dropped INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (source_label) REFERENCES imported_kill_sources(source_label) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_imported_loot_source ON imported_enemy_kill_loot_agg(source_label);
+        CREATE INDEX idx_imported_loot_enemy ON imported_enemy_kill_loot_agg(enemy_name);
+        CREATE INDEX idx_imported_loot_item ON imported_enemy_kill_loot_agg(item_name);"
     )?;
     Ok(())
 }

@@ -49,6 +49,43 @@ export interface EnemyKillStats {
   loot: EnemyLootStat[]
 }
 
+// === Drop-rate database (search, scope, import/export) ===
+
+export type DatabaseScope = 'mine' | 'imported' | 'combined'
+
+export interface EnemySearchResult {
+  enemy_name: string
+  total_kills: number
+  distinct_loot_items: number
+}
+
+export interface ItemSearchResult {
+  item_name: string
+  total_quantity: number
+  distinct_enemies: number
+}
+
+export interface ItemDropSource {
+  enemy_name: string
+  total_kills: number
+  times_dropped: number
+  total_quantity: number
+  drop_rate: number
+}
+
+export interface ImportSummary {
+  source_label: string
+  enemies_imported: number
+  loot_rows_imported: number
+}
+
+export interface ImportedSource {
+  source_label: string
+  display_name: string
+  imported_at: string
+  enemy_count: number
+}
+
 // One row of the per-item drop breakdown shown in the hover popover.
 export interface ItemDropBreakdownRow {
   enemyName: string
@@ -89,6 +126,10 @@ export interface FarmingSession {
   // Skinning/butchering extracts (not loot-table drops), keyed by enemy_name
   // (corpse), then item_name. Separate category from corpse loot.
   extracts: Record<string, Record<string, FarmingExtractLoot>>
+
+  // Mining/survey gathered yields, keyed by source (node name or survey map),
+  // then item_name. Separate category from both corpse loot and extracts.
+  gathered: Record<string, Record<string, FarmingExtractLoot>>
 
   // Gold earned from vendor sales
   vendorGold: number

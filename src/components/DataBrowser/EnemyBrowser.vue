@@ -286,6 +286,7 @@ async function loadKillStats(enemy: MonsterEntry) {
   try {
     killStats.value = await invoke<EnemyKillStats>("get_enemy_kill_stats", {
       enemyName: enemy.name,
+      scope: "combined",
     });
   } catch (e) {
     console.error("[enemy-browser] Failed to load kill stats:", e);

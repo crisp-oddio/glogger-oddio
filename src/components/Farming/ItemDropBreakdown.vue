@@ -54,7 +54,10 @@
       </div>
 
       <p class="text-[0.55rem] text-text-dim leading-tight pt-0.5">
-        <template v-if="isExtract">
+        <template v-if="props.mode === 'gathered'">
+          Mining/survey yield — not a loot-table drop, so there’s no lifetime drop rate.
+        </template>
+        <template v-else-if="props.mode === 'extract'">
           Skinning/butchering yield — not a loot-table drop, so there’s no lifetime drop rate.
         </template>
         <template v-else>
@@ -77,7 +80,7 @@ const props = withDefaults(
   defineProps<{
     itemName: string;
     totalLooted: number;
-    mode?: "loot" | "extract";
+    mode?: "loot" | "extract" | "gathered";
   }>(),
   { mode: "loot" }
 );
@@ -85,14 +88,21 @@ const props = withDefaults(
 const store = useFarmingStore();
 const rows = ref<ItemDropBreakdownRow[]>([]);
 
-const isExtract = computed(() => props.mode === "extract");
-const verb = computed(() => (isExtract.value ? "Extracted" : "Looted"));
+// "extract" (skinning/butchering) and "gathered" (mining/survey) are both
+// session-only categories with a plain-text source label (no enemy entity,
+// no lifetime DB data) — they render identically, just from different store
+// accessors.
+const isExtract = computed(() => props.mode !== "loot");
+const verb = computed(() => (props.mode === "gathered" ? "Gathered" : props.mode === "extract" ? "Extracted" : "Looted"));
 
 async function build() {
   // Seed rows with this-session data immediately.
-  const sessionRows = isExtract.value
-    ? store.sessionEnemiesForExtract(props.itemName)
-    : store.sessionEnemiesForItem(props.itemName);
+  const sessionRows =
+    props.mode === "gathered"
+      ? store.sessionSourcesForGathered(props.itemName)
+      : props.mode === "extract"
+        ? store.sessionEnemiesForExtract(props.itemName)
+        : store.sessionEnemiesForItem(props.itemName);
   rows.value = sessionRows.map((r) => ({
     ...r,
     allTimeKills: null,
@@ -100,7 +110,7 @@ async function build() {
     lootTableSharePct: null,
   }));
 
-  // Extracts have no loot-table / all-time data — session view only.
+  // Extracts/gathered have no loot-table / all-time data — session view only.
   if (isExtract.value) return;
 
   // Layer all-time figures from the DB onto each enemy row.

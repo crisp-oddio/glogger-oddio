@@ -844,7 +844,7 @@ async function selectItem(item: ItemInfo) {
 
   // Load kill-tracked drop sources
   dropSourcesLoading.value = true;
-  invoke<ItemDropSource[]>("get_item_drop_sources", { itemName: item.name, internalName: item.internal_name })
+  invoke<ItemDropSource[]>("get_item_drop_sources", { itemName: item.name, internalName: item.internal_name, scope: "combined" })
     .then(sources => { dropSources.value = sources; })
     .catch(e => { console.warn("Drop source fetch failed:", e); })
     .finally(() => { dropSourcesLoading.value = false; });
