@@ -956,14 +956,20 @@ impl DataIngestCoordinator {
                                 // chat quantity instead of the fallback 1. The parser needs
                                 // the internal name (player.log uses internal names) so we
                                 // resolve here where we have CDN access.
-                                let internal_name = self
-                                    .game_data
-                                    .try_read()
-                                    .ok()
-                                    .and_then(|gd| {
-                                        gd.resolve_item(item_name)
-                                            .and_then(|info| info.internal_name.clone())
-                                    });
+                                // Resolve both the internal name (for the
+                                // correlation buffer) and the CDN item id (for
+                                // valuation joins on the ledger row) in one
+                                // read borrow.
+                                let (internal_name, item_type_id): (Option<String>, Option<i64>) =
+                                    self.game_data
+                                        .try_read()
+                                        .ok()
+                                        .and_then(|gd| {
+                                            gd.resolve_item(item_name).map(|info| {
+                                                (info.internal_name.clone(), Some(info.id as i64))
+                                            })
+                                        })
+                                        .unwrap_or((None, None));
                                 if let (Some(internal), Some(watcher)) =
                                     (internal_name.clone(), self.player_watcher.as_mut())
                                 {
@@ -1004,27 +1010,57 @@ impl DataIngestCoordinator {
                                 }
 
                                 // Record in transaction ledger.
-                                // Chat-status-sourced rows do not carry
+                                //
+                                // Chat-status rows normally carry no
                                 // ItemProvenance — the correlated player.log
-                                // event (inserted separately) is the
-                                // provenance-bearing row. Leaving source_kind
-                                // NULL on these chat rows avoids double-counting
-                                // any future per-source aggregates.
-                                if let Ok(conn) = self.db_pool.get() {
-                                    if let (Some(character), Some(server)) = (
-                                        self.game_state.get_active_character(),
-                                        self.game_state.get_active_server(),
-                                    ) {
+                                // event is the provenance-bearing row. The one
+                                // exception is *survey* loot: when a survey
+                                // session is active we attribute this gain to
+                                // the most-recent survey use and tag the row
+                                // with `source_kind = 'survey_chat'` +
+                                // `survey_use_id`. This is the chat-authoritative
+                                // loot path the session summary reads (Player.log
+                                // survey attribution can be absent — see
+                                // SurveySessionAggregator::attribute_chat_gain).
+                                if let (Some(character), Some(server)) = (
+                                    self.game_state.get_active_character().map(String::from),
+                                    self.game_state.get_active_server().map(String::from),
+                                ) {
+                                    if let Ok(conn) = self.db_pool.get() {
+                                        // Only "loot" gains belong to a survey;
+                                        // summoned items never do.
+                                        let survey_use_id = if context == "loot" {
+                                            self.survey_aggregator.attribute_chat_gain(
+                                                &conn, &character, &server, *quantity, timestamp,
+                                            )
+                                        } else {
+                                            None
+                                        };
+                                        let (source_kind, source_details): (Option<&str>, Option<String>) =
+                                            match survey_use_id {
+                                                Some(id) => (
+                                                    Some("survey_chat"),
+                                                    Some(format!("{{\"survey_use_id\":{id}}}")),
+                                                ),
+                                                None => (None, None),
+                                            };
                                         conn.execute(
-                                            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source)
-                                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'chat_status')",
+                                            "INSERT INTO item_transactions
+                                                (timestamp, character_name, server_name, item_name,
+                                                 internal_name, item_type_id, quantity, context,
+                                                 source, source_kind, source_details)
+                                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'chat_status', ?9, ?10)",
                                             rusqlite::params![
                                                 timestamp,
                                                 character,
                                                 server,
                                                 item_name,
+                                                internal_name,
+                                                item_type_id,
                                                 *quantity as i32,
                                                 context,
+                                                source_kind,
+                                                source_details,
                                             ],
                                         )
                                         .ok();

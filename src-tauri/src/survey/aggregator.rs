@@ -243,6 +243,46 @@ impl SurveySessionAggregator {
         Ok(Some(s.id))
     }
 
+    /// Attribute a Chat.log `[Status]` "added to inventory" loot gain to the
+    /// active survey session, independent of the Player.log pipeline.
+    ///
+    /// This is the **chat-authoritative** loot path. Project Gorgon always
+    /// writes survey loot to the Status chat channel, but only writes the
+    /// detailed `ProcessAddItem` lines to Player.log under certain logging
+    /// conditions — so the Player.log attribution in `process_event` can come
+    /// up empty even while surveying is clearly producing loot (this is what
+    /// Kaeus' GorgonSurveyTracker reads, and why its summary works where ours
+    /// did not).
+    ///
+    /// Chat lines carry no node/map identity, so the gain is attributed to the
+    /// most-recently-consumed survey use in the active session (the map the
+    /// player is currently working). Returns the `survey_use_id` the caller
+    /// should stamp into the chat row's `source_details` (so the loot summary
+    /// query can join it), or `None` when there is no active session / no use
+    /// to attach to.
+    ///
+    /// `timestamp` is the UTC `YYYY-MM-DD HH:MM:SS` timestamp of the chat line.
+    pub fn attribute_chat_gain(
+        &mut self,
+        conn: &Connection,
+        character: &str,
+        server: &str,
+        quantity: u32,
+        timestamp: &str,
+    ) -> Option<i64> {
+        let session_id = self.fetch_active_session(conn, character, server)?;
+        let use_id = persistence::latest_use_id_for_session(conn, session_id)
+            .ok()
+            .flatten()?;
+
+        if let Err(e) = persistence::add_loot_qty(conn, use_id, quantity) {
+            eprintln!("[survey-aggregator] chat add_loot_qty failed: {e}");
+            return None;
+        }
+        update_session_loot_timestamps(conn, use_id, timestamp);
+        Some(use_id)
+    }
+
     // ============================================================
     // Event ingestion
     // ============================================================
@@ -1334,6 +1374,62 @@ mod tests {
         assert_eq!(uses[0].area.as_deref(), Some("Serbule"));
         assert_eq!(uses[0].status, SurveyUseStatus::PendingLoot);
         assert_eq!(uses[0].map_display_name, "Serbule Blue Mineral Survey");
+    }
+
+    #[test]
+    fn test_attribute_chat_gain_links_to_latest_use() {
+        // Consume a survey map (creates session + use), then a chat [Status]
+        // gain should attribute to that use and bump its loot_qty.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+
+        let mut delete_event = PlayerEvent::ItemDeleted {
+            timestamp: "12:00:00".to_string(),
+            instance_id: 1,
+            item_name: Some("GeologySurveySerbule1".to_string()),
+            context: crate::player_event_parser::DeleteContext::Consumed,
+        };
+        agg.process_event(&mut delete_event, &conn, "Zenith", "Dreva", Some("Serbule"));
+
+        let session = persistence::active_session(&conn, "Zenith", "Dreva")
+            .unwrap()
+            .unwrap();
+        let use_id = persistence::uses_for_session(&conn, session.id).unwrap()[0].id;
+
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", 9, "2026-04-15 12:00:01");
+        assert_eq!(attributed, Some(use_id));
+
+        let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(su.loot_qty, 9, "chat gain should bump loot_qty");
+
+        // A second gain accumulates.
+        agg.attribute_chat_gain(&conn, "Zenith", "Dreva", 3, "2026-04-15 12:00:02");
+        let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(su.loot_qty, 12);
+    }
+
+    #[test]
+    fn test_attribute_chat_gain_no_session_returns_none() {
+        // With no active session there is nothing to attribute loot to.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", 5, "2026-04-15 12:00:00");
+        assert_eq!(attributed, None);
+    }
+
+    #[test]
+    fn test_attribute_chat_gain_session_without_use_returns_none() {
+        // A manually-started session with no survey use yet has no use to
+        // attach loot to — incidental loot before the first map is ignored.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.start_manual_session(&conn, "Zenith", "Dreva", "2026-04-15 12:00:00")
+            .unwrap();
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", 5, "2026-04-15 12:00:01");
+        assert_eq!(attributed, None);
     }
 
     #[test]
