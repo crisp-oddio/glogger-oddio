@@ -823,6 +823,29 @@ impl DataIngestCoordinator {
                                 }
                             }
                         }
+                        // "ProcessDoDelayLoop(1.5, Eat, "Using <Food Name>", ...)" fires
+                        // exactly once per food eaten, with the food name in plain text —
+                        // no instance-ID/effect-ID resolution needed.
+                        PlayerEvent::DelayLoopStarted {
+                            action_type, label, ..
+                        } if action_type == "Eat" => {
+                            if let Some(food_name) = label.strip_prefix("Using ") {
+                                if let Ok(conn) = self.db_pool.get() {
+                                    match crate::db::gourmand_commands::record_food_eaten(
+                                        &conn, food_name,
+                                    ) {
+                                        Ok(()) => {
+                                            self.app_handle.emit("gourmand-updated", 1).ok();
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[coordinator] Failed to record eaten food: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
 
