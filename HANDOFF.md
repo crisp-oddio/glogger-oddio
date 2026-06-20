@@ -1,12 +1,34 @@
 # glogger — Session Handoff
 
-**Date:** 2026-06-19
+**Date:** 2026-06-20
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` (`34160f8`); `main` at `5cab469` (merge of dev), version strings v0.9.13
-**Outcome:** **Survey loot summary now populates** — sourced from the Chat.log
-`[Status]` stream (chat-authoritative) instead of the unreliable Player.log
-attribution path. Verified live by the user ("it's working finally"); committed on
-`dev` and merged to `main`.
+**Branch:** `dev` == `main` (both at `151f14b`, version strings v0.9.13)
+**Outcome:** **Statehelm gifting widget polish** — high-favor NPCs now drop off the
+gifting list. Frontend-only follow-up to Session 8's skill-driven rework. Committed
+on `dev` and synced to `main` (absorbed a `release: v0.9.13` bump from main via merge).
+
+---
+
+## Session 10 — Statehelm widget: drop high-favor NPCs (2026-06-20)
+
+**Outcome:** Small follow-up to the Session-8 Statehelm Gifting widget. NPCs now fall
+off the widget based on **favor standing** (not just weekly gifts), so you stop seeing
+NPCs that no longer benefit from gifting. `vue-tsc` clean; trusted in by the user
+without a live re-test (small, localized change).
+
+- **`useStatehelmTracker.ts`** — new `isExcludedByFavor(status)`, applied inside
+  `representativeFor()` next to the maxed-gift filter (so an excluded NPC falls off and
+  the next-highest skill of that category backfills the slot):
+  - **Soul Mates** (top tier) → always excluded.
+  - **Like Family** → excluded **unless** the NPC offers storage (storage capacity keeps
+    scaling past Like Family, so storage NPCs stay worth gifting). Uses the existing
+    `hasStorage()` from `useNpcServices`.
+  - Tiers below Like Family are unaffected.
+- **`docs/.../widget-statehelm-summary.md`** — falloff section documents the new rules.
+- Commit `ffb6344`. Pushing `dev:main` hit the usual release-bump divergence (main had
+  `release: v0.9.13` + PR-merge commits dev lacked); resolved per the standing gotcha —
+  `git merge origin/main` into `dev` (clean, version strings only), then push. Both
+  branches now at `151f14b`.
 
 ---
 
