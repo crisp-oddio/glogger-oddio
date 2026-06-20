@@ -63,6 +63,13 @@
           <kbd class="text-[0.55rem] text-text-muted bg-surface-elevated border border-border-default rounded px-1 py-0.5 leading-none">Ctrl+F</kbd>
         </button>
         <button
+          class="px-3 py-1.5 bg-transparent border-none cursor-pointer text-xl rounded transition-all leading-none hover:bg-surface-elevated"
+          :class="isAllTailing ? 'text-accent-gold hover:text-accent-gold-bright' : 'text-text-secondary hover:text-text-primary'"
+          @click="toggleAllTailing"
+          :title="allTailingTooltip">
+          📡
+        </button>
+        <button
           class="px-3 py-1.5 bg-transparent border-none text-text-secondary cursor-pointer text-xl rounded transition-all leading-none hover:bg-surface-elevated hover:text-text-primary"
           :class="{ 'bg-surface-elevated! text-accent-gold!': currentView === 'settings' }"
           @click="emit('navigate', 'settings')"
@@ -111,11 +118,13 @@ import { useUpdateStore } from "../stores/updateStore";
 import { useKeyboard } from "../composables/useKeyboard";
 import { useDevPanel } from "../composables/useDevPanel";
 import { useViewPrefs } from "../composables/useViewPrefs";
+import { useToast } from "../composables/useToast";
 import CharacterPicker from "./CharacterPicker.vue";
 
 const settingsStore = useSettingsStore();
 const updateStore = useUpdateStore();
 const { openDevPanel } = useDevPanel();
+const toast = useToast();
 
 export type AppView = "dashboard" | "character" | "inventory" | "crafting" | "economics" | "chat" | "data-browser" | "search" | "settings";
 
@@ -201,6 +210,45 @@ async function toggleChatLog() {
   } else {
     await coordinatorStore.startChatTailing();
   }
+}
+
+// Master toggle: enable/disable live tailing of all available log files at once.
+const isAllTailing = computed(() => isPlayerLogTailing.value && isChatLogTailing.value);
+const allTailingTooltip = computed(() =>
+  isAllTailing.value
+    ? "Live tailing: on (click to stop all log tailing)"
+    : "Live tailing: off (click to tail all log files)"
+);
+
+async function toggleAllTailing() {
+  if (isAllTailing.value) {
+    // All on → stop everything that's running.
+    if (isPlayerLogTailing.value) await coordinatorStore.stopPlayerTailing();
+    if (isChatLogTailing.value) await coordinatorStore.stopChatTailing();
+    return;
+  }
+
+  // Some/none on → start whatever isn't running, then do the "refresh" half of
+  // the old manual workaround automatically: ensure background polling is live
+  // and force an immediate catch-up read so on-disk content lands without an
+  // app restart.
+  try {
+    if (!isPlayerLogTailing.value) await coordinatorStore.startPlayerTailing();
+    if (!isChatLogTailing.value) await coordinatorStore.startChatTailing();
+    await coordinatorStore.startPolling();
+    await coordinatorStore.pollWatchers();
+    await coordinatorStore.refreshStatus();
+  } catch (e) {
+    toast.error(`Couldn't start live tailing: ${e}`);
+    return;
+  }
+
+  // The in-game half can't be automated — glogger only reads the log files and
+  // can't make Project Gorgon flush fresh data. Remind the user to do that step
+  // so the newest events actually reach disk.
+  toast.info(
+    "Live tailing on. For the freshest data, save a fresh log in-game (it can't be done from here) — new lines are picked up automatically."
+  );
 }
 
 const navItems: { view: AppView; label: string }[] = [

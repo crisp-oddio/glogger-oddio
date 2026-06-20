@@ -104,6 +104,20 @@ export const useCoordinatorStore = defineStore('coordinator', () => {
   }
 
   /**
+   * Force a one-shot catch-up poll of all active watchers. Drains everything
+   * on disk from each watcher's saved position to end-of-file immediately,
+   * instead of waiting for the next background poll cycle (or an app restart).
+   */
+  async function pollWatchers(): Promise<void> {
+    try {
+      await invoke('poll_watchers')
+    } catch (e) {
+      console.error('Failed to poll watchers:', e)
+      throw e
+    }
+  }
+
+  /**
    * Refresh coordinator status from backend
    */
   async function refreshStatus(): Promise<void> {
@@ -165,6 +179,7 @@ export const useCoordinatorStore = defineStore('coordinator', () => {
     refreshStatus,
     startPolling,
     stopPolling,
+    pollWatchers,
     resetMessageCount,
   }
 })
