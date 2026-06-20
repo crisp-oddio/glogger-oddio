@@ -1,8 +1,7 @@
-## What's Changed since v0.9.13
+## What's Changed since v0.9.14
 
 ### Features
-- feat(dashboard): drop high-favor Statehelm NPCs from gifting widget (`ffb6344`)
-- feat(survey): chat-authoritative loot summary from [Status] log (`34160f8`)
+- feat(farming): split gathered boxes, Active/History parity, drop-rate Database tab (`39c22f6`)
 
 ---
-*7 commits since v0.9.13*
+*2 commits since v0.9.14*
