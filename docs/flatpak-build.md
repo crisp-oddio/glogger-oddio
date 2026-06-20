@@ -108,6 +108,21 @@ If the window is ever blank on a GPU where compositing misbehaves, launching wit
 forces a software path and clears the GBM/DRM errors. The app itself renders fine
 without these once fix #3 is in place.
 
+### NVIDIA DMABUF crash on the native builds (AppImage / .deb)
+
+Inside the Flatpak sandbox the GBM/DRM errors above are merely noise. On the
+**native** AppImage and `.deb` builds, however, the same WebKitGTK DMABUF
+renderer hard-aborts the process with `SIGABRT` on the proprietary NVIDIA
+driver — the window never appears (exit code 134).
+
+The fix lives in the binary itself: `apply_nvidia_webkit_workaround()` in
+[`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs) sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup when an NVIDIA driver is detected
+(`/sys/module/nvidia`, `/dev/nvidiactl`, or `/proc/driver/nvidia`), unless the
+user already set the variable. AMD/Intel machines are untouched and keep
+hardware-accelerated DMABUF. This runs in every Linux package, so the Flatpak
+picks it up too (the NVIDIA device nodes are visible via `--device=dri`).
+
 ## Verified
 
 Built and ran successfully as a Flatpak on Debian 13 (x11, NVIDIA 550):

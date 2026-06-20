@@ -342,8 +342,47 @@ fn seed_experimental_data(app_data_dir: &std::path::Path, current_version: &Opti
     }
 }
 
+/// Work around a WebKitGTK + proprietary NVIDIA driver crash.
+///
+/// On Linux with the closed-source NVIDIA driver, WebKitGTK's DMABUF renderer
+/// fails to allocate GBM buffers (`KMS: DRM_IOCTL_MODE_CREATE_DUMB failed:
+/// Permission denied` / `Failed to create GBM buffer`) and aborts the whole
+/// process with SIGABRT before a window ever appears. This kills the native
+/// AppImage and `.deb` builds on NVIDIA machines.
+///
+/// Disabling the DMABUF renderer makes the webview fall back to a working
+/// buffer-sharing path. We only do this when the NVIDIA kernel module is
+/// loaded so that AMD/Intel users keep hardware-accelerated DMABUF, and we
+/// never override a value the user set explicitly.
+#[cfg(target_os = "linux")]
+fn apply_nvidia_webkit_workaround() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return;
+    }
+    // These paths exist only when the proprietary nvidia driver is loaded (the
+    // open-source nouveau driver does not hit this crash). We check several so
+    // detection works both for the native build and inside the Flatpak sandbox:
+    //   - /sys/module/nvidia is visible on the host (AppImage/.deb)
+    //   - /dev/nvidiactl and /proc/driver/nvidia are exposed into the sandbox
+    //     via the manifest's `--device=dri`, where /sys/module is hidden.
+    let nvidia_present = [
+        "/sys/module/nvidia",
+        "/dev/nvidiactl",
+        "/proc/driver/nvidia",
+    ]
+    .iter()
+    .any(|p| std::path::Path::new(p).exists());
+
+    if nvidia_present {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    apply_nvidia_webkit_workaround();
+
     let game_data_state: GameDataState = Arc::new(RwLock::new(game_data::GameData::empty()));
 
     tauri::Builder::default()
