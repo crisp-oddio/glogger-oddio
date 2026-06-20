@@ -2,10 +2,74 @@
 
 **Date:** 2026-06-19
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` (== `main` at `99661ab`, version strings v0.9.12)
-**Outcome:** **Statehelm Gifting widget reworked** to be skill-driven, plus two
-gift-tracking bug fixes (sewer NPCs excluded; bulk-gift counting). Verified live in
-the dev build; committed on `dev` and pushed to `main`.
+**Branch:** `dev` (`34160f8`); `main` at `5cab469` (merge of dev), version strings v0.9.13
+**Outcome:** **Survey loot summary now populates** — sourced from the Chat.log
+`[Status]` stream (chat-authoritative) instead of the unreliable Player.log
+attribution path. Verified live by the user ("it's working finally"); committed on
+`dev` and merged to `main`.
+
+---
+
+## Session 9 — Survey loot summary from Chat.log `[Status]` (2026-06-19)
+
+**Outcome:** The Economics → Surveying **session loot summary was always empty**
+for the user; now it populates live and matches Kaeus' GorgonSurveyTracker ("GST")
+summary. Root-caused, fixed, full `cargo test` green (399 + 5 new), **verified live**.
+
+### 🔎 Root cause
+
+`loot_summary_for_session` ([survey/commands.rs](src-tauri/src/survey/commands.rs))
+only counts `item_transactions` rows linked via `source_details->>'survey_use_id'`,
+and that link was injected **only** on the Player.log path
+(`survey::aggregator::process_event`, driven by `ProcessAddItem`/mining context).
+PG's verbose Player.log item logging wasn't reaching the user, so the summary stayed
+empty even while loot flowed. **Kaeus' GST reads the always-present Chat.log
+`[Status]` "added to inventory" lines** — which glogger already parsed and wrote to
+`item_transactions` (`source='chat_status'`) but **never linked to the session**
+(NULL `source_details`/`item_type_id`). Note: **"GST" == Kaeus' GorgonSurveyTracker
+exe**, downloaded/launched by `gst_manager.rs` — not an in-house tracker.
+
+### ✅ The fix (chat-authoritative, native — committed `34160f8`)
+
+- **[survey/persistence.rs](src-tauri/src/survey/persistence.rs)** —
+  `latest_use_id_for_session`: most-recent use to attach chat loot to.
+- **[survey/aggregator.rs](src-tauri/src/survey/aggregator.rs)** —
+  `attribute_chat_gain`: attributes a `[Status]` loot gain to the active session's
+  latest survey use, bumps `loot_qty` + loot timestamps, returns the `survey_use_id`.
+  (Chat lines carry no node/map id → attribution is at the **use** level, fine for
+  the sequential use→collect→use workflow.) +3 unit tests.
+- **[coordinator.rs](src-tauri/src/coordinator.rs)** — the chat `ItemGained` handler
+  now always populates `internal_name`/`item_type_id` (needed for valuation), calls
+  `attribute_chat_gain` for `loot`-context gains, and tags the row
+  `source_kind='survey_chat'` + `source_details` `{survey_use_id}`.
+- **[survey/commands.rs](src-tauri/src/survey/commands.rs)** —
+  `loot_summary_for_session` is **chat-authoritative**: per use, count `survey_chat`
+  rows when present; **else fall back to Player.log rows** (`NOT EXISTS` guard) so
+  historical/pre-existing sessions still render and no gain is double-counted. +2
+  tests. Analytics zone/type totals come from the denormalized `loot_qty` (which the
+  chat path bumps), so they populate for free — **no analytics query changes needed.**
+
+### ⚠️ Caveats / known limits
+
+- **Speed-bonus is lost on the chat path** — `[Status]` lines have no "(speed bonus!)"
+  marker, so chat-attributed loot has `bonus_qty = 0`. The speed-bonus **analytics**
+  (zone/type bonus CTEs) remain Player.log-only; they'll show 0 for chat-only users.
+- A hypothetical user whose **Player.log attribution also works** would see
+  `loot_qty` (denorm) double-bumped, but the user-visible loot **table** is
+  de-duplicated by the `survey_chat`-wins `NOT EXISTS` guard. Real users are
+  chat-only (the whole reason for this work), so no double-count in practice.
+- The harmless `Cargo.toml` LF↔CRLF artifact reappeared (dev server re-touches it);
+  **left uncommitted** — `git checkout -- src-tauri/Cargo.toml` to clear.
+
+### Repo state at end of session
+
+- `dev` @ **`34160f8`**, pushed. `main` @ **`5cab469`** (merge of dev onto the
+  v0.9.13 release commit), pushed. Version strings unchanged at **v0.9.13** (feature
+  merge, not a release). Working tree clean (modulo the Cargo.toml EOL artifact).
+- Memory written: `memory/project_survey_chat_loot.md`.
+- `npm run survey-test` (accuracy replay) **couldn't run locally** — it needs
+  `docs/samples/CDN-full-examples/items.json`, absent in this checkout (panics before
+  replaying; unrelated to this change).
 
 ---
 
