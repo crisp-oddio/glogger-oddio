@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col gap-4">
+  <div class="flex flex-col gap-4 h-full overflow-y-auto">
     <div v-if="loading" class="space-y-3">
       <div class="flex gap-6">
         <SkeletonLoader v-for="i in 4" :key="i" variant="rect" width="w-20" height="h-12" />
@@ -46,9 +46,19 @@
               <span class="text-xs text-text-muted">{{ formatDuration(session.elapsed_seconds) }}</span>
             </div>
             <div class="flex items-center gap-4 text-xs">
-              <span v-if="sessionTotalXp(session) > 0" class="text-[#7ec87e]">
-                +{{ sessionTotalXp(session).toLocaleString() }} XP
-              </span>
+              <EntityTooltipWrapper
+                v-if="sessionTotalXp(session) > 0"
+                :delay="500"
+                :interactive="true"
+                border-class="border-entity-item/40"
+                @click.stop>
+                <span class="text-[#7ec87e] cursor-help">
+                  +{{ sessionTotalXp(session).toLocaleString() }} XP
+                </span>
+                <template #tooltip>
+                  <XpBreakdownChart :skills="xpSkillsFor(session)" :total-xp="sessionTotalXp(session)" />
+                </template>
+              </EntityTooltipWrapper>
               <span v-if="sessionTotalXp(session) > 0" class="text-text-dim">
                 {{ xpPerHour(session).toLocaleString() }}/hr
               </span>
@@ -85,76 +95,65 @@
               </div>
             </div>
 
-            <!-- Skills -->
-            <div v-if="session.skills.length > 0" class="mb-3">
-              <div class="text-[0.6rem] uppercase tracking-widest text-entity-item mb-1 font-bold">Skills</div>
-              <div class="flex gap-2 flex-wrap">
-                <div
-                  v-for="skill in session.skills"
-                  :key="skill.skill_name"
-                  class="flex items-center gap-2 px-3 py-1.5 rounded text-xs bg-[#1a2e1a] border border-[#3a5a3a]">
-                  <SkillInline :reference="skill.skill_name" />
-                  <span class="text-[#7ec87e] font-bold">+{{ skill.xp_gained.toLocaleString() }}</span>
-                  <span class="text-text-dim text-[0.6rem]">{{ skillXpPerHour(skill.xp_gained, session.elapsed_seconds).toLocaleString() }}/hr</span>
-                  <span v-if="skill.levels_gained > 0" class="text-[#c8b47e] font-bold">(+{{ skill.levels_gained }} lvl)</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Items -->
-            <div v-if="session.items.length > 0" class="mb-3">
-              <div class="text-[0.6rem] uppercase tracking-widest text-text-dim mb-1 font-bold">Items</div>
-              <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-1">
-                <div
-                  v-for="item in session.items"
-                  :key="item.item_name"
-                  class="flex items-center justify-between px-2 py-1 rounded text-xs bg-black/20 border border-border-default">
-                  <ItemInline :reference="item.item_name" />
-                  <div class="flex items-center gap-2">
-                    <span
-                      :class="[
-                        'font-mono font-bold',
-                        item.net_quantity > 0 ? 'text-[#7ec87e]' : 'text-[#c87e7e]'
-                      ]">
-                      {{ item.net_quantity > 0 ? '+' : '' }}{{ item.net_quantity }}
-                    </span>
-                    <span class="text-text-dim text-[0.6rem]">{{ itemPerHour(item.net_quantity, session.elapsed_seconds) }}/hr</span>
+            <!-- Items | Favor | Kills — boxed + independently scrollable, matching the Active Session layout -->
+            <div class="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3 mb-3">
+              <!-- Items -->
+              <div v-if="session.items.length > 0" class="bg-surface-dark border border-border-default rounded-lg p-3 max-h-56 overflow-y-auto">
+                <div class="text-[0.6rem] uppercase tracking-widest text-text-dim mb-1.5 font-bold">Items</div>
+                <div class="flex flex-col gap-1">
+                  <div
+                    v-for="item in session.items"
+                    :key="item.item_name"
+                    class="flex items-center justify-between px-2 py-1 rounded text-xs bg-black/20 border border-border-default">
+                    <ItemInline :reference="item.item_name" />
+                    <div class="flex items-center gap-2">
+                      <span
+                        :class="[
+                          'font-mono font-bold',
+                          item.net_quantity > 0 ? 'text-[#7ec87e]' : 'text-[#c87e7e]'
+                        ]">
+                        {{ item.net_quantity > 0 ? '+' : '' }}{{ item.net_quantity }}
+                      </span>
+                      <span class="text-text-dim text-[0.6rem]">{{ itemPerHour(item.net_quantity, session.elapsed_seconds) }}/hr</span>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <!-- Favors -->
-            <div v-if="session.favors.length > 0" class="mb-3">
-              <div class="text-[0.6rem] uppercase tracking-widest text-text-dim mb-1 font-bold">Favor</div>
-              <div class="flex gap-2 flex-wrap">
-                <div
-                  v-for="fav in session.favors"
-                  :key="fav.npc_name"
-                  class="px-3 py-1.5 rounded text-xs bg-black/20 border border-border-default">
-                  <NpcInline :reference="fav.npc_name" />
-                  <span
-                    :class="[
-                      'font-mono font-bold ml-1',
-                      fav.delta > 0 ? 'text-[#c8b47e]' : 'text-[#c87e7e]'
-                    ]">
-                    {{ fav.delta > 0 ? '+' : '' }}{{ fav.delta.toFixed(1) }}
-                  </span>
+              <!-- Favors -->
+              <div v-if="session.favors.length > 0" class="bg-surface-dark border border-border-default rounded-lg p-3 max-h-56 overflow-y-auto">
+                <div class="text-[0.6rem] uppercase tracking-widest text-text-dim mb-1.5 font-bold">Favor</div>
+                <div class="flex flex-col gap-1">
+                  <div
+                    v-for="fav in session.favors"
+                    :key="fav.npc_name"
+                    class="flex items-center justify-between px-2 py-1 rounded text-xs bg-black/20 border border-border-default">
+                    <NpcInline :reference="fav.npc_name" />
+                    <span
+                      :class="[
+                        'font-mono font-bold',
+                        fav.delta > 0 ? 'text-[#c8b47e]' : 'text-[#c87e7e]'
+                      ]">
+                      {{ fav.delta > 0 ? '+' : '' }}{{ fav.delta.toFixed(1) }}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <!-- Kills -->
-            <div v-if="session.kills && session.kills.length > 0" class="mb-3">
-              <div class="text-[0.6rem] uppercase tracking-widest text-[#e87e7e] mb-1 font-bold">Kills</div>
-              <div class="flex gap-2 flex-wrap">
-                <div
-                  v-for="kill in session.kills"
-                  :key="kill.enemy_name"
-                  class="flex items-center gap-2 px-3 py-1.5 rounded text-xs bg-black/20 border border-border-default">
-                  <EnemyInline :reference="kill.enemy_name" />
-                  <span class="text-[#e87e7e] font-bold">x{{ kill.kill_count }}</span>
-                  <span class="text-text-dim text-[0.6rem]">{{ killsPerHour(kill.kill_count, session.elapsed_seconds) }}/hr</span>
+              <!-- Kills -->
+              <div v-if="session.kills && session.kills.length > 0" class="bg-surface-dark border border-border-default rounded-lg p-3 max-h-56 overflow-y-auto">
+                <div class="text-[0.6rem] uppercase tracking-widest text-[#e87e7e] mb-1.5 font-bold">Kills</div>
+                <div class="flex flex-col gap-1">
+                  <div
+                    v-for="kill in session.kills"
+                    :key="kill.enemy_name"
+                    class="flex items-center justify-between px-2 py-1 rounded text-xs bg-black/20 border border-border-default">
+                    <EnemyInline :reference="kill.enemy_name" />
+                    <div class="flex items-center gap-2">
+                      <span class="text-[#e87e7e] font-mono font-bold">x{{ kill.kill_count }}</span>
+                      <span class="text-text-dim text-[0.6rem]">{{ killsPerHour(kill.kill_count, session.elapsed_seconds) }}/hr</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -182,9 +181,10 @@ import EmptyState from "../Shared/EmptyState.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 import { formatDateTimeShort, formatDuration } from "../../composables/useTimestamp";
-import SkillInline from "../Shared/Skill/SkillInline.vue";
 import NpcInline from "../Shared/NPC/NpcInline.vue";
 import EnemyInline from "../Shared/Enemy/EnemyInline.vue";
+import EntityTooltipWrapper from "../Shared/EntityTooltipWrapper.vue";
+import XpBreakdownChart from "./XpBreakdownChart.vue";
 
 const sessions = ref<HistoricalFarmingSession[]>([]);
 const loading = ref(false);
@@ -252,9 +252,14 @@ function xpPerHour(session: HistoricalFarmingSession): number {
   return Math.round(sessionTotalXp(session) / hours);
 }
 
-function skillXpPerHour(xpGained: number, elapsedSeconds: number): number {
-  const hours = Math.max(1, elapsedSeconds) / 3600;
-  return Math.round(xpGained / hours);
+function xpSkillsFor(session: HistoricalFarmingSession) {
+  const hours = Math.max(1, session.elapsed_seconds) / 3600;
+  return session.skills.map((s) => ({
+    name: s.skill_name,
+    gained: s.xp_gained,
+    perHour: Math.round(s.xp_gained / hours),
+    levelsGained: s.levels_gained,
+  }));
 }
 
 function itemPerHour(netQuantity: number, elapsedSeconds: number): number {

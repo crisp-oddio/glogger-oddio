@@ -2,10 +2,129 @@
 
 **Date:** 2026-06-20
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` == `main` (both at `151f14b`, version strings v0.9.13)
-**Outcome:** **Statehelm gifting widget polish** — high-favor NPCs now drop off the
-gifting list. Frontend-only follow-up to Session 8's skill-driven rework. Committed
-on `dev` and synced to `main` (absorbed a `release: v0.9.13` bump from main via merge).
+**Branch:** `dev` (version string v0.9.13)
+**Outcome:** **Farming UI layout/parity pass + Database tab (community drop-rate sharing).**
+Gathered yields split into separate Skinning/Butchering and Mining/Survey boxes (stacked,
+independently scrollable). Active/History views unified — per-skill XP is now a hover
+popup with a bar chart in both, matching the existing item hover pattern. Fixed a real
+cropping bug: `HistoricalTab` had no scroll container of its own under `PaneLayout`'s
+`overflow-hidden` content slot. New third **Database** tab: searchable monster/item
+lookup with My Data / Imported / Combined scope, plus JSON export/import of lifetime
+drop-rate data (tagged by source so re-imports never double-count). Backend (migration
+v47, new commands), frontend type-check, and `cargo check` all clean; verified live.
+
+---
+
+## Session 11 — Farming layout split, History/Active parity, Database tab (2026-06-20)
+
+**Outcome:** See banner above. Four-part frontend+backend feature, built off Session 10's
+farming work (Looted Items / Skinning & Butchering / Gathered columns).
+
+### 1. Split Gathered into two stacked boxes
+
+- `extracts` (skinning/butchering, keyed by corpse) and a new `gathered` field (mining/
+  survey, keyed by node/survey source) on `FarmingSession` — previously both shared one
+  `extracts` bucket, conflating two different source types.
+  [types/farming.ts](src/types/farming.ts), [farmingStore.ts](src/stores/farmingStore.ts)
+  (`recordGathered` now writes to `s.gathered`; new `gatheredItems` computed +
+  `sessionSourcesForGathered` helper).
+- [FarmingSessionCard.vue](src/components/Farming/FarmingSessionCard.vue): the third grid
+  column is now a `flex flex-col` of two independently-scrollable boxes — **Skinning &
+  Butchering** (tan, top) and **Mining & Survey** (blue, bottom) — sitting between Looted
+  Items and the Activity Log. Each row still hovers into
+  [ItemDropBreakdown.vue](src/components/Farming/ItemDropBreakdown.vue), which gained a
+  third `mode="gathered"` (session-only, same treatment as `extract` — no enemy entity, no
+  lifetime DB data, plain-text source label).
+
+### 2. Active/History UI parity + XP hover popup + cropping fix
+
+- **Root cause of the cropping bug** (screenshot showed "Work Order for…" cut off at the
+  window edge): [PaneLayout.vue](src/components/Shared/PaneLayout.vue) wraps its default
+  slot in `overflow-hidden`. `HistoricalTab.vue` had no scroll container of its own, so at
+  larger `ui_font_size` settings its content silently clipped instead of scrolling. Fixed
+  by giving the tab root `h-full overflow-y-auto`.
+- New [XpBreakdownChart.vue](src/components/Farming/XpBreakdownChart.vue) — small
+  hand-rolled horizontal bar chart (no chart lib, consistent with `ItemDropBreakdown`'s
+  style), one bar per skill, used as hover-popup content.
+- **Active Session**: the "Total XP" quick-stat is now wrapped in `EntityTooltipWrapper`
+  (0.5s delay) with `XpBreakdownChart` in the tooltip slot — same interaction pattern as
+  hovering an item. The left Skills panel (per-skill progress bars) was left as-is; this is
+  additive, not a replacement.
+- **History tab**: the inline always-visible skill-chip row (`+6,968 Shield 24,331/hr…`)
+  was the main source of horizontal clutter contributing to the cropping. Replaced with the
+  same hover pattern on each session row's `+X XP` summary (`xpSkillsFor(session)` maps DB
+  skill rows to the chart's shape). The expanded detail's Items/Favor/Kills sections are now
+  boxed (`bg-surface-dark border border-border-default rounded-lg p-3`) in a
+  `grid-cols-[repeat(auto-fit,minmax(220px,1fr))]` layout, each capped at `max-h-56
+  overflow-y-auto` — matches Active Session's panel styling and scrolls internally instead
+  of growing unbounded.
+
+### 3. Backend: community drop-rate database (import/export/search)
+
+- **Design decision (from the user):** rather than picking "merge" vs. "keep separate," the
+  Database tab exposes all three as views: **My Data**, **Imported**, **Combined**. This
+  requires imported data to be stored completely separately from personal ground truth.
+- **Migration v47** ([migrations.rs](src-tauri/src/db/migrations.rs)): three new tables —
+  `imported_kill_sources` (label/display_name/imported_at), `imported_enemy_kills_agg`,
+  `imported_enemy_kill_loot_agg` (both FK'd to the source label, `ON DELETE CASCADE`). Never
+  touches `enemy_kills`/`enemy_kill_loot` (the player's own ground truth).
+- [kill_tracking_commands.rs](src-tauri/src/db/kill_tracking_commands.rs) rewritten:
+  - `get_enemy_kill_stats` / `get_item_drop_sources` gained a **required** `scope: String`
+    (`"mine" | "imported" | "combined"`) param — combines local rows + imported aggregates
+    in Rust (`combine_loot_rows`) rather than a SQL UNION, since the two table shapes
+    differ. **Breaking signature change** — updated all 3 existing call sites
+    ([EnemyBrowser.vue](src/components/DataBrowser/EnemyBrowser.vue),
+    [ItemSearch.vue](src/components/DataBrowser/ItemSearch.vue),
+    `farmingStore.fetchEnemyStats`) to pass `scope: "combined"` (preserves prior behavior
+    exactly, since "combined" == "mine" until something is imported).
+  - New `search_database_enemies` / `search_database_items` — `LIKE`-based substring search
+    (case-insensitive) across `mine`/`imported`/`combined`, for the Database tab's
+    autocomplete-style search box.
+  - **Export** (`export_kill_loot_database`): aggregates the player's own `enemy_kills` +
+    `enemy_kill_loot` into a JSON bundle (`ExportBundle`) — **personal data only**, never
+    re-exports previously-imported data (avoids a pyramiding double-count risk if exports
+    get re-shared and re-imported). No character name, server, or per-kill timestamps in
+    the bundle — just `{enemy_name, total_kills, loot: [{item_name, total_quantity,
+    times_dropped}]}`.
+  - **Import** (`import_kill_loot_database`): `source_label` = the imported file's name.
+    Re-importing the same filename **deletes and replaces** that label's rows first inside
+    a transaction — idempotent, no double-counting on repeat imports of the same file.
+  - `list_imported_sources` / `delete_imported_source` for managing what's been imported.
+  - All 7 new/changed commands registered in [lib.rs](src-tauri/src/lib.rs).
+
+### 4. Frontend: Database tab
+
+- Third tab added to [EconomicsFarmingView.vue](src/components/Economics/EconomicsFarmingView.vue)
+  (`Active Session | Session History | Database`).
+- New [DatabaseTab.vue](src/components/Farming/DatabaseTab.vue): scope toggle (My Data /
+  Imported / Combined), monster-vs-item search target toggle, debounced (250ms) search box,
+  expandable result rows (drill into [EnemyDropTable.vue](src/components/Farming/EnemyDropTable.vue)
+  / [ItemDropBreakdownTable.vue](src/components/Farming/ItemDropBreakdownTable.vue) for the
+  full per-item/per-enemy drop-rate breakdown), Export/Import buttons via
+  `@tauri-apps/plugin-dialog` (`save`/`open`, matching the existing pattern in
+  `dev-panel/tabs/DebugCaptureTab.vue`), and a management list of imported sources with
+  per-source delete.
+
+## Caveats / known limits
+
+- Export intentionally only ever exports **personal** data ("mine"), never "imported" or
+  "combined" — re-sharing someone else's re-shared data was judged a real data-integrity
+  risk (no way to detect a chain of re-exports double-counting the same original
+  contribution across multiple community files).
+- Search is substring `LIKE` over raw internal names (not display names) — works for
+  partial-name search but won't catch CDN display-name aliases.
+- `EnemyKillStats.loot` was previously returned pre-sorted only by "mine"; combined-scope
+  sorting now happens after the in-Rust merge.
+
+## Verification
+
+1. `npx vue-tsc --noEmit` clean; `cargo check` clean.
+2. Live dev build: migration v47 applied with no errors (`App version changed (0.9.12 ->
+   0.9.13)`, `App is interactive` reached). Confirmed no migration/sqlite errors in the
+   startup log.
+3. Did not exercise mining/survey gathering or the import/export file dialogs live this
+   session (no node/survey access at hand) — logic is covered by type-check + cargo check
+   only; flagging for the next session to click through.
 
 ---
 

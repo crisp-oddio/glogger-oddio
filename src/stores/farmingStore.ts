@@ -246,6 +246,7 @@ export const useFarmingStore = defineStore("farming", () => {
       favorDeltas: {},
       kills: {},
       extracts: {},
+      gathered: {},
       vendorGold: 0,
     };
     log.value = [];
@@ -536,12 +537,48 @@ export const useFarmingStore = defineStore("farming", () => {
       .sort((a, b) => b.sessionQuantity - a.sessionQuantity);
   }
 
+  // Items gathered via mining/survey this session, aggregated across sources.
+  // Separate category from both corpse loot and skinning/butchering extracts.
+  const gatheredItems = computed(() => {
+    void timerTick.value;
+    if (!session.value) return [];
+    const agg: Record<string, { quantity: number; skill: string }> = {};
+    for (const byItem of Object.values(session.value.gathered ?? {})) {
+      for (const [itemName, l] of Object.entries(byItem)) {
+        const cur = agg[itemName] ?? { quantity: 0, skill: l.skill };
+        cur.quantity += l.quantity;
+        cur.skill = l.skill;
+        agg[itemName] = cur;
+      }
+    }
+    return Object.entries(agg)
+      .filter(([, v]) => v.quantity > 0)
+      .map(([name, v]) => ({ name, quantity: v.quantity, skill: v.skill }))
+      .sort((a, b) => b.quantity - a.quantity);
+  });
+
+  // Session sources (node/survey) a given item was gathered from, with tallies.
+  // No "kills" concept here — sessionKills always reports 0.
+  function sessionSourcesForGathered(itemName: string) {
+    if (!session.value) return [];
+    return Object.entries(session.value.gathered ?? {})
+      .map(([sourceName, byItem]) => ({ sourceName, loot: byItem[itemName] }))
+      .filter((e) => e.loot && e.loot.quantity > 0)
+      .map((e) => ({
+        enemyName: e.sourceName,
+        sessionQuantity: e.loot!.quantity,
+        sessionDrops: e.loot!.drops,
+        sessionKills: 0,
+      }))
+      .sort((a, b) => b.sessionQuantity - a.sessionQuantity);
+  }
+
   // Lazily fetch (and cache) all-time loot stats for an enemy from the DB.
   async function fetchEnemyStats(enemyName: string): Promise<EnemyKillStats | null> {
     const cached = enemyStatsCache.value[enemyName];
     if (cached) return cached;
     try {
-      const stats = await invoke<EnemyKillStats>("get_enemy_kill_stats", { enemyName });
+      const stats = await invoke<EnemyKillStats>("get_enemy_kill_stats", { enemyName, scope: "combined" });
       enemyStatsCache.value[enemyName] = stats;
       return stats;
     } catch (e) {
@@ -602,8 +639,10 @@ export const useFarmingStore = defineStore("farming", () => {
     favorSummary,
     lootedItems,
     extractedItems,
+    gatheredItems,
     sessionEnemiesForItem,
     sessionEnemiesForExtract,
+    sessionSourcesForGathered,
     fetchEnemyStats,
     xpPerHour,
     getActiveSeconds,
@@ -647,13 +686,13 @@ function recordGathered(
     return;
   }
 
-  if (!s.extracts) s.extracts = {};
-  if (!s.extracts[sourceName]) s.extracts[sourceName] = {};
-  const tally = s.extracts[sourceName][itemName] ?? { quantity: 0, drops: 0, skill };
+  if (!s.gathered) s.gathered = {};
+  if (!s.gathered[sourceName]) s.gathered[sourceName] = {};
+  const tally = s.gathered[sourceName][itemName] ?? { quantity: 0, drops: 0, skill };
   tally.quantity += quantity;
   tally.drops += 1;
   tally.skill = skill;
-  s.extracts[sourceName][itemName] = tally;
+  s.gathered[sourceName][itemName] = tally;
 }
 
 function tsToSeconds(ts: string): number {

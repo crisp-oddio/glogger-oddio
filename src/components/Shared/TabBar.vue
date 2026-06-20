@@ -1,5 +1,5 @@
 <template>
-  <div class="flex border-b border-border-default">
+  <div class="flex gap-[3px] border-b border-border-default">
     <button
       v-for="tab in tabs"
       :key="tab.id"

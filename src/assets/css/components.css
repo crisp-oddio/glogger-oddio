@@ -50,7 +50,7 @@
   }
 
   .tab {
-    @apply px-4 py-2 text-text-secondary cursor-pointer border-b-2 border-transparent;
+    @apply px-6 py-3 text-text-secondary cursor-pointer border-b-2 border-transparent;
   }
 
   .tab-active {
