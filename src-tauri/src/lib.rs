@@ -179,8 +179,8 @@ use db::farming_commands::{
     delete_farming_session, get_farming_sessions, save_farming_session, update_farming_session,
 };
 use db::kill_tracking_commands::{
-    delete_imported_source, export_kill_loot_database, get_enemy_kill_stats,
-    get_item_drop_sources, import_kill_loot_database, list_imported_sources,
+    delete_imported_source, export_kill_loot_database, get_corpse_extract_details,
+    get_enemy_kill_stats, get_item_drop_sources, import_kill_loot_database, list_imported_sources,
     search_database_enemies, search_database_items,
 };
 use db::game_state_commands::{
@@ -215,7 +215,7 @@ use db::player_commands::{
     add_market_price, add_sale, get_market_prices_for_item, get_recent_events, get_recent_sales,
     log_event,
 };
-use replay::replay_dual_logs;
+use replay::{ingest_player_log, replay_dual_logs};
 use trip_router::plan_trip;
 use external_fetch::{fetch_github_releases, fetch_pg_news};
 use gst_manager::{gst_check_status, gst_download, gst_launch};
@@ -462,6 +462,11 @@ pub fn run() {
             ));
             startup_log!("Background polling thread spawned (paused)");
 
+            // Step 5c: Spawn the Player-prev.log backfill watcher — captures
+            // sessions played without glogger running by ingesting Player-prev.log
+            // into the kill/loot database when the game rotates it.
+            replay::spawn_player_prev_watcher(settings_manager.clone(), db_pool.clone());
+
             // Step 6: Register managed state
             app.manage(settings_manager.clone());
             app.manage(db_pool.clone());
@@ -527,6 +532,7 @@ pub fn run() {
             // Log parsing (manual upload)
             parse_log,
             replay_dual_logs,
+            ingest_player_log,
             // CDN management
             get_cache_status,
             check_cdn_version,
@@ -749,6 +755,7 @@ pub fn run() {
             import_kill_loot_database,
             list_imported_sources,
             delete_imported_source,
+            get_corpse_extract_details,
             // Crafting helper
             create_crafting_project,
             get_crafting_projects,

@@ -30,6 +30,22 @@
           </span>
         </div>
 
+        <!-- Harvest conditions (skinning/butchering only): skill level at
+             harvest, equipment bonus, and anatomy skill for the monster type. -->
+        <div
+          v-if="props.mode === 'extract' && hasHarvestDetail(row)"
+          class="flex flex-wrap gap-1 text-[0.55rem]">
+          <span v-if="row.skillLevel != null" class="px-1 py-0.5 rounded bg-[#5a4a2a]/40 text-[#d6b87e]">
+            {{ row.skill ?? 'Skill' }} {{ row.skillLevel }}
+          </span>
+          <span v-if="row.equipmentBonus != null" class="px-1 py-0.5 rounded bg-[#2a3a5a]/40 text-[#7ea4c8]">
+            +{{ row.equipmentBonus }} equip
+          </span>
+          <span v-if="row.anatomyFamily" class="px-1 py-0.5 rounded bg-[#3a5a3a]/40 text-[#9ec89e]">
+            Anatomy: {{ row.anatomyFamily }}<template v-if="row.anatomyLevel != null"> {{ row.anatomyLevel }}</template>
+          </span>
+        </div>
+
         <!-- Bar: all-time drop rate (loot) or session share (extract) -->
         <div class="relative h-4 rounded bg-black/40 border border-border-default overflow-hidden">
           <div
@@ -94,6 +110,14 @@ const rows = ref<ItemDropBreakdownRow[]>([]);
 // accessors.
 const isExtract = computed(() => props.mode !== "loot");
 const verb = computed(() => (props.mode === "gathered" ? "Gathered" : props.mode === "extract" ? "Extracted" : "Looted"));
+
+function hasHarvestDetail(row: ItemDropBreakdownRow): boolean {
+  return (
+    row.skillLevel != null ||
+    row.equipmentBonus != null ||
+    row.anatomyFamily != null
+  );
+}
 
 async function build() {
   // Seed rows with this-session data immediately.

@@ -58,6 +58,23 @@
           profile moves between launches; leave it off if you've set custom paths.
         </p>
       </div>
+
+      <div class="mt-4">
+        <label class="flex items-center gap-2 cursor-pointer text-text-primary">
+          <input
+            type="checkbox"
+            v-model="autoIngestPlayerPrev"
+            @change="handleAutoIngestToggle"
+            class="size-5 cursor-pointer" />
+          <span>Back up Player-prev.log to the drop-rate database</span>
+        </label>
+        <p class="mt-2 text-text-muted text-xs leading-relaxed">
+          When the game restarts it rotates your last session into Player-prev.log. With this on,
+          glogger ingests it into the lifetime kill/loot database — so sessions played without
+          glogger running still count toward drop rates. Deduplicated against live data, so nothing
+          is double-counted.
+        </p>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -191,6 +208,7 @@ const excludeMaxEnchanted = ref(settingsStore.settings.excludeMaxEnchantedRecipe
 const timestampMode = ref(settingsStore.settings.timestampDisplayMode);
 const use24Hour = ref(settingsStore.settings.use24HourTime);
 const autoDetectPathsOnStartup = ref(settingsStore.settings.autoDetectPathsOnStartup);
+const autoIngestPlayerPrev = ref(settingsStore.settings.autoIngestPlayerPrev);
 
 const timestampOptions = [
   { value: 'local' as const, label: 'Local Time' },
@@ -254,6 +272,11 @@ watch(
 watch(
   () => settingsStore.settings.autoDetectPathsOnStartup,
   (val) => { autoDetectPathsOnStartup.value = val; }
+);
+
+watch(
+  () => settingsStore.settings.autoIngestPlayerPrev,
+  (val) => { autoIngestPlayerPrev.value = val; }
 );
 
 async function browseGameDataFolder() {
@@ -331,6 +354,10 @@ async function resetPaths() {
 
 function handleAutoDetectPathsToggle() {
   settingsStore.updateSettings({ autoDetectPathsOnStartup: autoDetectPathsOnStartup.value });
+}
+
+function handleAutoIngestToggle() {
+  settingsStore.updateSettings({ autoIngestPlayerPrev: autoIngestPlayerPrev.value });
 }
 
 function handleAutoTailChatToggle() {

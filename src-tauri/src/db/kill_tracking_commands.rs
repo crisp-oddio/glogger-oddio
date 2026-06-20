@@ -594,3 +594,57 @@ pub fn delete_imported_source(db: State<'_, DbPool>, source_label: String) -> Re
     .map_err(|e| format!("Failed to delete import source: {e}"))?;
     Ok(())
 }
+
+#[derive(Serialize)]
+pub struct ExtractDetail {
+    pub corpse_name: Option<String>,
+    pub skill: String,
+    pub times: i64,
+    pub total_quantity: i64,
+    /// Representative (current) values. Skill/anatomy levels only ever rise, so
+    /// MAX is the player's latest level; equipment bonus is stable per setup.
+    pub skill_level: Option<i64>,
+    pub equipment_bonus: Option<i64>,
+    pub anatomy_family: Option<String>,
+    pub anatomy_level: Option<i64>,
+}
+
+/// Per-corpse butchering/skinning detail for an item: the conditions under which
+/// it was harvested (Butchering/Skinning level, equipment bonus, and the anatomy
+/// family + level for that monster type). Drives the farming item hover tooltip.
+#[tauri::command]
+pub fn get_corpse_extract_details(
+    db: State<'_, DbPool>,
+    item_name: String,
+) -> Result<Vec<ExtractDetail>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT corpse_name, skill, COUNT(*) AS times, SUM(quantity) AS total_quantity,
+                    MAX(skill_level), MAX(equipment_bonus), anatomy_family, MAX(anatomy_level)
+             FROM corpse_extracts
+             WHERE item_name = ?1
+             GROUP BY corpse_name, skill, anatomy_family
+             ORDER BY total_quantity DESC",
+        )
+        .map_err(|e| format!("Failed to prepare extract query: {e}"))?;
+    let rows = stmt
+        .query_map([&item_name], |row| {
+            Ok(ExtractDetail {
+                corpse_name: row.get(0)?,
+                skill: row.get(1)?,
+                times: row.get(2)?,
+                total_quantity: row.get(3)?,
+                skill_level: row.get(4)?,
+                equipment_bonus: row.get(5)?,
+                anatomy_family: row.get(6)?,
+                anatomy_level: row.get(7)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query extract details: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read extract details: {e}"))?;
+    Ok(rows)
+}

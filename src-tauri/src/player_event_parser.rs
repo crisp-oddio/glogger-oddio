@@ -288,6 +288,20 @@ pub enum PlayerEvent {
     },
 
     // === Loot Events ===
+    /// Fired when a corpse's loot window is opened (`Search Corpse of X`).
+    /// This is the drop-rate *denominator*: it marks a lootable kill even if
+    /// the corpse yielded nothing. Corpses the player has no permission to loot
+    /// (`has_permission = false`) are reported so the consumer can exclude them.
+    CorpseSearched {
+        timestamp: String,
+        /// Entity ID of the corpse — links to LootPickedUp.corpse_entity_id.
+        corpse_entity_id: u32,
+        /// Enemy/corpse name (e.g. "Ratkin Miner").
+        corpse_name: String,
+        /// False when the screen carried "(You do not have permission to loot
+        /// this corpse.)" — not the player's kill, can't observe its drops.
+        has_permission: bool,
+    },
     /// Fired when an item is picked up from a corpse's loot window.
     /// Only actual drops produce this — skinning/butchering rewards do not.
     LootPickedUp {
@@ -316,6 +330,16 @@ pub enum PlayerEvent {
         skill: String,
         /// Name of the corpse, if a CorpseSearch context is active
         corpse_name: Option<String>,
+        /// Player's level in `skill` (Butchering/Skinning) at harvest time.
+        skill_level: Option<u32>,
+        /// Equipment skill bonus from the corpse line
+        /// "(with a +N skill bonus from equipment)".
+        equipment_bonus: Option<u32>,
+        /// Anatomy family for this monster type (e.g. "Canines"), from the
+        /// co-occurring `Anatomy_<Family>` skill update.
+        anatomy_family: Option<String>,
+        /// Player's anatomy level for that family at harvest time.
+        anatomy_level: Option<u32>,
     },
 }
 
@@ -794,6 +818,28 @@ pub struct PlayerEventParser {
     /// Last item event emitted in this process_line call. Used by parse_remove_loot
     /// to identify the item for stacking cases where RemoveLoot has an orphaned instance_id.
     last_item_event: Option<LastItemEvent>,
+
+    /// Running skill table (skill_type → (raw level, equipment/buff bonus)),
+    /// maintained from ProcessLoadSkills + ProcessUpdateSkill. Lets a corpse
+    /// extract report the player's Skinning/Butchering level at harvest time.
+    skill_levels: HashMap<String, (u32, u32)>,
+
+    /// Most recent `Anatomy_<Family>` skill update — butchering/skinning a corpse
+    /// grants that family's anatomy XP, so this is the anatomy skill (and level)
+    /// for the monster type just processed.
+    last_anatomy: Option<AnatomyObservation>,
+
+    /// Equipment skill bonus parsed from the most recent corpse-search body
+    /// (`skinned/butchered the corpse (with a +N skill bonus from equipment)`),
+    /// attached to the extract that follows.
+    pending_extract_equip_bonus: Option<u32>,
+}
+
+/// A captured `Anatomy_<Family>` skill reading (e.g. family "Canines", raw 44).
+#[derive(Clone, Debug)]
+struct AnatomyObservation {
+    family: String,
+    raw: u32,
 }
 
 /// Tracks the most recent item gain event within a single process_line call.
@@ -819,6 +865,9 @@ impl PlayerEventParser {
             pending_pigeon_send: None,
             pending_stall_note_send: None,
             last_item_event: None,
+            skill_levels: HashMap::new(),
+            last_anatomy: None,
+            pending_extract_equip_bonus: None,
         }
     }
 
@@ -1069,6 +1118,13 @@ impl PlayerEventParser {
         } else if line.contains("ProcessLoadSkills(") {
             self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_load_skills(line) {
+                // Seed the running skill table from the full snapshot.
+                if let PlayerEvent::SkillsLoaded { skills, .. } = &ev {
+                    for s in skills {
+                        self.skill_levels
+                            .insert(s.skill_type.clone(), (s.raw, s.bonus));
+                    }
+                }
                 events.push(ev);
             }
         } else if line.contains("ProcessStartInteraction(") {
@@ -1117,6 +1173,9 @@ impl PlayerEventParser {
                 events.push(ev);
             }
         } else if line.contains("ProcessUpdateSkill(") {
+            // Keep the running skill table current and note any anatomy update
+            // (anatomy XP is granted when butchering/skinning that monster type).
+            self.track_skill_update(line);
             // Butchering/Skinning XP correlates to a just-added corpse extract
             // that never produces a RemoveLoot. Detect those here; all other
             // skill updates are handled by the separate skill-update parser.
@@ -1935,6 +1994,30 @@ impl PlayerEventParser {
         })
     }
 
+    /// Keep the running skill table current from a `ProcessUpdateSkill` line and
+    /// record the latest `Anatomy_<Family>` reading (the anatomy skill for the
+    /// monster type just butchered/skinned).
+    fn track_skill_update(&mut self, line: &str) {
+        let block_start = match line.find('{') {
+            Some(i) => i,
+            None => return,
+        };
+        let block_end = match line[block_start..].find('}') {
+            Some(i) => block_start + i + 1,
+            None => return,
+        };
+        if let Some(s) = parse_skill_block(&line[block_start..block_end]) {
+            self.skill_levels
+                .insert(s.skill_type.clone(), (s.raw, s.bonus));
+            if let Some(family) = s.skill_type.strip_prefix("Anatomy_") {
+                self.last_anatomy = Some(AnatomyObservation {
+                    family: family.to_string(),
+                    raw: s.raw,
+                });
+            }
+        }
+    }
+
     /// Detect a skinning/butchering extract from a `ProcessUpdateSkill` line.
     /// Butchering/Skinning grant XP for an item that was just added via
     /// `ProcessAddItem` but produces no `ProcessRemoveLoot`. We correlate the
@@ -1966,6 +2049,20 @@ impl PlayerEventParser {
             }
         });
 
+        // Skill level (Butchering/Skinning) from the line's own raw, falling
+        // back to the running table if absent.
+        let skill_level = extract_block_field(line, "raw=")
+            .and_then(|v| v.parse::<u32>().ok())
+            .or_else(|| self.skill_levels.get(skill).map(|(raw, _)| *raw));
+
+        // Anatomy family + level for this monster type, from the most recent
+        // Anatomy_<Family> update. Cleared after attribution so it can't bleed
+        // onto an unrelated later extract.
+        let (anatomy_family, anatomy_level) = match self.last_anatomy.take() {
+            Some(a) => (Some(a.family), Some(a.raw)),
+            None => (None, None),
+        };
+
         Some(PlayerEvent::CorpseExtract {
             timestamp: ts,
             item_name: last.item_name,
@@ -1973,6 +2070,10 @@ impl PlayerEventParser {
             quantity: last.quantity,
             skill: skill.to_string(),
             corpse_name,
+            skill_level,
+            equipment_bonus: self.pending_extract_equip_bonus,
+            anatomy_family,
+            anatomy_level,
         })
     }
 
@@ -2294,6 +2395,24 @@ impl PlayerEventParser {
         }
 
         if let Some(corpse_name) = title.strip_prefix("Search Corpse of ") {
+            // Capture the equipment skill bonus for the extract that follows,
+            // e.g. "...skinned the corpse (with a +12 skill bonus from
+            // equipment)...". Attached to the next CorpseExtract.
+            if let Some(bonus) = parse_equipment_bonus(&body_text) {
+                self.pending_extract_equip_bonus = Some(bonus);
+            }
+
+            // Denominator signal for drop-rate tracking: a loot window opened
+            // for this corpse. No-permission corpses are reported but flagged.
+            let has_permission =
+                !line.contains("You do not have permission to loot this corpse");
+            events.push(PlayerEvent::CorpseSearched {
+                timestamp: ts.clone(),
+                corpse_entity_id: entity_id,
+                corpse_name: corpse_name.trim().to_string(),
+                has_permission,
+            });
+
             let started_at_secs = timestamp_to_secs(&ts);
             let source = ActivitySource::CorpseSearch {
                 entity_id,
@@ -3174,6 +3293,21 @@ fn extract_block_field(block: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// Parse the equipment skill bonus from a corpse body, e.g.
+/// "...the corpse (with a +12 skill bonus from equipment)..." → 12.
+fn parse_equipment_bonus(body: &str) -> Option<u32> {
+    let marker = "skill bonus from equipment";
+    let marker_pos = body.find(marker)?;
+    // Walk back from the marker to the "+" that precedes the number.
+    let before = &body[..marker_pos];
+    let plus = before.rfind('+')?;
+    let digits: String = before[plus + 1..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
 /// Extract the nth quoted string from text (0-indexed)
 fn extract_quoted_string(text: &str, n: usize) -> Option<String> {
     let mut count = 0;
@@ -3204,6 +3338,61 @@ fn extract_quoted_string(text: &str, n: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_corpse_extract_captures_skill_equip_anatomy() {
+        let mut parser = PlayerEventParser::new();
+        // Establish a baseline skill table (Skinning level + others).
+        parser.process_line(
+            r#"[18:00:00] LocalPlayer: ProcessLoadSkills({type=Skinning,raw=61,bonus=4,xp=10,tnl=100,max=70}, {type=Anatomy_Canines,raw=40,bonus=0,xp=10,tnl=100,max=50})"#,
+        );
+        // Corpse-search body carries the equipment bonus + skin item.
+        parser.process_line(
+            r#"[18:00:01] LocalPlayer: ProcessTalkScreen(500, "Search Corpse of Wild Worg", "\nTestPlayer skinned the corpse (with a +12 skill bonus from equipment) and obtained Great Animal Skin", "", System.Int32[], System.String[], 1, Corpse)"#,
+        );
+        // The skin item is added (no RemoveLoot follows for an extract).
+        parser.process_line(
+            r#"[18:00:01] LocalPlayer: ProcessAddItem(GreatAnimalSkin(111), -1, True)"#,
+        );
+        // Anatomy XP for the monster family, then the Skinning XP that triggers
+        // the extract emit.
+        parser.process_line(
+            r#"[18:00:01] LocalPlayer: ProcessUpdateSkill({type=Anatomy_Canines,raw=44,bonus=0,xp=20,tnl=100,max=50}, True, 50, 0, 0)"#,
+        );
+        let events = parser.process_line(
+            r#"[18:00:01] LocalPlayer: ProcessUpdateSkill({type=Skinning,raw=62,bonus=4,xp=30,tnl=100,max=70}, True, 70, 0, 0)"#,
+        );
+
+        let extract = events
+            .iter()
+            .find_map(|e| match e {
+                PlayerEvent::CorpseExtract {
+                    item_name,
+                    skill,
+                    skill_level,
+                    equipment_bonus,
+                    anatomy_family,
+                    anatomy_level,
+                    ..
+                } => Some((
+                    item_name.clone(),
+                    skill.clone(),
+                    *skill_level,
+                    *equipment_bonus,
+                    anatomy_family.clone(),
+                    *anatomy_level,
+                )),
+                _ => None,
+            })
+            .expect("a CorpseExtract event");
+
+        assert_eq!(extract.0, "GreatAnimalSkin");
+        assert_eq!(extract.1, "Skinning");
+        assert_eq!(extract.2, Some(62)); // skill level from the triggering line
+        assert_eq!(extract.3, Some(12)); // +12 equipment bonus from corpse body
+        assert_eq!(extract.4.as_deref(), Some("Canines"));
+        assert_eq!(extract.5, Some(44)); // current anatomy level
+    }
 
     #[test]
     fn test_parse_add_item() {

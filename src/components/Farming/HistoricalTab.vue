@@ -101,22 +101,51 @@
               <div v-if="session.items.length > 0" class="bg-surface-dark border border-border-default rounded-lg p-3 max-h-56 overflow-y-auto">
                 <div class="text-[0.6rem] uppercase tracking-widest text-text-dim mb-1.5 font-bold">Items</div>
                 <div class="flex flex-col gap-1">
-                  <div
+                  <!-- Whole row is the drop-rate hover target (parity with the
+                       Active Session item hover). The name stays clickable to
+                       drill into the item's entity detail. A plain resolved name
+                       is used rather than ItemInline so it doesn't spawn its own
+                       competing tooltip. -->
+                  <EntityTooltipWrapper
                     v-for="item in session.items"
                     :key="item.item_name"
-                    class="flex items-center justify-between px-2 py-1 rounded text-xs bg-black/20 border border-border-default">
-                    <ItemInline :reference="item.item_name" />
-                    <div class="flex items-center gap-2">
+                    :delay="500"
+                    :interactive="true"
+                    border-class="border-entity-item/40"
+                    class="w-full!">
+                    <div class="flex items-center justify-between px-2 py-1 rounded text-xs bg-black/20 border border-border-default hover:border-entity-item/40 cursor-help w-full">
                       <span
-                        :class="[
-                          'font-mono font-bold',
-                          item.net_quantity > 0 ? 'text-[#7ec87e]' : 'text-[#c87e7e]'
-                        ]">
-                        {{ item.net_quantity > 0 ? '+' : '' }}{{ item.net_quantity }}
+                        class="text-entity-item font-medium truncate cursor-pointer hover:underline"
+                        @click="navigateToEntity({ type: 'item', id: displayName(item.item_name) })">
+                        {{ displayName(item.item_name) }}
                       </span>
-                      <span class="text-text-dim text-[0.6rem]">{{ itemPerHour(item.net_quantity, session.elapsed_seconds) }}/hr</span>
+                      <div class="flex items-center gap-2 shrink-0 ml-2">
+                        <span
+                          :class="[
+                            'font-mono font-bold',
+                            item.net_quantity > 0 ? 'text-[#7ec87e]' : 'text-[#c87e7e]'
+                          ]">
+                          {{ item.net_quantity > 0 ? '+' : '' }}{{ item.net_quantity }}
+                        </span>
+                        <span class="text-text-dim text-[0.6rem]">{{ itemPerHour(item.net_quantity, session.elapsed_seconds) }}/hr</span>
+                      </div>
                     </div>
-                  </div>
+                    <template #tooltip>
+                      <div class="flex flex-col gap-2 w-72 max-w-[20rem]">
+                        <div class="flex items-center justify-between border-b border-border-default pb-1.5">
+                          <span class="text-entity-item font-medium truncate">{{ displayName(item.item_name) }}</span>
+                          <span class="text-[0.6rem] text-text-muted uppercase tracking-wide shrink-0">
+                            Looted <span class="text-value-positive font-bold">{{ item.net_quantity }}</span> this session
+                          </span>
+                        </div>
+                        <ExtractDetailTable :item-name="item.item_name" />
+                        <ItemDropBreakdownTable :item-name="item.item_name" scope="combined" />
+                        <p class="text-[0.55rem] text-text-dim leading-tight pt-0.5">
+                          Lifetime drop rate = kills that dropped this item ÷ all kills of that enemy.
+                        </p>
+                      </div>
+                    </template>
+                  </EntityTooltipWrapper>
                 </div>
               </div>
 
@@ -174,22 +203,43 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, reactive, onMounted, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { HistoricalFarmingSession } from "../../types/farming";
 import EmptyState from "../Shared/EmptyState.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
-import ItemInline from "../Shared/Item/ItemInline.vue";
 import { formatDateTimeShort, formatDuration } from "../../composables/useTimestamp";
 import NpcInline from "../Shared/NPC/NpcInline.vue";
 import EnemyInline from "../Shared/Enemy/EnemyInline.vue";
 import EntityTooltipWrapper from "../Shared/EntityTooltipWrapper.vue";
 import XpBreakdownChart from "./XpBreakdownChart.vue";
+import ItemDropBreakdownTable from "./ItemDropBreakdownTable.vue";
+import ExtractDetailTable from "./ExtractDetailTable.vue";
+import { useGameDataStore } from "../../stores/gameDataStore";
+import { useEntityNavigation } from "../../composables/useEntityNavigation";
 
 const sessions = ref<HistoricalFarmingSession[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const expanded = ref<Set<number>>(new Set());
+
+const gameData = useGameDataStore();
+const { navigateToEntity } = useEntityNavigation();
+
+// Lazily resolve internal item names ("SpiderLeg") to display names
+// ("Spider Leg"). The row is the drop-breakdown hover target, so we render a
+// plain resolved name rather than ItemInline (which would spawn its own
+// competing tooltip) — matching the Active Session card.
+const resolvedNames = reactive<Record<string, string>>({});
+function displayName(reference: string): string {
+  if (!(reference in resolvedNames)) {
+    resolvedNames[reference] = reference;
+    gameData.resolveItem(reference).then((item) => {
+      if (item?.name) resolvedNames[reference] = item.name;
+    }).catch(() => {});
+  }
+  return resolvedNames[reference];
+}
 
 async function loadSessions() {
   loading.value = true;

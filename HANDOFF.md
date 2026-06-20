@@ -1,5 +1,182 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-20 (Session 14 — corpse-search drop-rate model, farming hovers, butchering detail)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (v0.9.14)
+**Status:** ✅ **Shipped.** Three features, all verified live by the user and committed/pushed
+(`dev`→`main`). `cargo test --lib` (401 pass, incl. 2 new tests) + `vue-tsc --noEmit` clean.
+
+## TL;DR — three things landed this session
+
+### 1. Corpse-search drop-rate model (finished the Session-13 pivot)
+The DB now logs **every lootable kill** (each `Search Corpse of X` you have permission to loot,
+even if it dropped nothing), and loot dedup is by item **instance_id** so two separate single-stacks
+of the same item off one corpse stay as two rows.
+
+- **Parser** ([player_event_parser.rs](src-tauri/src/player_event_parser.rs)) — new
+  `PlayerEvent::CorpseSearched { timestamp, corpse_entity_id, corpse_name, has_permission }`,
+  emitted in `handle_talk_screen` for `Search Corpse of X` titles. `has_permission =
+  !line.contains("You do not have permission to loot this corpse")`.
+- **Migration v49** ([migrations.rs](src-tauri/src/db/migrations.rs)) — wipes the old near-empty
+  `enemy_kills`/`enemy_kill_loot`/`player_prev_ingests` rows, adds `enemy_kill_loot.instance_id`
+  (signed-32-bit stored bit-preserved as INTEGER) + UNIQUE index `(kill_id, instance_id)`.
+- **Coordinator** ([coordinator.rs](src-tauri/src/coordinator.rs)) — chat-FATALITY `EnemyKilled`
+  no longer persists a kill (still **emits `enemy-killed`** for the live farming UI). `recent_kills`
+  re-keyed `u32 corpse_entity_id → (kill_id, Instant)`. `process_corpse_search` inserts one kill row
+  per permission corpse (FIRST-search timestamp, `INSERT OR IGNORE` on the dedup index), caches
+  entity_id→kill_id. `attribute_loot_to_kills` handles both `CorpseSearched` and `LootPickedUp` in
+  batch order, inserting loot with `instance_id` via `INSERT OR IGNORE`.
+- **Backfill** ([replay.rs](src-tauri/src/replay.rs)) — `ingest_kill_loot_from_logs` rewritten to
+  **Player.log-only** (no Chat.log pairing); character + UTC base date from the `Logged in as
+  character … Time UTC=… Timezone Offset …` line. Server absent in Player.log → `"Unknown"` fallback.
+  `IngestResult` dropped `kills_skipped_no_window`; `ingest_player_log` lost its `chat_log_path` arg.
+- **Verified live**: user's "crypt test" farm produced a session with 38 kills / 25 items; rows land.
+
+### 2. Drop-rate hover on the Session History tab
+[HistoricalTab.vue](src/components/Farming/HistoricalTab.vue) — each expanded session's item rows now
+have a hover tooltip (on the **quantity** block, `cursor-help`) showing the **lifetime drop-rate
+breakdown** via the existing [ItemDropBreakdownTable.vue](src/components/Farming/ItemDropBreakdownTable.vue)
+(`get_item_drop_sources`, scope `combined`). Attached to the qty, **not** the item name, so
+`ItemInline`'s own hover + click-to-detail (which the user likes) are untouched — no nested tooltips.
+Caveat: a saved session persists only per-item `net_quantity` + per-enemy `kill_count`, not per-item→
+per-enemy attribution, so this shows **lifetime** rates, not session-scoped X/Y kills.
+
+### 3. Butchering/skinning harvest detail in the item hovers
+For skinning/butchering yields, the hover now shows **skill level at harvest, equipment bonus, and
+your anatomy level for that monster type** — all parsed from Player.log.
+
+- **Parser** — `PlayerEventParser` keeps a running `skill_levels` table (from `ProcessLoadSkills` +
+  `ProcessUpdateSkill`) and tracks the most-recent `Anatomy_<Family>` reading (`last_anatomy`).
+  `CorpseExtract` gained `skill_level`, `equipment_bonus`, `anatomy_family`, `anatomy_level`.
+  `skill_level` = the `raw` on the triggering Skinning/Butchering update line; `equipment_bonus` =
+  the corpse body's `(with a +N skill bonus from equipment)` (parsed in `handle_talk_screen` via
+  `parse_equipment_bonus`); anatomy = `last_anatomy` (family comes free from the co-occurring
+  `Anatomy_<Family>` XP update — no monster→family table needed).
+- **Migration v50** — new `corpse_extracts` table (one row per extract: character/server, corpse,
+  item, qty, skill, skill_level, equipment_bonus, anatomy_family, anatomy_level, extracted_at).
+  Coordinator persists `CorpseExtract` to it; new Tauri command `get_corpse_extract_details(item_name)`
+  ([kill_tracking_commands.rs](src-tauri/src/db/kill_tracking_commands.rs)) aggregates per-corpse
+  (MAX skill/anatomy level = current, since those only rise).
+- **Frontend** — Active Session: [ItemDropBreakdown.vue](src/components/Farming/ItemDropBreakdown.vue)
+  extract mode shows chips (`Skinning 62`, `+12 equip`, `Anatomy: Canines 44`), carried through
+  `FarmingExtractLoot`/store. History: new
+  [ExtractDetailTable.vue](src/components/Farming/ExtractDetailTable.vue) queries the command and
+  renders a "Harvested" section (empty/hidden when the item isn't an extract).
+- **Limits** (told to user): only captures when Skinning/Butchering grants XP (a maxed skill emits no
+  update → no extract detected, pre-existing); anatomy uses the most-recent `Anatomy_<Family>` update
+  so a rapid multi-corpse autopsy burst could mis-attribute; "equipment" is the `+N` bonus, not a tool
+  name (the log carries no tool name at harvest time — user chose the `+N` bonus).
+
+### Next session / open items
+- `enemy_kills.killing_ability`/`health_damage`/`armor_damage` are always empty/0 in the corpse-search
+  model — fine for drop rates; killer/damage data would come from the `ProcessTalkScreen` corpse body
+  (see the Python reference's `damage_log`) if ever wanted.
+- History drop-rate hover is lifetime-only; to make it session-scoped, persist per-item→per-enemy loot
+  attribution when a farming session is saved.
+
+---
+
+## (Session 13 — superseded by the above; kept for context)
+
+**Date:** 2026-06-20 (Session 13 — Historical log backfill + drop-rate model PIVOT)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (now at v0.9.14, even with `main`)
+**Status:** ⚠️ **WORK IN PROGRESS — uncommitted, mid-pivot. Do NOT commit as-is.**
+
+## TL;DR for next session
+
+Goal this session: let players backfill the lifetime drop-rate DB from old Player.log files
+(e.g. sessions played without glogger running). I built a first version, then a verification +
+the user's reference parser revealed the **whole drop-rate attribution model is wrong**, and the
+user confirmed a **pivot**. The pivot is **designed and decided but only ~10% coded**.
+
+### What's on disk right now (uncommitted, `git status`)
+`coordinator.rs, replay.rs, migrations.rs, lib.rs, settings.rs, DatabaseTab.vue,
+GeneralSettings.vue, settingsStore.ts, types/farming.ts` (+ `Cargo.toml` = line-endings only, ignore).
+This is the **first (chat-FATALITY-based) version** — it compiles (cargo check + vue-tsc clean)
+but is being **replaced** by the pivot. Decide: keep useful scaffolding (watcher, settings,
+idempotency, Database scan button) and rewrite the attribution core.
+
+### The critical finding
+Checked the live dev DB: **119 kills but only 2 loot rows.** Live loot attribution matches the
+**chat-FATALITY kill's entity_id** against the **Player.log corpse entity_id** — they don't match,
+so almost no loot is ever attributed. The whole drop-rate DB has been silently near-empty.
+
+### The reference parser (the user's, authoritative model)
+`C:\Users\bwfre\Downloads\parser_slim_loot.py` — READ THIS FIRST next session. Key lessons:
+1. **Denominator = Player.log `Search Corpse of X` events** (lootable corpses), keyed by the
+   corpse `entity_id` + enemy name. **NOT chat FATALITY.** Within Player.log the corpse entity_id
+   is consistent for both the denominator and the loot, so attribution is reliable (this is the
+   fix for 2/119).
+2. **No-permission corpses** (`(You do not have permission to loot this corpse.)`) are **excluded**
+   from the denominator — not your kill, can't observe drops.
+3. **Loot dedup uses a per-event index** (their `item_index`) so two separate single-stacks of the
+   same item off one mob stay as two rows. **glogger's analog = the item `instance_id`.** (This is
+   the user's "don't let dedupe delete duplicate loot" requirement.)
+4. **Player.log is self-sufficient** — character comes from its `Logged in as character … Time
+   UTC=mm/dd/yyyy … Timezone Offset …` line. So historical backfill needs **only Player-prev.log,
+   NO Chat.log pairing** (the chat-pairing code I wrote can be deleted).
+
+### User decisions (confirmed via AskUserQuestion)
+- **Pivot to the corpse-search model: YES.**
+- **Clear the existing 119 chat-FATALITY rows on migration: YES.**
+- Earlier (still holds): keep live writes + dedupe on ingest; "log every kill" = every *lootable*
+  (permission) searched corpse counts (a no-permission corpse isn't your kill, so excluding it
+  also satisfies "log every kill").
+
+### Remaining work — the realigned plan (tasks #10–12 superseded by this)
+1. **Migration v49**: `DELETE FROM enemy_kill_loot; DELETE FROM enemy_kills;` then
+   `ALTER TABLE enemy_kill_loot ADD COLUMN instance_id INTEGER;` +
+   `CREATE UNIQUE INDEX idx_kill_loot_dedup ON enemy_kill_loot(kill_id, instance_id);`
+   (NOTE: v48 — UNIQUE on `enemy_kills(character,server,enemy_entity_id,killed_at)` + the
+   `player_prev_ingests` table — is **already applied** to the dev DB from a test run; keep it.)
+2. **Parser** (`player_event_parser.rs`, `handle_talk_screen` ~line 2296 where `Search Corpse of`
+   is detected): emit a new `PlayerEvent::CorpseSearched { timestamp, corpse_entity_id,
+   corpse_name, has_permission }`. `has_permission = !body_text.contains("You do not have
+   permission to loot this corpse")`. (Frontend type + coordinator `_ => {}` arms unaffected.)
+3. **Coordinator**: STOP writing chat-FATALITY kills to `enemy_kills` (but KEEP emitting
+   `enemy-killed` — the live farming-session UI uses it). Repurpose `recent_kills` as
+   `corpse_entity_id → (kill_id, Instant)`. On `CorpseSearched` w/ permission: dedupe by entity_id
+   (a corpse fires many `Search Corpse` lines — one kill row per corpse, FIRST-search timestamp),
+   `INSERT OR IGNORE` a kill row, cache entity_id→kill_id. `attribute_loot_to_kills`: look up
+   `recent_kills[corpse_entity_id]` (now matches LootPickedUp.corpse_entity_id) and insert
+   `enemy_kill_loot(kill_id, item_name, quantity, instance_id)` via `INSERT OR IGNORE`.
+4. **Historical ingest** (`replay.rs`): rewrite to **Player.log-only** corpse-search model. DELETE
+   the chat-pairing helpers (`find_chat_log_for_player_log`, `parse_combat_message` use,
+   `parse_searched_corpse_entity`). Parse the `Logged in as character` line for character/server +
+   UTC base date. Run lines through `PlayerEventParser`; on `CorpseSearched` insert kill (dedupe by
+   entity_id); on `LootPickedUp` attribute by corpse entity_id + insert loot w/ instance_id
+   `INSERT OR IGNORE`. Remove `kills_skipped_no_window` from `IngestResult`. Keep the content-hash
+   idempotency + `player_prev_ingests`.
+5. **Frontend**: update `IngestResult` type (drop `kills_skipped_no_window`) + the DatabaseTab
+   scan message.
+6. **Add a Rust unit test** for the corpse-search ingest with synthetic Player.log lines —
+   **important** because the current real Player.log + Player-prev.log have **no corpse searches**
+   (the goblin session rotated out), so there's no live data to verify against right now.
+
+### Gotchas
+- **killed_at parity**: live and the Player-prev backfill must produce the *same* `killed_at` for a
+  given corpse so the `(char,server,entity_id,killed_at)` unique index catches the live-vs-rotation
+  overlap (content-hash only catches re-reading the *same* file). Use the FIRST `Search Corpse`
+  line's timestamp per corpse in BOTH paths, with the date derived from the Player.log login line.
+- A corpse is searched by **multiple** `Search Corpse of X` lines (one per looted item) — collapse
+  to ONE kill row per corpse entity_id.
+- `enemy_kills`/`enemy_kill_loot` are used ONLY by the drop-rate feature (coordinator, replay,
+  `kill_tracking_commands`, migrations) — safe to repurpose. `get_enemy_kill_stats` /
+  `get_item_drop_sources` + the Database tab import/export work unchanged on the repurposed tables.
+
+### Scaffolding already built this session that the pivot KEEPS (mostly)
+- `settings.rs`: `auto_ingest_player_prev` (default true) + `get_player_prev_log_path()` +
+  `get_auto_ingest_player_prev()`. `settingsStore.ts` + `GeneralSettings.vue` toggle. (Keep.)
+- `replay.rs`: `spawn_player_prev_watcher` (mtime poll, 10s delay then every 30s) + content-hash
+  idempotency + `ingest_player_log` Tauri command (registered in `lib.rs`). (Keep; rewrite the
+  ingest body to Player.log-only corpse-search.)
+- `coordinator.rs` `persist_enemy_kill` → `INSERT OR IGNORE` + existing-id lookup. (Superseded —
+  this fn stops being called from the chat path; logic moves to a `persist_corpse_search`.)
+- `DatabaseTab.vue`: "Scan a log file now" button + `doScan`. (Keep.)
+
+---
+
 **Date:** 2026-06-20
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (version string v0.9.13)

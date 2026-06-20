@@ -179,6 +179,13 @@ pub struct AppSettings {
     /// Useful when the game install or user profile moves between launches.
     #[serde(default)]
     pub auto_detect_paths_on_startup: bool,
+
+    /// When true (default), automatically back up Player-prev.log into the
+    /// lifetime kill/loot database whenever the game rotates it (so sessions
+    /// played without glogger running are still captured). Deduped against
+    /// live data, so no double-counting.
+    #[serde(default = "default_true")]
+    pub auto_ingest_player_prev: bool,
 }
 
 fn default_dashboard_widget_opacity() -> u32 {
@@ -337,6 +344,7 @@ impl Default for AppSettings {
             ui_font_size: default_ui_font_size(),
             dashboard_widget_opacity: default_dashboard_widget_opacity(),
             auto_detect_paths_on_startup: false,
+            auto_ingest_player_prev: true,
         }
     }
 }
@@ -433,6 +441,14 @@ impl SettingsManager {
         Some(PathBuf::from(&settings.game_data_path).join("Player.log"))
     }
 
+    /// Get Player-prev.log path (the previous session, rotated by the game).
+    /// Derived as a sibling of the active Player.log.
+    pub fn get_player_prev_log_path(&self) -> Option<PathBuf> {
+        let player_log = self.get_player_log_path()?;
+        let parent = player_log.parent()?;
+        Some(parent.join("Player-prev.log"))
+    }
+
     /// Get ChatLogs directory path
     pub fn get_chat_logs_dir(&self) -> Option<PathBuf> {
         let settings = self.settings.read().unwrap();
@@ -442,6 +458,11 @@ impl SettingsManager {
         }
 
         Some(PathBuf::from(&settings.game_data_path).join("ChatLogs"))
+    }
+
+    /// Whether automatic Player-prev.log backfill is enabled.
+    pub fn get_auto_ingest_player_prev(&self) -> bool {
+        self.settings.read().unwrap().auto_ingest_player_prev
     }
 }
 

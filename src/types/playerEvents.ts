@@ -320,6 +320,10 @@ export interface CorpseExtractEvent {
   quantity: number
   skill: string // "Butchering" | "Skinning"
   corpse_name: string | null
+  skill_level: number | null
+  equipment_bonus: number | null
+  anatomy_family: string | null
+  anatomy_level: number | null
 }
 
 // === Union Type ===

@@ -31,6 +31,24 @@ export interface FarmingExtractLoot {
   quantity: number  // total amount extracted from this enemy type
   drops: number     // number of distinct extract events
   skill: string     // "Butchering" | "Skinning"
+  // Harvest conditions (latest observed this session), parsed from Player.log.
+  skillLevel?: number       // Butchering/Skinning level at harvest time
+  equipmentBonus?: number   // "+N skill bonus from equipment"
+  anatomyFamily?: string    // e.g. "Canines" — the monster's anatomy family
+  anatomyLevel?: number     // your anatomy level for that family
+}
+
+// Per-corpse butchering detail for an item, from the `get_corpse_extract_details`
+// backend command (lifetime, persisted) — used by the History tab hover.
+export interface ExtractDetail {
+  corpse_name: string | null
+  skill: string
+  times: number
+  total_quantity: number
+  skill_level: number | null
+  equipment_bonus: number | null
+  anatomy_family: string | null
+  anatomy_level: number | null
 }
 
 // === Loot drop breakdown (session tab item popover) ===
@@ -86,6 +104,12 @@ export interface ImportedSource {
   enemy_count: number
 }
 
+export interface IngestResult {
+  kills_added: number
+  loot_added: number
+  already_ingested: boolean
+}
+
 // One row of the per-item drop breakdown shown in the hover popover.
 export interface ItemDropBreakdownRow {
   enemyName: string
@@ -97,6 +121,12 @@ export interface ItemDropBreakdownRow {
   allTimeKills: number | null
   allTimeDropRate: number | null      // 0..1, times_dropped / total_kills
   lootTableSharePct: number | null    // item's share of this enemy's full loot table, by quantity
+  // Extract-mode harvest conditions (skinning/butchering only)
+  skill?: string             // "Skinning" | "Butchering"
+  skillLevel?: number
+  equipmentBonus?: number
+  anatomyFamily?: string
+  anatomyLevel?: number
 }
 
 export interface FarmingSession {

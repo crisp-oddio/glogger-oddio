@@ -41,6 +41,7 @@ export interface AppSettings {
   uiFontSize: number;
   dashboardWidgetOpacity: number;
   autoDetectPathsOnStartup: boolean;
+  autoIngestPlayerPrev: boolean;
   viewPreferences: Record<string, Record<string, unknown>>;
 }
 
@@ -83,6 +84,7 @@ interface BackendSettings {
   ui_font_size: number;
   dashboard_widget_opacity: number;
   auto_detect_paths_on_startup: boolean;
+  auto_ingest_player_prev: boolean;
   view_preferences: Record<string, Record<string, unknown>>;
 }
 
@@ -126,6 +128,7 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     ui_font_size: settings.uiFontSize,
     dashboard_widget_opacity: settings.dashboardWidgetOpacity,
     auto_detect_paths_on_startup: settings.autoDetectPathsOnStartup,
+    auto_ingest_player_prev: settings.autoIngestPlayerPrev,
     view_preferences: settings.viewPreferences,
   };
 }
@@ -226,6 +229,7 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     uiFontSize: settings.ui_font_size ?? DEFAULT_FONT_SIZE,
     dashboardWidgetOpacity: settings.dashboard_widget_opacity ?? DEFAULT_WIDGET_OPACITY,
     autoDetectPathsOnStartup: settings.auto_detect_paths_on_startup ?? false,
+    autoIngestPlayerPrev: settings.auto_ingest_player_prev ?? true,
     viewPreferences: settings.view_preferences ?? {},
   };
 }
@@ -270,6 +274,7 @@ function getDefaultSettings(): AppSettings {
     uiFontSize: DEFAULT_FONT_SIZE,
     dashboardWidgetOpacity: DEFAULT_WIDGET_OPACITY,
     autoDetectPathsOnStartup: false,
+    autoIngestPlayerPrev: true,
     viewPreferences: {},
   };
 }

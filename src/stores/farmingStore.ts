@@ -106,6 +106,11 @@ export const useFarmingStore = defineStore("farming", () => {
         tally.quantity += event.quantity;
         tally.drops += 1;
         tally.skill = event.skill;
+        // Latest-observed harvest conditions (only overwrite when present).
+        if (event.skill_level != null) tally.skillLevel = event.skill_level;
+        if (event.equipment_bonus != null) tally.equipmentBonus = event.equipment_bonus;
+        if (event.anatomy_family != null) tally.anatomyFamily = event.anatomy_family;
+        if (event.anatomy_level != null) tally.anatomyLevel = event.anatomy_level;
         s.extracts[enemyName][event.item_name] = tally;
         break;
       }
@@ -533,6 +538,11 @@ export const useFarmingStore = defineStore("farming", () => {
         sessionQuantity: e.loot!.quantity,
         sessionDrops: e.loot!.drops,
         sessionKills: e.kills[e.enemyName]?.count ?? 0,
+        skill: e.loot!.skill,
+        skillLevel: e.loot!.skillLevel,
+        equipmentBonus: e.loot!.equipmentBonus,
+        anatomyFamily: e.loot!.anatomyFamily,
+        anatomyLevel: e.loot!.anatomyLevel,
       }))
       .sort((a, b) => b.sessionQuantity - a.sessionQuantity);
   }

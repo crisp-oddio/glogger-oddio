@@ -262,6 +262,21 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 47)?;
     }
 
+    if current_version < 48 {
+        migration_v48_kill_dedup_and_ingest_tracking(conn)?;
+        super::record_migration(conn, 48)?;
+    }
+
+    if current_version < 49 {
+        migration_v49_corpse_search_loot_model(conn)?;
+        super::record_migration(conn, 49)?;
+    }
+
+    if current_version < 50 {
+        migration_v50_corpse_extracts(conn)?;
+        super::record_migration(conn, 50)?;
+    }
+
     Ok(())
 }
 
@@ -2371,6 +2386,104 @@ fn migration_v47_imported_kill_loot_data(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_imported_loot_source ON imported_enemy_kill_loot_agg(source_label);
         CREATE INDEX idx_imported_loot_enemy ON imported_enemy_kill_loot_agg(enemy_name);
         CREATE INDEX idx_imported_loot_item ON imported_enemy_kill_loot_agg(item_name);"
+    )?;
+    Ok(())
+}
+
+/// Migration v48: Deduplication support for the kill/loot database, enabling
+/// historical backfill (e.g. ingesting Player-prev.log on rotation) to coexist
+/// with live tailing without double-counting.
+///
+/// - A UNIQUE index on the natural key of a kill lets both the live tailer and
+///   the historical ingester use `INSERT OR IGNORE` — the same real kill
+///   (identical character/server/entity/timestamp from the same Chat.log
+///   FATALITY line) is written at most once regardless of source.
+/// - `player_prev_ingests` records the content hash of each backed-up log so a
+///   given rotation is never re-processed.
+///
+/// De-dupes any pre-existing duplicate kill rows first so the UNIQUE index can
+/// be created (live tailing shouldn't produce exact dups, but be safe).
+fn migration_v48_kill_dedup_and_ingest_tracking(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM enemy_kills
+         WHERE id NOT IN (
+             SELECT MIN(id) FROM enemy_kills
+             GROUP BY character_name, server_name, enemy_entity_id, killed_at
+         );
+
+         CREATE UNIQUE INDEX idx_enemy_kills_dedup
+             ON enemy_kills(character_name, server_name, enemy_entity_id, killed_at);
+
+         CREATE TABLE player_prev_ingests (
+             content_hash TEXT PRIMARY KEY,
+             source_path TEXT,
+             ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+             kills_added INTEGER NOT NULL DEFAULT 0,
+             loot_added INTEGER NOT NULL DEFAULT 0
+         );"
+    )?;
+    Ok(())
+}
+
+/// Migration v49: pivot the drop-rate model from chat-FATALITY kills to
+/// Player.log corpse searches.
+///
+/// The old model attributed loot by matching a chat-FATALITY kill's entity_id
+/// against the Player.log corpse entity_id; those IDs don't match, so loot was
+/// almost never attributed and the DB sat near-empty. The new model records one
+/// kill row per *lootable* searched corpse (Player.log `Search Corpse of X`)
+/// keyed by the corpse entity_id, which matches the loot's corpse entity_id —
+/// so attribution is reliable.
+///
+/// - Wipes the old (near-empty, mis-attributed) `enemy_kills`/`enemy_kill_loot`
+///   rows and the `player_prev_ingests` log so backfills re-run under the new
+///   model.
+/// - Adds `enemy_kill_loot.instance_id` (the item's signed-32-bit instance id,
+///   stored bit-preserved as INTEGER) and a UNIQUE index on
+///   `(kill_id, instance_id)`. Each looted item instance is unique, so two
+///   separate single-stacks of the same item off one corpse stay as two rows —
+///   `INSERT OR IGNORE` only collapses a genuine re-read of the same instance.
+fn migration_v49_corpse_search_loot_model(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM enemy_kill_loot;
+         DELETE FROM enemy_kills;
+         DELETE FROM player_prev_ingests;
+
+         ALTER TABLE enemy_kill_loot ADD COLUMN instance_id INTEGER;
+
+         CREATE UNIQUE INDEX idx_kill_loot_dedup
+             ON enemy_kill_loot(kill_id, instance_id);"
+    )?;
+    Ok(())
+}
+
+/// Migration v50: per-extract butchering/skinning detail.
+///
+/// Records one row per skinning/butchering yield with the conditions at harvest
+/// time — the player's Butchering/Skinning level, the equipment skill bonus, and
+/// the anatomy family + level for that monster type — all parsed from Player.log
+/// (`ProcessUpdateSkill` + the corpse body's "(with a +N skill bonus from
+/// equipment)"). Surfaced in the farming item hover tooltips. Separate from the
+/// loot-drop tables since extracts produce no `ProcessRemoveLoot`.
+fn migration_v50_corpse_extracts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE corpse_extracts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_name TEXT,
+            server_name TEXT,
+            corpse_name TEXT,
+            item_name TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            skill TEXT NOT NULL,
+            skill_level INTEGER,
+            equipment_bonus INTEGER,
+            anatomy_family TEXT,
+            anatomy_level INTEGER,
+            extracted_at TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_corpse_extracts_item ON corpse_extracts(item_name);
+        CREATE INDEX idx_corpse_extracts_corpse ON corpse_extracts(corpse_name);"
     )?;
     Ok(())
 }

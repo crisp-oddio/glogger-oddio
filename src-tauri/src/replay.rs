@@ -558,3 +558,389 @@ pub async fn replay_dual_logs(
 
     Ok(result)
 }
+
+// ============================================================
+// Historical kill/loot backfill (silent — no frontend events)
+// ============================================================
+
+/// Result of a historical ingest of a Player.log file.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IngestResult {
+    /// Lootable searched corpses recorded as kills (the drop-rate denominator).
+    pub kills_added: usize,
+    /// Loot rows attributed to those kills.
+    pub loot_added: usize,
+    /// True when this exact file content was already ingested before (no-op).
+    pub already_ingested: bool,
+}
+
+/// FNV-1a hash of file contents — cheap, dependency-free idempotency key.
+fn content_hash(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Parse a Player.log login line, returning `(character_name, base_date)`.
+///
+/// Format: `[HH:MM:SS] Logged in as character <Name>. Time UTC=MM/DD/YYYY HH:MM:SS. Timezone Offset ±HH:MM:SS`
+/// Player.log is self-sufficient — no Chat.log pairing is needed: the character
+/// and the UTC base date both come from this line.
+fn parse_player_login_line(line: &str) -> Option<(String, chrono::NaiveDate)> {
+    let marker = "Logged in as character ";
+    let start = line.find(marker)? + marker.len();
+    let rest = &line[start..];
+    // Name runs up to the first '.' (character names contain no periods).
+    let dot = rest.find('.')?;
+    let character_name = rest[..dot].trim().trim_matches(['[', ']']).to_string();
+    if character_name.is_empty() {
+        return None;
+    }
+
+    let utc_marker = "Time UTC=";
+    let utc_start = line.find(utc_marker)? + utc_marker.len();
+    let utc_rest = &line[utc_start..];
+    // Date is the first whitespace-delimited token: "MM/DD/YYYY".
+    let date_token = utc_rest.split_whitespace().next()?;
+    let base_date = chrono::NaiveDate::parse_from_str(date_token, "%m/%d/%Y").ok()?;
+    Some((character_name, base_date))
+}
+
+/// Silently ingest lootable kills + loot from a single Player.log into the
+/// lifetime database, deduped against live data via the enemy_kills UNIQUE
+/// index. Emits no frontend events and does not touch live game state.
+///
+/// The drop-rate model is corpse-search based: each lootable `Search Corpse of
+/// X` (permission granted) is one kill row keyed by the corpse entity_id (the
+/// FIRST search's timestamp), and loot is attributed by matching the same corpse
+/// entity_id. Loot dedup is by the item's `instance_id` so two separate
+/// single-stacks of the same item off one corpse stay as two rows. Player.log is
+/// self-sufficient (character + UTC date from the login line) — no Chat.log.
+pub fn ingest_kill_loot_from_logs(
+    player_log_path: PathBuf,
+    db: &DbPool,
+) -> Result<IngestResult, String> {
+    let player_bytes =
+        std::fs::read(&player_log_path).map_err(|e| format!("Failed to read Player.log: {e}"))?;
+    let hash = content_hash(&player_bytes);
+
+    let conn = db.get().map_err(|e| format!("DB connection error: {e}"))?;
+
+    // Idempotency: skip if this exact Player.log content was already ingested.
+    let already: bool = conn
+        .query_row(
+            "SELECT 1 FROM player_prev_ingests WHERE content_hash = ?1",
+            [&hash],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if already {
+        return Ok(IngestResult {
+            kills_added: 0,
+            loot_added: 0,
+            already_ingested: true,
+        });
+    }
+
+    // First login line gives the character + UTC base date used to timestamp
+    // every event. Without it we can't produce killed_at parity with the live
+    // path, so bail (nothing to ingest).
+    let content = String::from_utf8_lossy(&player_bytes);
+    let (character_name, base_date) = match content
+        .lines()
+        .find_map(parse_player_login_line)
+    {
+        Some(v) => v,
+        None => {
+            return Ok(IngestResult {
+                kills_added: 0,
+                loot_added: 0,
+                already_ingested: false,
+            });
+        }
+    };
+    // Server isn't recorded in Player.log; mirror the live path's fallback so the
+    // dedup key matches when a server-less session is involved.
+    let server_name = "Unknown".to_string();
+
+    let player_events = parse_player_log_lines(&player_log_path, base_date)?;
+
+    // --- Pass A: collect searched corpses (with permission) + their loot ---
+    let mut parser = PlayerEventParser::new();
+    // corpse_entity_id -> (corpse_name, first-search killed_at)
+    let mut corpses: std::collections::HashMap<u32, (String, String)> =
+        std::collections::HashMap::new();
+    // ordered loot: (corpse_entity_id, item_name, quantity, instance_id)
+    let mut loot: Vec<(u32, String, u32, i64)> = Vec::new();
+
+    for event in &player_events {
+        let line = match event {
+            TimedEvent::PlayerLine { line, .. } => line,
+            _ => continue,
+        };
+        for ev in parser.process_line(line) {
+            match ev {
+                PlayerEvent::CorpseSearched {
+                    timestamp,
+                    corpse_entity_id,
+                    corpse_name,
+                    has_permission,
+                } => {
+                    if !has_permission {
+                        continue;
+                    }
+                    // Keep the FIRST search per corpse (parity with the live path).
+                    corpses
+                        .entry(corpse_entity_id)
+                        .or_insert((corpse_name, timestamp));
+                }
+                PlayerEvent::LootPickedUp {
+                    corpse_entity_id: Some(cid),
+                    item_name: Some(item),
+                    instance_id,
+                    quantity,
+                    ..
+                } => {
+                    if !item.is_empty() {
+                        loot.push((cid, item, quantity, instance_id as i64));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // --- Pass B: persist kills, then attribute loot ---
+    let mut result = IngestResult {
+        kills_added: 0,
+        loot_added: 0,
+        already_ingested: false,
+    };
+
+    // corpse_entity_id -> kill_id (row id of the persisted kill)
+    let mut kill_ids: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
+
+    for (entity_id, (corpse_name, killed_at)) in &corpses {
+        let entity_id_str = entity_id.to_string();
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO enemy_kills
+                    (enemy_name, enemy_entity_id, killing_ability,
+                     health_damage, armor_damage, killed_at, character_name, server_name)
+                 VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5)",
+                rusqlite::params![
+                    corpse_name,
+                    entity_id_str,
+                    killed_at,
+                    character_name,
+                    server_name,
+                ],
+            )
+            .map_err(|e| format!("Failed to insert kill: {e}"))?;
+
+        // Resolve the kill_id whether we inserted or an earlier ingest/live row
+        // already covered this corpse — loot is deduped by instance_id either way.
+        let kill_id = if inserted > 0 {
+            result.kills_added += 1;
+            conn.last_insert_rowid()
+        } else {
+            conn.query_row(
+                "SELECT id FROM enemy_kills
+                 WHERE character_name IS ?1 AND server_name IS ?2
+                   AND enemy_entity_id = ?3 AND killed_at = ?4",
+                rusqlite::params![character_name, server_name, entity_id_str, killed_at],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(-1)
+        };
+        if kill_id >= 0 {
+            kill_ids.insert(*entity_id, kill_id);
+        }
+    }
+
+    for (entity_id, item_name, quantity, instance_id) in &loot {
+        let kill_id = match kill_ids.get(entity_id) {
+            Some(id) => *id,
+            None => continue, // loot from a corpse we didn't (or couldn't) record
+        };
+        if conn
+            .execute(
+                "INSERT OR IGNORE INTO enemy_kill_loot
+                    (kill_id, item_name, quantity, instance_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![kill_id, item_name, quantity, instance_id],
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false)
+        {
+            result.loot_added += 1;
+        }
+    }
+
+    // Record this file as ingested (idempotency).
+    conn.execute(
+        "INSERT OR REPLACE INTO player_prev_ingests
+            (content_hash, source_path, ingested_at, kills_added, loot_added)
+         VALUES (?1, ?2, CURRENT_TIMESTAMP, ?3, ?4)",
+        rusqlite::params![
+            hash,
+            player_log_path.to_string_lossy(),
+            result.kills_added as i64,
+            result.loot_added as i64,
+        ],
+    )
+    .map_err(|e| format!("Failed to record ingest: {e}"))?;
+
+    Ok(result)
+}
+
+/// Spawn a background thread that backs up Player-prev.log into the lifetime
+/// kill/loot database whenever the game rotates it (mtime change). Ingestion is
+/// idempotent (content-hash guarded) and deduped against live data, so this is
+/// safe to run alongside live tailing. Honors the `auto_ingest_player_prev`
+/// setting, re-checked each tick so toggling it takes effect without a restart.
+pub fn spawn_player_prev_watcher(
+    settings: std::sync::Arc<crate::settings::SettingsManager>,
+    db: DbPool,
+) {
+    std::thread::spawn(move || {
+        // Let startup settle before the first scan.
+        std::thread::sleep(Duration::from_secs(10));
+        let mut last_mtime: Option<std::time::SystemTime> = None;
+
+        loop {
+            if settings.get_auto_ingest_player_prev() {
+                if let Some(prev_path) = settings.get_player_prev_log_path() {
+                    if let Ok(mtime) = std::fs::metadata(&prev_path).and_then(|m| m.modified()) {
+                        if last_mtime != Some(mtime) {
+                            last_mtime = Some(mtime);
+                            match ingest_kill_loot_from_logs(prev_path.clone(), &db) {
+                                Ok(r) if !r.already_ingested => {
+                                    eprintln!(
+                                        "[ingest] Player-prev backfill: +{} kills, +{} loot",
+                                        r.kills_added, r.loot_added
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(e) => eprintln!("[ingest] Player-prev backfill failed: {e}"),
+                            }
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    });
+}
+
+/// Tauri command: ingest a single Player.log into the lifetime kill/loot
+/// database. Used for manual backfill of kept backups and by the automatic
+/// Player-prev.log rotation watcher. Player.log is self-sufficient — no Chat.log
+/// is needed.
+#[tauri::command]
+pub async fn ingest_player_log(
+    player_log_path: String,
+    app: AppHandle,
+) -> Result<IngestResult, String> {
+    let player_path = PathBuf::from(&player_log_path);
+    if !player_path.exists() {
+        return Err(format!("Player.log not found: {player_log_path}"));
+    }
+
+    let db = app.state::<DbPool>().inner().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        ingest_kill_loot_from_logs(player_path, &db)
+    })
+    .await
+    .map_err(|e| format!("Ingest task failed: {e}"))??;
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod ingest_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Build a fresh migrated DB at a unique temp path.
+    fn temp_pool() -> (DbPool, PathBuf) {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("glogger_ingest_test_{nanos}.db"));
+        let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
+        (pool, path)
+    }
+
+    fn write_log(lines: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("glogger_ingest_test_{nanos}.log"));
+        let mut f = std::fs::File::create(&path).expect("create log");
+        f.write_all(lines.as_bytes()).expect("write log");
+        path
+    }
+
+    #[test]
+    fn corpse_search_ingest_logs_every_lootable_kill_and_keeps_duplicate_stacks() {
+        // Corpse 500 (permission): two SEPARATE single-stacks of the same item
+        // off one corpse (distinct instance ids 111/222) must stay two rows.
+        // Corpse 600 (no permission): not the player's kill — excluded.
+        // Corpse 700 (permission): a lootable kill that dropped nothing — still
+        // logged (the "log every lootable kill" requirement).
+        let log = "\
+[15:41:09] Logged in as character TestPlayer. Time UTC=04/17/2026 15:41:09. Timezone Offset 00:00:00
+[15:42:00] LocalPlayer: ProcessTalkScreen(500, \"Search Corpse of Goblin\", \"\", \"\", System.Int32[], System.String[], 0, Corpse)
+[15:42:01] LocalPlayer: ProcessAddItem(HealthPotion(111), -1, True)
+[15:42:01] LocalPlayer: ProcessRemoveLoot(111)
+[15:42:02] LocalPlayer: ProcessAddItem(HealthPotion(222), -1, True)
+[15:42:02] LocalPlayer: ProcessRemoveLoot(222)
+[15:43:00] LocalPlayer: ProcessTalkScreen(600, \"Search Corpse of Wolf\", \"(You do not have permission to loot this corpse.)\", \"\", System.Int32[], System.String[], 0, Corpse)
+[15:44:00] LocalPlayer: ProcessTalkScreen(700, \"Search Corpse of Rat\", \"\", \"\", System.Int32[], System.String[], 0, Corpse)
+";
+        let log_path = write_log(log);
+        let (pool, db_path) = temp_pool();
+
+        let r = ingest_kill_loot_from_logs(log_path.clone(), &pool).expect("ingest");
+        assert!(!r.already_ingested);
+        // Two permission corpses (Goblin + Rat); the no-permission Wolf excluded.
+        assert_eq!(r.kills_added, 2, "lootable kills (permission corpses)");
+        // Both single-stacks survive instance_id dedup.
+        assert_eq!(r.loot_added, 2, "two distinct item instances");
+
+        let conn = pool.get().unwrap();
+        let kills: i64 = conn
+            .query_row("SELECT COUNT(*) FROM enemy_kills", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kills, 2);
+        // The Goblin's two HealthPotion instances are two distinct loot rows.
+        let goblin_loot: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM enemy_kill_loot l
+                 JOIN enemy_kills k ON k.id = l.kill_id
+                 WHERE k.enemy_entity_id = '500'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(goblin_loot, 2, "duplicate single-stacks not collapsed");
+
+        // Re-ingesting the same file is a content-hash no-op.
+        let r2 = ingest_kill_loot_from_logs(log_path.clone(), &pool).expect("re-ingest");
+        assert!(r2.already_ingested);
+        assert_eq!(r2.kills_added, 0);
+        assert_eq!(r2.loot_added, 0);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&log_path);
+        let _ = std::fs::remove_file(&db_path);
+    }
+}

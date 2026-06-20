@@ -109,9 +109,10 @@ pub struct DataIngestCoordinator {
     /// Set on ProcessStartInteraction with a Cow_ NPC, cleared on InteractionEnded.
     /// Used to attribute "Bottle of Milk" chat gains to a specific cow.
     pending_cow_interaction: Option<String>,
-    /// Maps enemy entity_id → (kill_row_id, timestamp) for attributing corpse loot
-    /// to specific kills. Entries expire after 120 seconds.
-    recent_kills: std::collections::HashMap<String, (i64, std::time::Instant)>,
+    /// Maps corpse entity_id → (kill_row_id, timestamp) for attributing corpse
+    /// loot to a specific searched corpse. Populated when a `Search Corpse of X`
+    /// loot window opens. Entries expire after 120 seconds.
+    recent_kills: std::collections::HashMap<u32, (i64, std::time::Instant)>,
 }
 
 impl DataIngestCoordinator {
@@ -1130,7 +1131,11 @@ impl DataIngestCoordinator {
                                     self.recent_damage.clear();
                                 }
                                 crate::chat_combat_parser::ChatCombatEvent::EnemyKilled { .. } => {
-                                    self.persist_enemy_kill(&combat_event);
+                                    // Drop-rate kills are now sourced from Player.log
+                                    // corpse searches (see process_corpse_search), not
+                                    // chat FATALITY lines — their entity_ids don't match
+                                    // the loot's corpse entity_id. We still emit the live
+                                    // event for the farming-session UI.
                                     self.app_handle
                                         .emit("enemy-killed", &combat_event)
                                         .ok();
@@ -1401,21 +1406,30 @@ impl DataIngestCoordinator {
 
     /// Persist an enemy kill to the database and cache the entity_id→kill_id mapping
     /// for later loot attribution.
-    fn persist_enemy_kill(
+    /// Record a lootable searched corpse as a kill row (the drop-rate
+    /// denominator) and cache its entity_id → kill_id for loot attribution.
+    ///
+    /// Fired from `PlayerEvent::CorpseSearched`. A corpse is searched by many
+    /// `Search Corpse of X` lines (one per looted item); the unique index on
+    /// `(character, server, entity_id, killed_at)` plus the cache collapse those
+    /// to ONE kill row per corpse, keyed to the FIRST search's timestamp.
+    /// No-permission corpses (`has_permission = false`) aren't the player's kill,
+    /// so they're skipped (excluded from the denominator).
+    fn process_corpse_search(
         &mut self,
-        event: &crate::chat_combat_parser::ChatCombatEvent,
+        corpse_entity_id: u32,
+        corpse_name: &str,
+        timestamp: &str,
+        has_permission: bool,
     ) {
-        let crate::chat_combat_parser::ChatCombatEvent::EnemyKilled {
-            timestamp,
-            enemy_name,
-            enemy_entity_id,
-            killing_ability,
-            health_damage,
-            armor_damage,
-        } = event
-        else {
+        if !has_permission {
             return;
-        };
+        }
+        // Already recorded this corpse (a later Search Corpse line) — keep the
+        // first-search row and its cached kill_id.
+        if self.recent_kills.contains_key(&corpse_entity_id) {
+            return;
+        }
 
         let character_name = self
             .game_state
@@ -1427,78 +1441,153 @@ impl DataIngestCoordinator {
             .get_active_server()
             .unwrap_or("Unknown")
             .to_string();
+        let entity_id_str = corpse_entity_id.to_string();
 
         let conn = match self.db_pool.get() {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Failed to get DB connection for enemy kill: {e}");
+                eprintln!("Failed to get DB connection for corpse search: {e}");
                 return;
             }
         };
 
+        // INSERT OR IGNORE against the dedup unique index
+        // (character, server, entity_id, killed_at) so a corpse already captured
+        // by a Player-prev backfill (same entity_id + first-search timestamp) is
+        // written at most once. killing_ability/damage are unknown from a corpse
+        // search, so they're left empty/zero.
         match conn.execute(
-            "INSERT INTO enemy_kills
+            "INSERT OR IGNORE INTO enemy_kills
                 (enemy_name, enemy_entity_id, killing_ability,
                  health_damage, armor_damage, killed_at, character_name, server_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5)",
             rusqlite::params![
-                enemy_name,
-                enemy_entity_id,
-                killing_ability,
-                health_damage,
-                armor_damage,
+                corpse_name,
+                entity_id_str,
                 timestamp,
                 character_name,
                 server_name,
             ],
         ) {
-            Ok(_) => {
-                let kill_id = conn.last_insert_rowid();
-                // Cache entity_id → kill_id for loot attribution when the player searches the corpse
-                self.recent_kills.insert(enemy_entity_id.clone(), (kill_id, std::time::Instant::now()));
+            Ok(inserted) => {
+                let kill_id = if inserted > 0 {
+                    conn.last_insert_rowid()
+                } else {
+                    conn.query_row(
+                        "SELECT id FROM enemy_kills
+                         WHERE character_name IS ?1 AND server_name IS ?2
+                           AND enemy_entity_id = ?3 AND killed_at = ?4",
+                        rusqlite::params![character_name, server_name, entity_id_str, timestamp],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap_or(-1)
+                };
+                if kill_id >= 0 {
+                    self.recent_kills
+                        .insert(corpse_entity_id, (kill_id, std::time::Instant::now()));
+                }
                 // Prune old entries (> 120s) to prevent unbounded growth
                 self.recent_kills.retain(|_, (_, t)| t.elapsed().as_secs() < 120);
             }
             Err(e) => {
-                eprintln!("Failed to insert enemy kill: {e}");
+                eprintln!("Failed to insert corpse-search kill: {e}");
             }
         }
     }
 
-    /// Process a batch of player events for LootPickedUp signals.
-    /// The parser now resolves item identity directly in LootPickedUp events,
-    /// so the coordinator just needs to link them to kills.
+    /// Process a batch of player events: record searched corpses, then attribute
+    /// loot to them. Events arrive in log order, so a corpse's `CorpseSearched`
+    /// precedes its `LootPickedUp` items within the batch.
+    ///
+    /// Loot dedup is by the item's `instance_id` (`INSERT OR IGNORE` on the
+    /// `(kill_id, instance_id)` unique index): two separate single-stacks of the
+    /// same item off one corpse have distinct instance ids, so they stay as two
+    /// rows; only a genuine re-read of the same instance is collapsed.
     fn attribute_loot_to_kills(&mut self, events: &[PlayerEvent]) {
-        if self.recent_kills.is_empty() {
-            return;
-        }
-
         for event in events {
-            if let PlayerEvent::LootPickedUp {
-                corpse_entity_id: Some(corpse_entity_id),
-                item_name: Some(item_name),
-                quantity,
-                ..
-            } = event
-            {
-                if item_name.is_empty() {
-                    continue;
+            match event {
+                PlayerEvent::CorpseSearched {
+                    timestamp,
+                    corpse_entity_id,
+                    corpse_name,
+                    has_permission,
+                } => {
+                    self.process_corpse_search(
+                        *corpse_entity_id,
+                        corpse_name,
+                        timestamp,
+                        *has_permission,
+                    );
                 }
-
-                // Find the kill_id for this corpse entity
-                let kill_id = match self.recent_kills.get(&corpse_entity_id.to_string()) {
-                    Some((id, _)) => *id,
-                    None => continue,
-                };
-
-                // Persist to enemy_kill_loot
-                if let Ok(conn) = self.db_pool.get() {
-                    conn.execute(
-                        "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity) VALUES (?1, ?2, ?3)",
-                        rusqlite::params![kill_id, item_name, *quantity],
-                    )
-                    .ok();
+                PlayerEvent::LootPickedUp {
+                    corpse_entity_id: Some(corpse_entity_id),
+                    item_name: Some(item_name),
+                    instance_id,
+                    quantity,
+                    ..
+                } => {
+                    if item_name.is_empty() {
+                        continue;
+                    }
+                    let kill_id = match self.recent_kills.get(corpse_entity_id) {
+                        Some((id, _)) => *id,
+                        None => continue,
+                    };
+                    // Store instance_id bit-preserved as a signed i64 so the same
+                    // string maps to the same dedup key as the backfill path.
+                    let instance_id_signed = *instance_id as i64;
+                    if let Ok(conn) = self.db_pool.get() {
+                        conn.execute(
+                            "INSERT OR IGNORE INTO enemy_kill_loot
+                                (kill_id, item_name, quantity, instance_id)
+                             VALUES (?1, ?2, ?3, ?4)",
+                            rusqlite::params![kill_id, item_name, *quantity, instance_id_signed],
+                        )
+                        .ok();
+                    }
                 }
+                PlayerEvent::CorpseExtract {
+                    timestamp,
+                    item_name,
+                    quantity,
+                    skill,
+                    corpse_name,
+                    skill_level,
+                    equipment_bonus,
+                    anatomy_family,
+                    anatomy_level,
+                    ..
+                } => {
+                    if item_name.is_empty() {
+                        continue;
+                    }
+                    let character = self.game_state.get_active_character().map(String::from);
+                    let server = self.game_state.get_active_server().map(String::from);
+                    if let Ok(conn) = self.db_pool.get() {
+                        conn.execute(
+                            "INSERT INTO corpse_extracts
+                                (character_name, server_name, corpse_name, item_name,
+                                 quantity, skill, skill_level, equipment_bonus,
+                                 anatomy_family, anatomy_level, extracted_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                            rusqlite::params![
+                                character,
+                                server,
+                                corpse_name,
+                                item_name,
+                                *quantity,
+                                skill,
+                                skill_level,
+                                equipment_bonus,
+                                anatomy_family,
+                                anatomy_level,
+                                timestamp,
+                            ],
+                        )
+                        .ok();
+                    }
+                }
+                _ => {}
             }
         }
     }
