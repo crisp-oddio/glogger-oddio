@@ -71,6 +71,17 @@ pub enum PlayerEvent {
         delta: f32,
         is_gift: bool,
     },
+    /// The game's authoritative weekly gift count for an NPC, parsed from the
+    /// "<Npc> will accept up to <b>N</b> gifts per calendar week and has received
+    /// <b>M</b> so far this week" note shown by gift-capped (Statehelm) NPCs.
+    /// Used to reconcile the gift log — bulk-gifting a stack emits a single
+    /// ProcessDeltaFavor line, so counting favor events alone undercounts.
+    GiftCountObserved {
+        timestamp: String,
+        npc_name: String,
+        received: u32,
+        max: u32,
+    },
 
     // === Vendor Events ===
     VendorSold {
@@ -1070,6 +1081,12 @@ impl PlayerEventParser {
             if let Some(ev) = self.parse_delta_favor(line) {
                 events.push(ev);
             }
+        } else if line.contains("gifts per calendar week and has received") {
+            // Gift-cap note embedded in a ProcessTalkScreen / ProcessPromptForItem
+            // line — carries the game's authoritative weekly gift count.
+            if let Some(ev) = self.parse_gift_count(line) {
+                events.push(ev);
+            }
         } else if line.contains("ProcessVendorAddItem(") {
             // This should have been handled in resolve_pending_deletes,
             // but handle standalone case too
@@ -1656,6 +1673,47 @@ impl PlayerEventParser {
             npc_name,
             delta,
             is_gift,
+        })
+    }
+
+    /// Parse the gift-cap note that gift-capped (Statehelm) NPCs show:
+    /// `<Npc> will accept up to <b>5</b> gifts per calendar week and has received
+    /// <b>2</b> so far this week.` The note is embedded in a ProcessTalkScreen
+    /// (post-gift) or ProcessPromptForItem (pre-gift) line; either gives the
+    /// game's authoritative current count, which the gift log is reconciled to.
+    fn parse_gift_count(&self, line: &str) -> Option<PlayerEvent> {
+        let ts = parse_timestamp(line)?;
+
+        let marker = " will accept up to <b>";
+        let marker_pos = line.find(marker)?;
+
+        // NPC display name: the word(s) just before " will accept up to". The
+        // preceding sentence ends with ". ", so take everything after the last
+        // ". " before the marker.
+        let before = &line[..marker_pos];
+        let name_start = before.rfind(". ").map(|i| i + 2).unwrap_or(0);
+        let npc_name = before[name_start..].trim().to_string();
+        if npc_name.is_empty() {
+            return None;
+        }
+
+        // max: the number inside the first <b>…</b> after the marker.
+        let after_marker = &line[marker_pos + marker.len()..];
+        let max_end = after_marker.find("</b>")?;
+        let max: u32 = after_marker[..max_end].trim().parse().ok()?;
+
+        // received: "has received <b>N</b> so far this week"
+        let recv_marker = "has received <b>";
+        let recv_pos = line.find(recv_marker)?;
+        let recv_rest = &line[recv_pos + recv_marker.len()..];
+        let recv_end = recv_rest.find("</b>")?;
+        let received: u32 = recv_rest[..recv_end].trim().parse().ok()?;
+
+        Some(PlayerEvent::GiftCountObserved {
+            timestamp: ts,
+            npc_name,
+            received,
+            max,
         })
     }
 
@@ -3434,6 +3492,50 @@ mod tests {
                 assert!(*is_gift);
             }
             _ => panic!("Expected FavorChanged"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gift_count_from_talk_screen() {
+        let mut parser = PlayerEventParser::new();
+        // Post-gift confirmation: bulk-gifting a stack jumps the count straight to 5.
+        let line = r#"[04:31:04] LocalPlayer: ProcessTalkScreen(25493, "", "Oh, thanks!\n\n<i>[Note: Statehelm townsfolk are more sophisticated than villagers elsewhere. It would be uncouth to receive too many gifts per week -- Statehelm villagers value quality over quantity. Corinth will accept up to <b>5</b> gifts per calendar week and has received <b>5</b> so far this week. (The week resets on Monday EDT.)]</i>", "", [-1201,], System.String[], -1301, Generic)"#;
+        let events = parser.process_line(line);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            PlayerEvent::GiftCountObserved {
+                npc_name,
+                received,
+                max,
+                ..
+            } => {
+                assert_eq!(npc_name, "Corinth");
+                assert_eq!(*received, 5);
+                assert_eq!(*max, 5);
+            }
+            _ => panic!("Expected GiftCountObserved"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gift_count_multiword_name_pre_gift() {
+        let mut parser = PlayerEventParser::new();
+        // Pre-gift prompt with a multi-word NPC name and a partial count.
+        let line = r#"[04:25:20] LocalPlayer: ProcessPromptForItem(31486, "Give Gift", "A gift? For me?\n\n<i>[Note: Statehelm villagers value quality over quantity. Sir Brooker will accept up to <b>5</b> gifts per calendar week and has received <b>2</b> so far this week. (The week resets on Monday EDT.)]</i>", "Choose gift", null, [-1201,], System.String[], -1301, "", Error, 0, ForNpc, "NPC_SirBrooker")"#;
+        let events = parser.process_line(line);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            PlayerEvent::GiftCountObserved {
+                npc_name,
+                received,
+                max,
+                ..
+            } => {
+                assert_eq!(npc_name, "Sir Brooker");
+                assert_eq!(*received, 2);
+                assert_eq!(*max, 5);
+            }
+            _ => panic!("Expected GiftCountObserved"),
         }
     }
 

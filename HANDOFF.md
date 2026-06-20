@@ -1,11 +1,86 @@
 # glogger — Session Handoff
 
-**Date:** 2026-06-20
+**Date:** 2026-06-19
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` == `main` (both at `9ac3036`, version strings v0.9.11)
-**Outcome:** **Flatpak CI fixed** — releases now auto-build + attach a Linux
-Flatpak. The Session-6 live-tailing button is committed. `dev` and `main` are
-synced and prepped for the v0.9.12 release.
+**Branch:** `dev` (== `main` at `99661ab`, version strings v0.9.12)
+**Outcome:** **Statehelm Gifting widget reworked** to be skill-driven, plus two
+gift-tracking bug fixes (sewer NPCs excluded; bulk-gift counting). Verified live in
+the dev build; committed on `dev` and pushed to `main`.
+
+---
+
+## Session 8 — Statehelm widget skill-driven rework + gift-count fixes (2026-06-19)
+
+**Outcome:** The dashboard **Statehelm Gifting** widget (`statehelm-summary`) now
+surfaces the NPCs that train the player's most-relevant skills instead of an
+alphabetical "fewest gifts first" list, and two real bugs in gift tracking were
+root-caused and fixed. All type-checked (`vue-tsc` clean), `cargo test` green (107
+parser tests incl. 2 new), and **verified live** by the user.
+
+### ✨ Widget rework — `useStatehelmTracker.ts` + `StatehelmSummaryWidget.vue`
+
+Two labeled sections driven by the player's own skills:
+- **Combat:** NPCs for the **2 equipped** combat skills + the player's **top 4**
+  combat skills (by **base level**) — up to `4 + equipped` slots, equipped first and
+  marked with a gold ✦.
+- **Non-Combat:** NPCs for the player's **top 2** non-combat skills.
+
+Design rules (decided with the user):
+- **Skill → combat/non-combat** comes from the CDN `combat` flag (`get_all_skills`,
+  cached module-level so both StatehelmView + the widget share one fetch).
+- **NPC category = "combat wins ties"**: an NPC that trains *any* combat skill is a
+  combat NPC; only purely non-combat NPCs are eligible for the non-combat section.
+- **Skill → NPC**: when several Statehelm NPCs train a skill (e.g. Geology → 3), the
+  one with the **highest current favor standing** represents it (`tierIndex`).
+- **Falloff + backfill**: `representativeFor()` skips any NPC already at 5/5 this
+  week, so when *any* NPC (equipped included) is maxed it drops off and the
+  next-highest skill of that category backfills the slot — the combat section walks
+  equipped-first then ranked, capped at `4 + equipped`, deduped by NPC.
+
+### 🐞 Fix 1 — Statehelm Sewers NPCs no longer appear
+
+`statehelmNpcs` filtered on `area.includes('statehelm')`, which also matched
+**"Statehelm Sewers"** (`AreaName == AreaStatehelmCaves`) — home to the Pig/Rabbit
+animal-form trainers (Hamilton, Fuzzlebun) that have **no** weekly 5-gift cap. Filter
+now requires `area_name === 'AreaStatehelm'` exactly (the city proper, 63 NPCs).
+
+### 🐞 Fix 2 — bulk-gifting a stack only counted as 1
+
+Root cause: gifting a **stack** of N identical items emits a **single**
+`ProcessDeltaFavor(npcId, "NPC_X", delta, True)` line with N× the per-item favor
+(confirmed: Corinth `58.464 = 5 × 11.6928`). The gift log counted one row per favor
+event → undercount. **But the game prints the authoritative count** in the gift
+dialog: `<Npc> will accept up to <b>5</b> gifts per calendar week and has received
+<b>N</b> so far this week` (in `ProcessTalkScreen` post-gift / `ProcessPromptForItem`
+pre-gift).
+
+- **`player_event_parser.rs`** — new `PlayerEvent::GiftCountObserved { npc_name,
+  received, max }` + `parse_gift_count` (matches the sentence substring, walks back
+  from `" will accept up to <b>"` past the last `". "` to capture multi-word names
+  like "Sir Brooker"). Dispatched before the `ProcessTalkScreen` branch. 2 unit tests.
+- **`game_state.rs`** — `GiftCountObserved` arm **reconciles** that NPC's gift-log
+  rows for the current week (Monday 00:00 UTC, new `current_week_start_utc()` helper)
+  up/down to the game's exact count, leaving other NPCs and the manual +/- controls
+  intact. Coexists with the existing per-`FavorChanged` insert (which still covers
+  non-Statehelm gifts): the reconcile is absolute, not additive, so no double count.
+  - **Note:** the reconcile only fires when the game re-emits that note (i.e. next
+    time you open/complete a gift dialog for that NPC) — it won't retroactively fix a
+    gift given before this build without re-opening the NPC's gift dialog.
+
+### Files touched
+
+- `src/composables/useStatehelmTracker.ts` (sewer filter + skill-driven targets)
+- `src/components/Dashboard/widgets/StatehelmSummaryWidget.vue` (two-section UI)
+- `src-tauri/src/player_event_parser.rs` (`GiftCountObserved` + parser + tests)
+- `src-tauri/src/game_state.rs` (reconcile handler + `current_week_start_utc`)
+- `docs/features/screens/dashboard/widget-statehelm-summary.md` (behavior doc)
+
+### ⚠️ Gotcha discovered (dev-loop tooling)
+
+Running `cargo test` while `npm run tauri dev` is mid-rebuild **collides on the
+`target/` build lock** — it wedged the dev process and the app exited. If you need to
+run tests during a live session, stop the dev build first (or expect to relaunch it).
+Cleanup used here: kill `cargo`/`glogger`, free port 1420, relaunch `npm run tauri dev`.
 
 ---
 

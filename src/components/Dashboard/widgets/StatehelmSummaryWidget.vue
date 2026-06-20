@@ -23,77 +23,73 @@
           :style="{ width: progressPct + '%' }" />
       </div>
 
-      <!-- Summary counts -->
-      <div class="text-xs text-text-muted">
-        <span class="text-accent-green">{{ maxedCount }} maxed</span>
-        <span class="mx-1">·</span>
-        <span>{{ remainingCount }} remaining</span>
+      <!-- Combat section -->
+      <div v-if="combatGiftTargets.length > 0" class="flex flex-col gap-1.5">
+        <div class="text-[10px] uppercase tracking-wide text-text-dim font-semibold">Combat</div>
+        <TargetRow v-for="t in combatGiftTargets" :key="t.npc.key" :target="t" />
       </div>
 
-      <!-- NPCs still needing gifts -->
-      <div v-if="needsGifts.length > 0" class="flex flex-col gap-1.5">
-        <div
-          v-for="status in needsGifts"
-          :key="status.npc.key"
-          class="flex items-center justify-between gap-2 text-sm">
-          <NpcInline :reference="status.npc.key" :npc="status.npc" />
-          <span class="text-xs font-mono shrink-0 tracking-wide">
-            <span
-              v-for="i in status.maxGifts"
-              :key="i"
-              :class="i <= status.giftsThisWeek ? 'text-accent-gold' : 'text-text-dim'">●</span>
-          </span>
-        </div>
+      <!-- Non-combat section -->
+      <div v-if="nonCombatGiftTargets.length > 0" class="flex flex-col gap-1.5">
+        <div class="text-[10px] uppercase tracking-wide text-text-dim font-semibold">Non-Combat</div>
+        <TargetRow v-for="t in nonCombatGiftTargets" :key="t.npc.key" :target="t" />
       </div>
 
-      <div v-else-if="totalGiftsMax > 0" class="text-xs text-accent-green italic">
-        All NPCs maxed this week!
-      </div>
-
-      <div v-else class="text-xs text-text-dim italic">
-        No Statehelm NPCs tracked yet.
+      <div
+        v-if="combatGiftTargets.length === 0 && nonCombatGiftTargets.length === 0"
+        class="text-xs italic"
+        :class="totalGiftsMax > 0 ? 'text-accent-green' : 'text-text-dim'">
+        {{ totalGiftsMax > 0 ? 'All relevant NPCs maxed this week!' : 'No Statehelm NPCs tracked yet.' }}
       </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
-import { useStatehelmTracker } from '../../../composables/useStatehelmTracker'
+import { computed, onMounted, h, type FunctionalComponent } from 'vue'
+import { useStatehelmTracker, type StatehelmGiftTarget } from '../../../composables/useStatehelmTracker'
 import NpcInline from '../../Shared/NPC/NpcInline.vue'
 import SkeletonLoader from '../../Shared/SkeletonLoader.vue'
 
 const {
-  npcStatuses,
+  combatGiftTargets,
+  nonCombatGiftTargets,
   totalGiftsGiven,
   totalGiftsMax,
   loading,
   loadGiftLog,
+  loadSkillMeta,
   weekStart,
 } = useStatehelmTracker()
 
-onMounted(() => loadGiftLog())
+onMounted(() => {
+  loadGiftLog()
+  loadSkillMeta()
+})
+
+/** A single gift-target row: NPC name (+ driving skill / equipped marker) and gift dots. */
+const TargetRow: FunctionalComponent<{ target: StatehelmGiftTarget }> = (props) => {
+  const t = props.target
+  return h('div', { class: 'flex items-center justify-between gap-2 text-sm' }, [
+    h('span', { class: 'flex items-center gap-1.5 min-w-0' }, [
+      h(NpcInline, { reference: t.npc.key, npc: t.npc }),
+      h('span', { class: 'text-[10px] text-text-dim truncate' }, [
+        t.drivingSkill,
+        t.equipped ? h('span', { class: 'text-accent-gold ml-0.5', title: 'Currently equipped' }, '✦') : null,
+      ]),
+    ]),
+    h('span', { class: 'text-xs font-mono shrink-0 tracking-wide' },
+      Array.from({ length: t.maxGifts }, (_, i) =>
+        h('span', { class: i < t.giftsThisWeek ? 'text-accent-gold' : 'text-text-dim' }, '●')
+      )
+    ),
+  ])
+}
 
 const progressPct = computed(() => {
   if (totalGiftsMax.value === 0) return 0
   return Math.round((totalGiftsGiven.value / totalGiftsMax.value) * 100)
 })
-
-const maxedCount = computed(() =>
-  npcStatuses.value.filter(s => s.giftsThisWeek >= s.maxGifts).length
-)
-
-const remainingCount = computed(() =>
-  npcStatuses.value.filter(s => s.giftsThisWeek < s.maxGifts).length
-)
-
-/** NPCs that still need gifts, sorted by fewest gifts first, capped at 5 */
-const needsGifts = computed(() =>
-  npcStatuses.value
-    .filter(s => s.giftsThisWeek < s.maxGifts)
-    .sort((a, b) => a.giftsThisWeek - b.giftsThisWeek)
-    .slice(0, 5)
-)
 
 /** Time until weekly reset (Monday 00:00 UTC) */
 const resetLabel = computed(() => {

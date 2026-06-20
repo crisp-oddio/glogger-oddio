@@ -7,7 +7,7 @@ use crate::parsers::to_utc_datetime_with_base;
 /// &DbPool per call, called synchronously from the coordinator's event loop.
 /// Maintains "last known value" tables, not event logs.
 use crate::player_event_parser::{DeleteContext, PlayerEvent};
-use chrono::{Local, Utc};
+use chrono::{Datelike, Duration, Local, Utc};
 use rusqlite::Connection;
 
 /// Timestamped log line for startup diagnostics.
@@ -18,6 +18,19 @@ macro_rules! startup_log {
 }
 
 // to_datetime removed — use GameStateManager::to_utc(ts) instead
+
+/// Monday 00:00:00 UTC of the current week, in the DB timestamp format
+/// (`%Y-%m-%d %H:%M:%S`). Matches the frontend's weekly gift reset boundary
+/// (`useStatehelmTracker.getCurrentWeekStart`).
+fn current_week_start_utc() -> String {
+    let now = Utc::now();
+    let days_since_monday = now.weekday().num_days_from_monday() as i64;
+    let monday = (now - Duration::days(days_since_monday))
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    monday.format("%Y-%m-%d %H:%M:%S").to_string()
+}
 
 /// Result of processing a player event
 pub struct ProcessResult {
@@ -610,6 +623,59 @@ impl GameStateManager {
                 }
 
                 domains.push("favor");
+            }
+
+            PlayerEvent::GiftCountObserved {
+                timestamp,
+                npc_name,
+                received,
+                ..
+            } => {
+                let dt = self.to_utc(timestamp);
+                // Resolve display name (e.g. "Corinth") → CDN key + canonical name.
+                let (npc_key, display_name) = match &game_data_guard {
+                    Some(data) => match data.resolve_npc(npc_name) {
+                        Some(info) => (info.key.clone(), info.name.clone()),
+                        None => (npc_name.clone(), npc_name.clone()),
+                    },
+                    None => (npc_name.clone(), npc_name.clone()),
+                };
+
+                // Reconcile the week's gift-log rows for this NPC to the game's
+                // authoritative count. A bulk gift (a stack given in one action)
+                // emits a single ProcessDeltaFavor line, so the per-favor row count
+                // can undershoot; this corrects it without disturbing other NPCs.
+                let week_start = current_week_start_utc();
+                let existing: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM game_state_gift_log
+                         WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3 AND gifted_at >= ?4",
+                        rusqlite::params![character, server, npc_key, week_start],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                let target = *received as i64;
+
+                if target > existing {
+                    for _ in 0..(target - existing) {
+                        conn.execute(
+                            "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
+                             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                            rusqlite::params![character, server, npc_key, display_name, dt],
+                        ).ok();
+                    }
+                    domains.push("favor");
+                } else if target < existing {
+                    // Trim the newest extras (e.g. a manual over-count) down to the game's value.
+                    conn.execute(
+                        "DELETE FROM game_state_gift_log WHERE id IN (
+                            SELECT id FROM game_state_gift_log
+                            WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3 AND gifted_at >= ?4
+                            ORDER BY gifted_at DESC, id DESC LIMIT ?5)",
+                        rusqlite::params![character, server, npc_key, week_start, existing - target],
+                    ).ok();
+                    domains.push("favor");
+                }
             }
 
             PlayerEvent::EquipmentChanged {
