@@ -1,7 +1,8 @@
-## What's Changed since v0.9.10
+## What's Changed since v0.9.11
 
 ### Features
-- feat(words-of-power): category/level grouping + CSV export (`ed7375e`)
+- feat(menubar): one-click live-tailing toggle for all logs (`aa26337`)
+- feat(gourmand): track eaten foods live from Player.log (`b635038`)
 
 ---
-*2 commits since v0.9.10*
+*5 commits since v0.9.11*
