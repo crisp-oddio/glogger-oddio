@@ -1,11 +1,83 @@
 # glogger — Session Handoff
 
-**Date:** 2026-06-19
+**Date:** 2026-06-20
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` (now at v0.9.10)
-**Outcome:** **Gourmand live tracking** — eaten foods now detected in real time
-from Player.log (committed + pushed). In-progress: an all-in-one live-tailing
-toggle button in the header (uncommitted).
+**Branch:** `dev` == `main` (both at `9ac3036`, version strings v0.9.11)
+**Outcome:** **Flatpak CI fixed** — releases now auto-build + attach a Linux
+Flatpak. The Session-6 live-tailing button is committed. `dev` and `main` are
+synced and prepped for the v0.9.12 release.
+
+---
+
+## Session 7 — Flatpak CI resurrection + v0.9.12 prep (2026-06-20)
+
+**Outcome:** The Flatpak bundle hadn't attached to a release since v0.9.2. Root-
+caused it (two separate problems), fixed the real gap, verified the full
+pipeline live against two real releases, committed the uncommitted button work,
+and synced `dev`→`main` so v0.9.12 picks everything up.
+
+### 🔎 Why the Flatpak "bricked" (two problems, not one)
+
+1. **`gh: command not found` (the visible v0.9.2 failures).** The build always
+   *succeeded* — it produced a valid `glogger.flatpak` (~7.8 MB) and uploaded it
+   as a workflow artifact. The only failure was the final `gh release upload`
+   step, which ran **inside the GNOME-47 flatpak-builder container** where the
+   `gh` CLI doesn't exist. This was **already fixed** back in commit `fadbc47`
+   (two-job split: build in container, `attach` on a bare runner) — but that fix
+   landed *after* the v0.9.2 runs and had never actually been exercised.
+
+2. **It never auto-triggered after v0.9.2 (the real, unfixed gap).** `release.yml`'s
+   `prepare` job pushes the tag with `git push origin main --tags` using the
+   default `GITHUB_TOKEN`. **GitHub suppresses workflow triggers from tags pushed
+   by `GITHUB_TOKEN`** (anti-recursion), so `flatpak.yml`'s `push: tags` trigger
+   never fired for v0.9.5/8/9/10/11. v0.9.2 only worked because that tag was
+   pushed *manually* from a Linux box (a real user push, which does trigger).
+
+### ✅ The fix (committed `5a92271`, on `main`)
+
+- **`flatpak.yml`** — added a `workflow_call` trigger (+ a required `tag` input on
+  `workflow_dispatch`), and a top-level `TARGET_TAG: ${{ inputs.tag || github.ref_name }}`
+  resolver that works for all three triggers. The build job now `checkout`s
+  `TARGET_TAG`; the `attach` job derives `TAG` from it and runs for any trigger
+  (`if: inputs.tag != '' || startsWith(github.ref, 'refs/tags/')`).
+- **`release.yml`** — new `flatpak` job (`needs: [prepare, publish]`) that
+  **calls** `flatpak.yml` via `uses:` + `with: { tag: <new tag> }`, bypassing the
+  anti-recursion block entirely. Every future release now builds + attaches a
+  Flatpak with **zero manual steps**.
+
+### ✅ Verified live (real releases, not exp)
+
+- Dispatched the (already-fixed) two-job workflow against **v0.9.10** → built +
+  attached `glogger.flatpak` (7.85 MB). Both jobs green.
+- Same against **v0.9.11** → attached `glogger.flatpak` (7.84 MB). Both jobs green.
+- So v0.9.10 and v0.9.11 now *have* Flatpaks; the build mechanics + `gh`-fix are
+  proven end-to-end. The **auto-trigger `workflow_call` path itself** is YAML-valid
+  and on `main` but its *first real exercise* will be the v0.9.12 Release run. If
+  it hiccups, it'll be in that run's `flatpak` job; fallback is still
+  `gh workflow run Flatpak --ref vX.Y.Z` (uses the `tag` dispatch input).
+
+### ✅ Also committed this session
+
+- **`aa26337` feat(menubar): one-click live-tailing toggle** — the Session-6
+  uncommitted 📡 button is now committed (vue-tsc clean). No behavior change from
+  the Session-6 description.
+- Reverted the harmless `Cargo.toml` CRLF-only artifact instead of committing it.
+
+### Repo state at end of session
+
+- `dev` and `main` both at **`9ac3036`**, working tree clean, version strings at
+  **v0.9.11** (merged the `release: v0.9.11` bump from main into dev, then
+  advanced main to dev's tip — they're identical now).
+- **Ready for v0.9.12:** trigger the **Release** workflow as usual; it will now
+  also produce the Linux `.flatpak` automatically.
+
+### ⚠️ Gotcha for next time
+
+- A literal `git push origin dev:main` fast-forward was **not** possible because
+  `main` carried the bot's `release: v0.9.11` version-bump commit that `dev`
+  lacked. Resolution: `git merge origin/main` into `dev` first (absorbs the bump,
+  conflict-free — only version strings), then push `dev:main`. Expect this every
+  release, since the Release workflow commits the bump to `main` only.
 
 ---
 
