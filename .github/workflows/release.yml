@@ -346,3 +346,15 @@ jobs:
           done
 
           echo "Release published: https://github.com/$RELEASE_REPO/releases/tag/$TAG"
+
+  # ── Step 4: build the Linux Flatpak and attach it to the release ──
+  # The tag is pushed by the prepare job's GITHUB_TOKEN, so it cannot fire
+  # flatpak.yml's `push` trigger (GitHub anti-recursion). We call it directly
+  # instead; it builds from the tag and uploads to the release publish just made.
+  flatpak:
+    needs: [prepare, publish]
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    permissions:
+      contents: write

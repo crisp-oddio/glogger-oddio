@@ -1,15 +1,36 @@
 name: Flatpak
 
 on:
-  # Run when a release tag is pushed
+  # Run when a release tag is pushed *manually* (a tag pushed by the Release
+  # workflow's GITHUB_TOKEN will NOT fire this — see workflow_call below).
   push:
     tags:
       - 'v*'
-  # Or trigger manually from the Actions tab
+  # Trigger manually from the Actions tab against an existing release tag.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build & attach the Flatpak to (e.g. v0.9.11)"
+        required: true
+        type: string
+  # Called by the Release workflow so every release gets a Flatpak. A tag pushed
+  # by the release run's GITHUB_TOKEN can't trigger the `push` event above
+  # (GitHub's anti-recursion rule), so the Release workflow invokes this directly.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build & attach the Flatpak to"
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+# Target tag resolved from whichever trigger fired:
+#   push           → github.ref_name (the pushed tag)
+#   dispatch/call  → inputs.tag
+env:
+  TARGET_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   flatpak:
@@ -24,6 +45,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TARGET_TAG }}
 
       # ── Generate offline source manifests ───────────────────────────────
       # Flatpak build environments have no internet access, so we must
@@ -80,7 +103,9 @@ jobs:
     name: Attach bundle to release
     needs: flatpak
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # Run whenever we have a target tag: a manually-pushed tag (push), an explicit
+    # dispatch input, or a workflow_call from the Release workflow.
+    if: ${{ inputs.tag != '' || startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Download built bundle
         uses: actions/download-artifact@v7
@@ -91,7 +116,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="${TARGET_TAG}"
           # The Release workflow pushes the tag in its prepare job but only creates the
           # GitHub Release after its multi-platform build finishes (~15-20 min), well after
           # this Flatpak job (~9.5 min). Wait for the release to exist before uploading.
