@@ -288,6 +288,23 @@ pub fn get_use(conn: &Connection, use_id: i64) -> Result<Option<SurveyUse>> {
     .optional()
 }
 
+/// The most-recently-used survey use belonging to a session, if any.
+///
+/// Used by the chat-loot attribution path: a `[Status]` "added to inventory"
+/// line carries no node/map identity, so we attribute it to whichever survey
+/// map the player most recently consumed in the active session. Ordered by
+/// `used_at` then `id` so the latest map wins even when two uses share a
+/// second-resolution timestamp.
+pub fn latest_use_id_for_session(conn: &Connection, session_id: i64) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM survey_uses WHERE session_id = ?1
+         ORDER BY used_at DESC, id DESC LIMIT 1",
+        params![session_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 /// All uses belonging to a session, ordered by `used_at` ascending.
 pub fn uses_for_session(conn: &Connection, session_id: i64) -> Result<Vec<SurveyUse>> {
     let mut stmt = conn.prepare(

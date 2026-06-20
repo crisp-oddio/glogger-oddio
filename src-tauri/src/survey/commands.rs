@@ -315,6 +315,19 @@ fn loot_summary_for_session(
          LEFT JOIN items i
            ON i.id = t.item_type_id
          WHERE t.quantity > 0
+           -- Chat-authoritative: when a use has chat-sourced loot rows
+           -- ('survey_chat'), count only those; otherwise fall back to the
+           -- Player.log-attributed rows (historical sessions recorded before
+           -- the chat path existed). This prevents double-counting a gain that
+           -- both pipelines saw while still rendering legacy data.
+           AND (
+             t.source_kind = 'survey_chat'
+             OR NOT EXISTS (
+               SELECT 1 FROM item_transactions c
+                WHERE c.source_kind = 'survey_chat'
+                  AND CAST(json_extract(c.source_details, '$.survey_use_id') AS INTEGER) = u.id
+             )
+           )
          GROUP BY t.item_name
          ORDER BY total_qty DESC",
     )?;
@@ -1676,6 +1689,78 @@ mod tests {
         assert_eq!(econ.profit_total, 100 - 150); // -50
         assert_eq!(econ.items_priced, 1);
         assert_eq!(econ.items_unpriced, 1);
+    }
+
+    #[test]
+    fn test_loot_summary_chat_authoritative_no_double_count() {
+        // When a use has BOTH a Player.log-attributed row and a chat-attributed
+        // ('survey_chat') row for the same gain, the chat row is authoritative
+        // and the Player.log row must NOT be double-counted.
+        let conn = fresh_db();
+        let session = persistence::insert_session(
+            &conn, "Zenith", "Dreva", "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual, None,
+        )
+        .unwrap();
+        let use_id = persistence::insert_use(
+            &conn, Some(session), "Zenith", "Dreva", "2026-04-15 12:05:00",
+            "GeologySurveySerbule1", "Serbule Blue Mineral Survey",
+            SurveyUseKind::Basic, Some("Serbule"),
+        )
+        .unwrap();
+        let details = format!(r#"{{"survey_use_id":{use_id}}}"#);
+
+        // Player.log row: 3x Fluorite. Chat row: authoritative 9x Fluorite.
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, item_type_id,
+                 quantity, context, source, source_kind, source_details)
+             VALUES ('2026-04-15 12:05:00','Zenith','Dreva','Fluorite',10,3,
+                     'loot','player_log','survey_map_use',?1),
+                    ('2026-04-15 12:05:01','Zenith','Dreva','Fluorite',10,9,
+                     'loot','chat_status','survey_chat',?1)",
+            params![details],
+        )
+        .unwrap();
+
+        let loot =
+            loot_summary_for_session(&conn, session, "Dreva", "highest_market_vendor").unwrap();
+        assert_eq!(loot.len(), 1);
+        // 9 (chat) only — not 12 (chat + player.log).
+        assert_eq!(loot[0].total_qty, 9);
+    }
+
+    #[test]
+    fn test_loot_summary_player_log_only_still_counts() {
+        // Historical sessions recorded before the chat path existed have only
+        // Player.log rows and no 'survey_chat' rows — those must still render.
+        let conn = fresh_db();
+        let session = persistence::insert_session(
+            &conn, "Zenith", "Dreva", "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual, None,
+        )
+        .unwrap();
+        let use_id = persistence::insert_use(
+            &conn, Some(session), "Zenith", "Dreva", "2026-04-15 12:05:00",
+            "GeologySurveySerbule1", "Serbule Blue Mineral Survey",
+            SurveyUseKind::Basic, Some("Serbule"),
+        )
+        .unwrap();
+        let details = format!(r#"{{"survey_use_id":{use_id}}}"#);
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, item_type_id,
+                 quantity, context, source, source_kind, source_details)
+             VALUES ('2026-04-15 12:05:00','Zenith','Dreva','Fluorite',10,3,
+                     'loot','player_log','survey_map_use',?1)",
+            params![details],
+        )
+        .unwrap();
+
+        let loot =
+            loot_summary_for_session(&conn, session, "Dreva", "highest_market_vendor").unwrap();
+        assert_eq!(loot.len(), 1);
+        assert_eq!(loot[0].total_qty, 3);
     }
 
     #[test]
