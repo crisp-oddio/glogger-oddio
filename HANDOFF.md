@@ -1,5 +1,44 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-20 (Session 17 — Linux WebKit crash triage; no code change)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (fast-forwarded to `origin/main` @ **v0.9.18**, `c6b43a2`)
+**Status:** ✅ **No code change / no new release.** Investigated a user crash report and
+found the fix was **already shipped** by a parallel session on the other machine. Decided
+(with the user) to have the reporter test v0.9.18 + a manual env override before broadening.
+
+## TL;DR — Session 17 (Flatpak/Linux crash triage)
+
+**Trigger:** A user on **Fedora 43** couldn't launch the **AppImage v0.8.7** — screenshot
+showed `WebKitWebProcess` aborting with **SIGABRT** before any window appeared. Asked to
+"check the flatpak status."
+
+**Findings:**
+1. **Flatpak CI is healthy.** Last builds `v0.9.10`/`v0.9.11` succeeded; the only failures
+   were `v0.9.2` (long since fixed in Session 7). The screenshot is **not** a Flatpak issue —
+   it's the **AppImage**, and a **runtime** WebKitGTK renderer crash, not a build failure.
+2. **The crash is the WebKitGTK DMABUF-renderer abort.** Classic on fresh GPU stacks
+   (the screenshot shows a **Mesa 26.1** stack: `libgbm`/`libglvnd`).
+3. **The fix is already in `main`.** A parallel session (machine `gcfbrian`, author
+   `gcfhtpc`) shipped commit **`c6b43a2`** in **v0.9.17/v0.9.18**:
+   `apply_nvidia_webkit_workaround()` in [lib.rs](src-tauri/src/lib.rs) sets
+   `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup — **but only when the proprietary NVIDIA
+   driver is detected** (`/sys/module/nvidia`, `/dev/nvidiactl`, `/proc/driver/nvidia`).
+
+**⚠️ Open risk:** the shipped fix is **NVIDIA-gated**. The Fedora-43 reporter shows a **Mesa**
+stack (likely AMD/Intel/nouveau), so v0.9.18 **may not trigger for them**. We won't know until
+they test. **Decision (user):** have them update to **v0.9.18** and, as a guaranteed immediate
+unblock, launch with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. **If v0.9.18 still crashes → they are
+non-NVIDIA → broaden the gate** (disable DMABUF on all Linux, accepting a minor HW-accel
+tradeoff for AMD/Intel) and cut **v0.9.19**. No release done this session.
+
+**Repo state:** `dev` clean, fast-forwarded `dd4b190 → c6b43a2` (v0.9.18). My local naive
+"disable on all Linux" edit was **reverted** in favor of the existing better NVIDIA-gated fn.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-20 (Session 16 — Vendor council earnings tracker)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (v0.9.16)
