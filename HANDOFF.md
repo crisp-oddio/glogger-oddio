@@ -1,10 +1,74 @@
 # glogger — Session Handoff
 
-**Date:** 2026-06-20 (Session 14 — corpse-search drop-rate model, farming hovers, butchering detail)
+**Date:** 2026-06-20 (Session 15 — Combat Wisdom tracker widget)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` (v0.9.14)
-**Status:** ✅ **Shipped.** Three features, all verified live by the user and committed/pushed
-(`dev`→`main`). `cargo test --lib` (401 pass, incl. 2 new tests) + `vue-tsc --noEmit` clean.
+**Branch:** `dev` (v0.9.15)
+**Status:** ✅ **Shipped.** New Combat Wisdom dashboard widget, verified live by piloting the
+dev build, committed/pushed (`dev`→`main`). `cargo test --lib` (410 pass, incl. 9 new) +
+`vue-tsc --noEmit` clean.
+
+## TL;DR — Session 15 (Combat Wisdom widget)
+
+New **Combat Wisdom** dashboard widget: tracks wisdom earned this session (which monster, how
+much), plus a per-monster reuse-cooldown countdown until each monster can grant wisdom again.
+
+### The log signal (authoritative — from the user's own Chat logs)
+Chat.log `[Status]` channel, same path as Prodigy XP / Councils:
+```
+[Status] You earned 64 Combat Wisdom: Killed the Aktaari Queen
+[Status] You earned 73 Combat Wisdom: Defeated Elite Tactician
+[Status] You earned 5 Combat Wisdom: Killed The Productivity Expert (Gazluk)
+[Status] You earned 1000 Combat Wisdom: Earned a Prodigy Level   ← non-monster
+```
+Verbs seen: `Killed` (named/boss), `Defeated` (elite, repeats in minutes), rare
+`Destroyed`/`Disabled`/`Disconnected`, and `Earned a Prodigy Level` (1000, no monster).
+
+### Cooldown model (user-approved): empirical + wiki fallback, persisted + backfilled
+The log never states a monster's class, so per-monster cooldown is **learned** from the shortest
+real gap (≥ 60s, to skip duplicate emits) ever observed between that monster's awards, **capped at
+the wiki max (24h)** — the observed gap is only an upper bound, so a rarely-killed mob can't show
+an absurd multi-week timer, while a real boss still shortens below 24h (~3h) as data accrues.
+`Defeated`/elite = no cooldown (always Ready). Fallback before any gap is observed: 24h for
+`Killed`, 0 for `Defeated`. History is **persisted in SQLite** and **backfilled from
+`ChatLogs/Chat-*.log`** on startup (idempotent) so cooldowns are meaningful immediately.
+
+### Files
+- **Parser** [chat_status_parser.rs](src-tauri/src/chat_status_parser.rs): `CombatWisdomEarned`
+  variant + `try_combat_wisdom_earned` (wired before `try_xp_gained`; the ` Combat Wisdom: `
+  infix disambiguates). 5 unit tests.
+- **Migration v51** [migrations.rs](src-tauri/src/db/migrations.rs): `combat_wisdom_earns` table +
+  `idx_cw_dedup` unique index `(earned_at, source_name, amount)`. (v50 was already taken by the
+  Session-14 corpse-extracts migration.)
+- **New** [combat_wisdom_commands.rs](src-tauri/src/db/combat_wisdom_commands.rs):
+  `record_combat_wisdom_earn` (skips non-monster/prodigy awards — NULL `source_name` can't dedup;
+  they still count live on the frontend), `get_combat_wisdom_monsters` (aggregates per monster:
+  last_earned epoch-ms, count, total, `min_gap_secs` ≥ 60), `aggregate_monsters` helper (tested),
+  `backfill_from_chat_logs`. 4 unit tests. Registered in [db/mod.rs](src-tauri/src/db/mod.rs).
+- **Coordinator** [coordinator.rs](src-tauri/src/coordinator.rs): persists monster awards using
+  the **local** timestamp captured *before* the UTC conversion — must match the backfill (which
+  doesn't convert) so live + backfill dedup on the same day. Event still emits via the existing
+  `chat-status-event` for the live frontend.
+- **lib.rs**: registers the 2 commands + runs a one-shot startup backfill (idempotent).
+- **Frontend** [gameStateStore.ts](src/stores/gameStateStore.ts): `CombatWisdomEarned` in the
+  event union, `combatWisdomSession` accumulator (resets on login), `combatWisdomMonsters` +
+  `fetchCombatWisdomMonsters`. New [CombatWisdomWidget.vue](src/components/Dashboard/widgets/CombatWisdomWidget.vue)
+  (registered in [dashboardWidgets.ts](src/components/Dashboard/dashboardWidgets.ts), `medium`,
+  next to XP Rate / Prodigy): session total, earned-this-session list, live cooldown countdowns
+  (soonest-ready first, green **Ready** when elapsed).
+
+### Verified live (piloted the dev build via computer-use)
+Startup backfill ingested **559 historical awards**; cooldown list rendered populated and ticking.
+Caught + fixed the multi-week-countdown bug live (the 24h cap above) — Mega-Spider 1168h → 18h.
+The only thing NOT exercised: a live wisdom kill bumping "Earned this session" (no wisdom-granting
+mob was available during the session) — worth a click-through next time you kill one.
+
+### Gotcha (computer-use, recurring)
+Two glogger installs: `request_access("glogger")` resolved to the **portable** exe
+(`a:\portableapps\glogger\glogger.exe`) and masked the dev window. Fix: grant the exact basename
+`"glogger.exe"` → resolves to `…\target\debug\glogger.exe`. Also had to free port 1420 from a
+stale Vite (`npm run tauri dev` aborts if 1420 is taken).
+
+---
 
 ## TL;DR — three things landed this session
 

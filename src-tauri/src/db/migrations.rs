@@ -277,6 +277,31 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 50)?;
     }
 
+    if current_version < 51 {
+        migration_v51_combat_wisdom_earns(conn)?;
+        super::record_migration(conn, 51)?;
+    }
+
+    Ok(())
+}
+
+/// Migration V51: per-monster Combat Wisdom award history (drives the Combat
+/// Wisdom dashboard widget — session earns + empirical per-monster cooldowns).
+fn migration_v51_combat_wisdom_earns(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS combat_wisdom_earns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            earned_at TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            source_name TEXT,
+            verb TEXT NOT NULL,
+            zone TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cw_dedup
+            ON combat_wisdom_earns(earned_at, source_name, amount);
+        CREATE INDEX IF NOT EXISTS idx_cw_source
+            ON combat_wisdom_earns(source_name, earned_at);",
+    )?;
     Ok(())
 }
 

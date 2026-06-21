@@ -6,6 +6,7 @@ import PlayerNotes from "./PlayerNotes.vue";
 import SkillTrackingWidget from "./widgets/SkillTrackingWidget.vue";
 import XpRateWidget from "./widgets/XpRateWidget.vue";
 import ProdigyTrackerWidget from "./widgets/ProdigyTrackerWidget.vue";
+import CombatWisdomWidget from "./widgets/CombatWisdomWidget.vue";
 import ItemsIncomingWidget from "./widgets/ItemsIncomingWidget.vue";
 import ItemsOutgoingWidget from "./widgets/ItemsOutgoingWidget.vue";
 import CouncilsWidget from "./widgets/CouncilsWidget.vue";
@@ -81,6 +82,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     name: "Prodigy Tracker",
     component: ProdigyTrackerWidget,
     defaultSize: "small",
+  },
+  {
+    id: "combat-wisdom",
+    name: "Combat Wisdom",
+    component: CombatWisdomWidget,
+    defaultSize: "medium",
   },
   {
     id: "zone-npcs",

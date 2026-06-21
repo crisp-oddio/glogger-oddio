@@ -29,6 +29,19 @@ pub enum ChatStatusEvent {
         amount: u32,
     },
 
+    /// "You earned N Combat Wisdom: Killed the Aktaari Queen"
+    /// Combat Wisdom is a currency awarded for killing notable monsters. The
+    /// reason text names the monster (after a verb like "Killed"/"Defeated"),
+    /// with an optional trailing " (Zone)". The special "Earned a Prodigy Level"
+    /// reason is not a monster (source_name = None).
+    CombatWisdomEarned {
+        timestamp: String,
+        amount: u32,
+        source_name: Option<String>,
+        verb: String,
+        zone: Option<String>,
+    },
+
     /// "You earned N XP and reached level L in Skill!"
     LevelUp {
         timestamp: String,
@@ -83,6 +96,7 @@ pub fn parse_status_message(msg: &ChatMessage) -> Option<ChatStatusEvent> {
 
     // Try each pattern in order of frequency/importance
     try_item_gained(text, &ts)
+        .or_else(|| try_combat_wisdom_earned(text, &ts))
         .or_else(|| try_prodigy_xp_gained(text, &ts))
         .or_else(|| try_xp_gained(text, &ts))
         .or_else(|| try_level_up(text, &ts))
@@ -110,6 +124,60 @@ fn try_item_gained(text: &str, ts: &str) -> Option<ChatStatusEvent> {
         timestamp: ts.to_string(),
         item_name: item_name.to_string(),
         quantity,
+    })
+}
+
+/// "You earned N Combat Wisdom: <reason>"
+/// e.g. "You earned 64 Combat Wisdom: Killed the Aktaari Queen"
+///      "You earned 73 Combat Wisdom: Defeated Elite Tactician"
+///      "You earned 5 Combat Wisdom: Killed The Productivity Expert (Gazluk)"
+///      "You earned 1000 Combat Wisdom: Earned a Prodigy Level"
+fn try_combat_wisdom_earned(text: &str, ts: &str) -> Option<ChatStatusEvent> {
+    if !text.starts_with("You earned ") {
+        return None;
+    }
+    let after = &text["You earned ".len()..];
+    let infix = " Combat Wisdom: ";
+    let infix_pos = after.find(infix)?;
+    let amount: u32 = after[..infix_pos].parse().ok()?;
+    let reason = after[infix_pos + infix.len()..].trim();
+    if reason.is_empty() {
+        return None;
+    }
+
+    // Non-monster award: prodigy level. ("Earned a Prodigy Level")
+    if reason == "Earned a Prodigy Level" {
+        return Some(ChatStatusEvent::CombatWisdomEarned {
+            timestamp: ts.to_string(),
+            amount,
+            source_name: None,
+            verb: "Earned".to_string(),
+            zone: None,
+        });
+    }
+
+    // "<Verb> <monster name>[ (Zone)]" — split verb off the front, zone off the back.
+    let (verb, rest) = match reason.split_once(' ') {
+        Some((v, r)) => (v.to_string(), r),
+        None => (reason.to_string(), ""),
+    };
+
+    let (name, zone) = match (rest.strip_suffix(')'), rest.rfind(" (")) {
+        (Some(_), Some(open)) => {
+            let zone = rest[open + 2..rest.len() - 1].to_string();
+            (rest[..open].to_string(), Some(zone))
+        }
+        _ => (rest.to_string(), None),
+    };
+
+    let source_name = if name.is_empty() { None } else { Some(name) };
+
+    Some(ChatStatusEvent::CombatWisdomEarned {
+        timestamp: ts.to_string(),
+        amount,
+        source_name,
+        verb,
+        zone,
     })
 }
 
@@ -420,6 +488,96 @@ mod tests {
         } else {
             panic!("Expected XpGained, got {:?}", event);
         }
+    }
+
+    #[test]
+    fn test_combat_wisdom_killed_the() {
+        let msg = status_msg("You earned 64 Combat Wisdom: Killed the Aktaari Queen");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::CombatWisdomEarned {
+            amount,
+            source_name,
+            verb,
+            zone,
+            ..
+        } = event
+        {
+            assert_eq!(amount, 64);
+            assert_eq!(source_name.as_deref(), Some("the Aktaari Queen"));
+            assert_eq!(verb, "Killed");
+            assert_eq!(zone, None);
+        } else {
+            panic!("Expected CombatWisdomEarned, got {:?}", event);
+        }
+    }
+
+    #[test]
+    fn test_combat_wisdom_defeated() {
+        let msg = status_msg("You earned 73 Combat Wisdom: Defeated Elite Tactician");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::CombatWisdomEarned {
+            amount,
+            source_name,
+            verb,
+            ..
+        } = event
+        {
+            assert_eq!(amount, 73);
+            assert_eq!(source_name.as_deref(), Some("Elite Tactician"));
+            assert_eq!(verb, "Defeated");
+        } else {
+            panic!("Expected CombatWisdomEarned, got {:?}", event);
+        }
+    }
+
+    #[test]
+    fn test_combat_wisdom_with_zone() {
+        let msg = status_msg("You earned 5 Combat Wisdom: Killed The Productivity Expert (Gazluk)");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::CombatWisdomEarned {
+            amount,
+            source_name,
+            zone,
+            ..
+        } = event
+        {
+            assert_eq!(amount, 5);
+            assert_eq!(source_name.as_deref(), Some("The Productivity Expert"));
+            assert_eq!(zone.as_deref(), Some("Gazluk"));
+        } else {
+            panic!("Expected CombatWisdomEarned, got {:?}", event);
+        }
+    }
+
+    #[test]
+    fn test_combat_wisdom_prodigy_level() {
+        let msg = status_msg("You earned 1000 Combat Wisdom: Earned a Prodigy Level");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::CombatWisdomEarned {
+            amount,
+            source_name,
+            verb,
+            ..
+        } = event
+        {
+            assert_eq!(amount, 1000);
+            assert_eq!(source_name, None);
+            assert_eq!(verb, "Earned");
+        } else {
+            panic!("Expected CombatWisdomEarned, got {:?}", event);
+        }
+    }
+
+    #[test]
+    fn test_normal_xp_not_parsed_as_combat_wisdom() {
+        // A normal combat XP line must not be swallowed by the wisdom parser.
+        let msg = status_msg("You earned 62 XP in Endurance.");
+        let event = parse_status_message(&msg).unwrap();
+        assert!(
+            matches!(event, ChatStatusEvent::XpGained { .. }),
+            "Expected XpGained, got {:?}",
+            event
+        );
     }
 
     #[test]

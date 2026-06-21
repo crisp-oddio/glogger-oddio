@@ -58,6 +58,26 @@ export type ChatStatusEvent =
   | { kind: 'TreasureDistance'; timestamp: string; meters: number }
   | { kind: 'AnatomyResult'; timestamp: string; success: boolean }
   | { kind: 'Summoned'; timestamp: string; item_name: string; quantity: number }
+  | {
+      kind: 'CombatWisdomEarned'
+      timestamp: string
+      amount: number
+      source_name: string | null
+      verb: string
+      zone: string | null
+    }
+
+// ── Combat Wisdom Types ──────────────────────────────────────────────────
+// Matches Rust CombatWisdomMonster (db/combat_wisdom_commands.rs).
+
+export interface CombatWisdomMonster {
+  name: string
+  verb: string
+  last_earned_ms: number
+  count: number
+  total_amount: number
+  min_gap_secs: number | null
+}
 
 // ── Activity Feed Types ──────────────────────────────────────────────────
 
@@ -132,6 +152,24 @@ export const useGameStateStore = defineStore('gameState', () => {
     firstSeenMs: number | null
     lastSeenMs: number | null
   }>({ combatXp: 0, prodigyXp: 0, firstSeenMs: null, lastSeenMs: null })
+
+  // ── Session Combat Wisdom tracking (driven by [Status] chat events) ────
+  // Per-session list of Combat Wisdom awards earned (which monster, how much,
+  // when). Resets on character login, like xpRateSession. Per-monster reuse
+  // cooldowns are sourced separately from the persisted DB (fetchCombatWisdom).
+  const combatWisdomSession = ref<{
+    total: number
+    earns: Array<{
+      name: string | null
+      amount: number
+      verb: string
+      zone: string | null
+      atMs: number
+    }>
+  }>({ total: 0, earns: [] })
+
+  /** Persisted per-monster Combat Wisdom cooldown data (from the DB). */
+  const combatWisdomMonsters = ref<CombatWisdomMonster[]>([])
 
   /** Display names of combat skills (from CDN). Used to filter the
    *  non-prodigy combat XP line. Loaded lazily on first loadAll. */
@@ -480,6 +518,7 @@ export const useGameStateStore = defineStore('gameState', () => {
   function resetSessionSkills() {
     sessionSkills.value = {}
     resetXpRateSession()
+    combatWisdomSession.value = { total: 0, earns: [] }
   }
 
   /** Reset the combat/prodigy XP-rate accumulator. */
@@ -489,6 +528,17 @@ export const useGameStateStore = defineStore('gameState', () => {
       prodigyXp: 0,
       firstSeenMs: null,
       lastSeenMs: null,
+    }
+  }
+
+  /** Fetch persisted per-monster Combat Wisdom cooldown data. */
+  async function fetchCombatWisdomMonsters() {
+    try {
+      combatWisdomMonsters.value = await invoke<CombatWisdomMonster[]>(
+        'get_combat_wisdom_monsters',
+      )
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load combat wisdom monsters:', e)
     }
   }
 
@@ -800,6 +850,22 @@ export const useGameStateStore = defineStore('gameState', () => {
       case 'ProdigyXpGained':
         accrueXpRate('prodigy', event.amount)
         break
+
+      case 'CombatWisdomEarned': {
+        const atMs = Date.parse(event.timestamp.replace(' ', 'T') + 'Z')
+        combatWisdomSession.value.total += event.amount
+        combatWisdomSession.value.earns.unshift({
+          name: event.source_name,
+          amount: event.amount,
+          verb: event.verb,
+          zone: event.zone,
+          atMs: Number.isNaN(atMs) ? Date.now() : atMs,
+        })
+        // Refresh persisted per-monster cooldowns so the widget's countdown
+        // updates after a new monster award (skip prodigy-level awards).
+        if (event.source_name) void fetchCombatWisdomMonsters()
+        break
+      }
     }
   }
 
@@ -1020,6 +1086,11 @@ export const useGameStateStore = defineStore('gameState', () => {
     prodigyEta,
     formatEta,
     resetXpRateSession,
+
+    // Combat Wisdom tracking
+    combatWisdomSession,
+    combatWisdomMonsters,
+    fetchCombatWisdomMonsters,
 
     // Tracked skills
     trackedSkillNames,

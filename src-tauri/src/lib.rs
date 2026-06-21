@@ -467,6 +467,22 @@ pub fn run() {
             // into the kill/loot database when the game rotates it.
             replay::spawn_player_prev_watcher(settings_manager.clone(), db_pool.clone());
 
+            // Step 5d: One-shot backfill of Combat Wisdom awards from the
+            // historical ChatLogs so the Combat Wisdom widget's per-monster
+            // cooldowns are populated immediately. Idempotent (unique index).
+            {
+                let sm = settings_manager.clone();
+                let dbp = db_pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    match db::combat_wisdom_commands::backfill_from_chat_logs(&sm, &dbp) {
+                        Ok(n) => {
+                            startup_log!("Combat Wisdom backfill: {} new award(s)", n);
+                        }
+                        Err(e) => eprintln!("Combat Wisdom backfill failed: {e}"),
+                    }
+                });
+            }
+
             // Step 6: Register managed state
             app.manage(settings_manager.clone());
             app.manage(db_pool.clone());
@@ -533,6 +549,9 @@ pub fn run() {
             parse_log,
             replay_dual_logs,
             ingest_player_log,
+            // Combat Wisdom tracking
+            db::combat_wisdom_commands::get_combat_wisdom_monsters,
+            db::combat_wisdom_commands::backfill_combat_wisdom_from_chat_logs,
             // CDN management
             get_cache_status,
             check_cdn_version,

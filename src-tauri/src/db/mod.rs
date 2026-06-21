@@ -9,6 +9,7 @@ pub mod build_planner_commands;
 pub mod cdn_persistence;
 pub mod character_commands;
 pub mod chat_commands;
+pub mod combat_wisdom_commands;
 pub mod crafting_commands;
 pub mod death_commands;
 pub mod farming_commands;

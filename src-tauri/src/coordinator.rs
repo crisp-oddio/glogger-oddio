@@ -922,6 +922,13 @@ impl DataIngestCoordinator {
         for event in events {
             match event {
                 LogEvent::ChatMessage(msg) => {
+                    // Capture the local wall-clock timestamp BEFORE the UTC
+                    // conversion below — the Combat Wisdom store keys on local
+                    // time to stay consistent with the chat-log backfill (which
+                    // never converts), so live + backfill dedup correctly.
+                    let local_ts =
+                        msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+
                     // Convert chat timestamp from local time to UTC
                     let mut msg = msg;
                     msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
@@ -1104,6 +1111,29 @@ impl DataIngestCoordinator {
                                             }
                                         }
                                     }
+                                }
+                            }
+                            ChatStatusEvent::CombatWisdomEarned {
+                                amount,
+                                source_name,
+                                verb,
+                                zone,
+                                ..
+                            } => {
+                                // Persist monster awards for the Combat Wisdom
+                                // widget's per-monster cooldowns. Non-monster
+                                // (prodigy-level) awards are skipped by the
+                                // recorder; they still reach the frontend below.
+                                if let Ok(conn) = self.db_pool.get() {
+                                    crate::db::combat_wisdom_commands::record_combat_wisdom_earn(
+                                        &conn,
+                                        &local_ts,
+                                        *amount,
+                                        source_name.as_deref(),
+                                        verb,
+                                        zone.as_deref(),
+                                    )
+                                    .ok();
                                 }
                             }
                             _ => {}
