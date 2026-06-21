@@ -297,6 +297,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 54)?;
     }
 
+    if current_version < 55 {
+        migration_v55_loadout_aware_drops(conn)?;
+        super::record_migration(conn, 55)?;
+    }
+
     Ok(())
 }
 
@@ -312,6 +317,24 @@ fn migration_v54_zone_aware_drops(conn: &Connection) -> Result<()> {
          CREATE INDEX idx_enemy_kills_name_zone ON enemy_kills(enemy_name, zone);
          ALTER TABLE imported_enemy_kills_agg ADD COLUMN zone TEXT;
          ALTER TABLE imported_enemy_kill_loot_agg ADD COLUMN zone TEXT;",
+    )?;
+    Ok(())
+}
+
+/// Migration v55: make kill/loot drop data loadout-aware. Drop rates vary with the
+/// player's equipped combat-skill pair (e.g. Sword/Shield vs Fire/Ice), so each
+/// kill records the active loadout at the time — a normalized, order-independent
+/// `skillA+skillB` key (from `ProcessSetActiveSkills` / `ProcessLoadAbilities`).
+/// Drop-rate stats can then be segmented by (enemy_name, zone, combat_skills).
+/// Imported aggregates carry it too. Existing rows and loadout-less imports get
+/// NULL (= "unattributed"); new kills fill it in.
+fn migration_v55_loadout_aware_drops(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE enemy_kills ADD COLUMN combat_skills TEXT;
+         CREATE INDEX idx_enemy_kills_name_zone_skills
+             ON enemy_kills(enemy_name, zone, combat_skills);
+         ALTER TABLE imported_enemy_kills_agg ADD COLUMN combat_skills TEXT;
+         ALTER TABLE imported_enemy_kill_loot_agg ADD COLUMN combat_skills TEXT;",
     )?;
     Ok(())
 }

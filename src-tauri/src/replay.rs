@@ -670,14 +670,17 @@ pub fn ingest_kill_loot_from_logs(
 
     // --- Pass A: collect searched corpses (with permission) + their loot ---
     let mut parser = PlayerEventParser::new();
-    // corpse_entity_id -> (corpse_name, first-search killed_at, zone)
-    let mut corpses: std::collections::HashMap<u32, (String, String, Option<String>)> =
+    // corpse_entity_id -> (corpse_name, first-search killed_at, zone, combat_skills)
+    let mut corpses: std::collections::HashMap<u32, (String, String, Option<String>, Option<String>)> =
         std::collections::HashMap::new();
     // ordered loot: (corpse_entity_id, item_name, quantity, instance_id)
     let mut loot: Vec<(u32, String, u32, i64)> = Vec::new();
     // Current zone (internal area key) tracked from `LOADING LEVEL <area>` lines,
     // mirroring the live tailer, so each corpse is tagged with where it was searched.
     let mut current_zone: Option<String> = None;
+    // Current equipped combat-skill loadout, tracked the same way as the live path
+    // (ProcessSetActiveSkills / ProcessLoadAbilities), so each corpse is tagged with it.
+    let mut current_combat_skills: Option<String> = None;
 
     for event in &player_events {
         let line = match event {
@@ -692,6 +695,11 @@ pub fn ingest_kill_loot_from_logs(
         }
         for ev in parser.process_line(line) {
             match ev {
+                PlayerEvent::ActiveSkillsChanged { skill1, skill2, .. }
+                | PlayerEvent::AbilitiesLoaded { skill1, skill2, .. } => {
+                    current_combat_skills =
+                        crate::coordinator::normalize_combat_loadout(&skill1, &skill2);
+                }
                 PlayerEvent::CorpseSearched {
                     timestamp,
                     corpse_entity_id,
@@ -702,9 +710,12 @@ pub fn ingest_kill_loot_from_logs(
                         continue;
                     }
                     // Keep the FIRST search per corpse (parity with the live path).
-                    corpses
-                        .entry(corpse_entity_id)
-                        .or_insert((corpse_name, timestamp, current_zone.clone()));
+                    corpses.entry(corpse_entity_id).or_insert((
+                        corpse_name,
+                        timestamp,
+                        current_zone.clone(),
+                        current_combat_skills.clone(),
+                    ));
                 }
                 PlayerEvent::LootPickedUp {
                     corpse_entity_id: Some(cid),
@@ -732,14 +743,14 @@ pub fn ingest_kill_loot_from_logs(
     // corpse_entity_id -> kill_id (row id of the persisted kill)
     let mut kill_ids: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
 
-    for (entity_id, (corpse_name, killed_at, zone)) in &corpses {
+    for (entity_id, (corpse_name, killed_at, zone, combat_skills)) in &corpses {
         let entity_id_str = entity_id.to_string();
         let inserted = conn
             .execute(
                 "INSERT OR IGNORE INTO enemy_kills
                     (enemy_name, enemy_entity_id, killing_ability,
-                     health_damage, armor_damage, killed_at, character_name, server_name, zone)
-                 VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5, ?6)",
+                     health_damage, armor_damage, killed_at, character_name, server_name, zone, combat_skills)
+                 VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     corpse_name,
                     entity_id_str,
@@ -747,6 +758,7 @@ pub fn ingest_kill_loot_from_logs(
                     character_name,
                     server_name,
                     zone,
+                    combat_skills,
                 ],
             )
             .map_err(|e| format!("Failed to insert kill: {e}"))?;
