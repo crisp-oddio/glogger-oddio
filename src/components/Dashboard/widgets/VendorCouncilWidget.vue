@@ -1,7 +1,29 @@
 <template>
   <div class="flex flex-col gap-2 overflow-y-auto max-h-96">
-    <!-- View mode toggle + item type filter -->
-    <div class="flex items-center gap-1.5 px-1 flex-wrap">
+    <!-- Tab toggle -->
+    <div class="flex items-center gap-1.5 px-1">
+      <button
+        class="px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors"
+        :class="activeTab === 'available'
+          ? 'bg-accent-gold/20 border border-accent-gold/40 text-text-primary'
+          : 'text-text-muted hover:text-text-secondary'"
+        @click="activeTab = 'available'"
+      >
+        Available
+      </button>
+      <button
+        class="px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors"
+        :class="activeTab === 'earned'
+          ? 'bg-accent-gold/20 border border-accent-gold/40 text-text-primary'
+          : 'text-text-muted hover:text-text-secondary'"
+        @click="activeTab = 'earned'"
+      >
+        Earned
+      </button>
+    </div>
+
+    <!-- View mode toggle + item type filter (available tab only) -->
+    <div v-if="activeTab === 'available'" class="flex items-center gap-1.5 px-1 flex-wrap">
       <button
         class="px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors"
         :class="viewMode === 'character'
@@ -34,17 +56,22 @@
       </select>
     </div>
 
-    <!-- Loading state for aggregate -->
-    <div v-if="viewMode === 'all' && aggregateLoading" class="text-text-dim text-xs italic px-2">
+    <!-- Loading state for aggregate (available tab) -->
+    <div v-if="activeTab === 'available' && viewMode === 'all' && aggregateLoading" class="text-text-dim text-xs italic px-2">
       Loading cross-character data...
     </div>
 
-    <!-- Empty state -->
-    <div v-else-if="vendorEntries.length === 0" class="text-text-dim text-xs italic px-2">
+    <!-- Empty state (available tab) -->
+    <div v-else-if="activeTab === 'available' && vendorEntries.length === 0" class="text-text-dim text-xs italic px-2">
       No vendors found in CDN data.
     </div>
 
-    <template v-else>
+    <!-- Empty state (earned tab) -->
+    <div v-else-if="activeTab === 'earned' && earnedVendorEntries.length === 0" class="text-text-dim text-xs italic px-2">
+      No council earnings tracked.
+    </div>
+
+    <template v-else-if="activeTab === 'available'">
       <!-- Grand total -->
       <div class="flex items-center justify-between px-2 py-1.5 bg-surface-elevated rounded border border-border-default">
         <span class="text-xs text-text-muted">Total Councils Remaining</span>
@@ -123,6 +150,72 @@
         </div>
       </template>
     </template>
+
+    <!-- Earned councils tab -->
+    <template v-else-if="activeTab === 'earned'">
+      <!-- Grand totals -->
+      <div class="flex items-center justify-between px-2 py-1.5 bg-surface-elevated rounded border border-border-default">
+        <span class="text-xs text-text-muted">Total Earned (Current)</span>
+        <span class="text-sm font-bold font-mono text-accent-gold">
+          {{ grandTotalEarnedCurrent.toLocaleString() }}
+        </span>
+      </div>
+      <div class="flex items-center justify-between px-2 py-1.5 bg-surface-elevated rounded border border-border-default">
+        <span class="text-xs text-text-muted">Total Earned (Lifetime)</span>
+        <span class="text-sm font-bold font-mono text-value-positive">
+          {{ grandTotalEarnedLifetime.toLocaleString() }}
+        </span>
+      </div>
+
+      <!-- Flat list when filtered -->
+      <template v-if="itemTypeFilter">
+        <div class="flex flex-col gap-0.5 px-1">
+          <EarnedVendorRow
+            v-for="v in earnedVendorEntries"
+            :key="v.npcKey"
+            :entry="v"
+          />
+        </div>
+      </template>
+
+      <!-- Category groups when unfiltered -->
+      <template v-else>
+        <div
+          v-for="cat in earnedCategories"
+          :key="cat.name"
+          class="flex flex-col"
+        >
+          <button
+            class="flex items-center justify-between px-1.5 py-1 cursor-pointer hover:bg-surface-elevated/50 rounded transition-colors"
+            @click="toggleCategory(cat.name)"
+          >
+            <span class="flex items-center gap-1.5">
+              <span
+                class="text-[10px] transition-transform"
+                :class="expandedCategories.has(cat.name) ? 'rotate-90' : ''"
+              >&#x25B6;</span>
+              <span class="text-xs font-semibold text-text-secondary">{{ cat.name }}</span>
+              <span class="text-[10px] text-text-dim">({{ cat.vendors.length }})</span>
+            </span>
+            <span class="text-xs font-mono text-text-secondary">
+              {{ cat.totalCurrent.toLocaleString() }}
+              <span class="text-text-dim">/ {{ cat.totalLifetime.toLocaleString() }}</span>
+            </span>
+          </button>
+
+          <div
+            v-if="expandedCategories.has(cat.name)"
+            class="flex flex-col gap-0.5 pl-4 mt-0.5"
+          >
+            <EarnedVendorRow
+              v-for="v in cat.vendors"
+              :key="v.npcKey"
+              :entry="v"
+            />
+          </div>
+        </div>
+      </template>
+    </template>
   </div>
 </template>
 
@@ -135,6 +228,7 @@ import { useCharacterStore } from '../../../stores/characterStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { hasBuyCapacity, getStoreService, goldCapAtTier } from '../../../composables/useNpcServices'
 import VendorRow from './VendorRow.vue'
+import EarnedVendorRow from './EarnedVendorRow.vue'
 
 const VENDOR_RESET_HOURS = 168
 
@@ -188,8 +282,9 @@ const gameData = useGameDataStore()
 const characterStore = useCharacterStore()
 const settingsStore = useSettingsStore()
 
-// ── View mode ───────────────────────────────────────────────────
+// ── Tab and view mode ───────────────────────────────────────────
 
+const activeTab = ref<'available' | 'earned'>('available')
 const viewMode = ref<'character' | 'all'>('character')
 
 // ── Aggregate data ──────────────────────────────────────────────
@@ -608,5 +703,109 @@ function categoryColorClass(cat: CategoryGroup): string {
   if (ratio >= 0.3) return 'text-yellow-400'
   return 'text-value-negative'
 }
+
+// ── Earned councils data ────────────────────────────────────────
+
+interface EarnedVendorEntry {
+  npcKey: string
+  npcName: string
+  area: string | null
+  earnedCurrent: number
+  earnedLifetime: number
+  itemCategories: string[]
+  rawItemTypes: string[]
+}
+
+interface EarnedCategoryGroup {
+  name: string
+  vendors: EarnedVendorEntry[]
+  totalCurrent: number
+  totalLifetime: number
+}
+
+const earnedVendorEntries = computed<EarnedVendorEntry[]>(() => {
+  const entries: EarnedVendorEntry[] = []
+
+  for (const [key, npc] of Object.entries(gameData.npcsByKey)) {
+    if (!hasBuyCapacity(npc)) continue
+
+    const vendorState = gameState.vendorByNpc[key]
+    if (!vendorState) continue
+
+    const earnedCurrent = vendorState.councils_earned_current ?? 0
+    const earnedLifetime = vendorState.councils_earned_lifetime ?? 0
+
+    if (earnedCurrent === 0 && earnedLifetime === 0) continue
+
+    entries.push({
+      npcKey: key,
+      npcName: npc.name,
+      area: npc.area_friendly_name ?? null,
+      earnedCurrent,
+      earnedLifetime,
+      itemCategories: getItemCategories(key),
+      rawItemTypes: getRawItemTypes(key),
+    })
+  }
+
+  entries.sort((a, b) => {
+    if (a.earnedLifetime !== b.earnedLifetime) return b.earnedLifetime - a.earnedLifetime
+    return a.npcName.localeCompare(b.npcName)
+  })
+
+  return entries
+})
+
+const earnedCategories = computed<EarnedCategoryGroup[]>(() => {
+  const catMap = new Map<string, EarnedVendorEntry[]>()
+
+  for (const entry of earnedVendorEntries.value) {
+    for (const cat of entry.itemCategories) {
+      if (!catMap.has(cat)) catMap.set(cat, [])
+      catMap.get(cat)!.push(entry)
+    }
+  }
+
+  const groups: EarnedCategoryGroup[] = []
+  for (const name of CATEGORY_ORDER) {
+    const vendors = catMap.get(name)
+    if (!vendors || vendors.length === 0) continue
+    vendors.sort((a, b) => {
+      if (a.earnedLifetime !== b.earnedLifetime) return b.earnedLifetime - a.earnedLifetime
+      return a.npcName.localeCompare(b.npcName)
+    })
+    groups.push({
+      name,
+      vendors,
+      totalCurrent: vendors.reduce((sum, v) => sum + v.earnedCurrent, 0),
+      totalLifetime: vendors.reduce((sum, v) => sum + v.earnedLifetime, 0),
+    })
+  }
+
+  const covered = new Set(CATEGORY_ORDER)
+  for (const [name, vendors] of catMap) {
+    if (covered.has(name)) continue
+    vendors.sort((a, b) => {
+      if (a.earnedLifetime !== b.earnedLifetime) return b.earnedLifetime - a.earnedLifetime
+      return a.npcName.localeCompare(b.npcName)
+    })
+    groups.push({
+      name,
+      vendors,
+      totalCurrent: vendors.reduce((sum, v) => sum + v.earnedCurrent, 0),
+      totalLifetime: vendors.reduce((sum, v) => sum + v.earnedLifetime, 0),
+    })
+  }
+
+  return groups
+})
+
+const grandTotalEarnedCurrent = computed(() =>
+  earnedVendorEntries.value.reduce((sum, v) => sum + v.earnedCurrent, 0)
+)
+
+const grandTotalEarnedLifetime = computed(() =>
+  earnedVendorEntries.value.reduce((sum, v) => sum + v.earnedLifetime, 0)
+)
 
 </script>

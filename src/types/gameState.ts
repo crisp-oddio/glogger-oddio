@@ -130,6 +130,8 @@ export interface GameStateVendor {
   last_interaction_at: string | null
   last_sell_at: string | null
   last_confirmed_at: string
+  councils_earned_current: number
+  councils_earned_lifetime: number
 }
 
 export interface StorageVaultDetail {

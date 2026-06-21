@@ -904,17 +904,21 @@ impl GameStateManager {
 
             PlayerEvent::VendorSold {
                 timestamp,
+                price,
                 ..
             } => {
                 if let Some(npc_key) = &self.current_vendor_npc {
                     let dt = self.to_utc(timestamp);
+                    let councils = *price as i64;
                     conn.execute(
-                        "INSERT INTO game_state_npc_vendor (character_name, server_name, npc_key, last_sell_at, last_confirmed_at)
-                         VALUES (?1, ?2, ?3, ?4, ?4)
+                        "INSERT INTO game_state_npc_vendor (character_name, server_name, npc_key, last_sell_at, last_confirmed_at, councils_earned_current, councils_earned_lifetime)
+                         VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?5)
                          ON CONFLICT(character_name, server_name, npc_key) DO UPDATE SET
                             last_sell_at = excluded.last_sell_at,
-                            last_confirmed_at = excluded.last_confirmed_at",
-                        rusqlite::params![character, server, npc_key, dt],
+                            last_confirmed_at = excluded.last_confirmed_at,
+                            councils_earned_current = councils_earned_current + ?5,
+                            councils_earned_lifetime = councils_earned_lifetime + ?5",
+                        rusqlite::params![character, server, npc_key, dt, councils],
                     ).ok();
                     domains.push("vendor");
                 } else {
@@ -942,6 +946,11 @@ impl GameStateManager {
                                     WHEN datetime(game_state_npc_vendor.vendor_gold_timer_start, '+168 hours') < excluded.last_confirmed_at THEN excluded.vendor_gold_timer_start
                                     ELSE game_state_npc_vendor.vendor_gold_timer_start
                                 END,
+                                councils_earned_current = CASE
+                                    WHEN game_state_npc_vendor.vendor_gold_timer_start IS NOT NULL
+                                         AND datetime(game_state_npc_vendor.vendor_gold_timer_start, '+168 hours') < excluded.last_confirmed_at THEN 0
+                                    ELSE councils_earned_current
+                                END,
                                 last_confirmed_at = excluded.last_confirmed_at",
                             rusqlite::params![character, server, npc_key, *current_gold as i64, *max_gold as i64, dt],
                         ).ok();
@@ -953,6 +962,10 @@ impl GameStateManager {
                                 vendor_gold_available = excluded.vendor_gold_available,
                                 vendor_gold_max = excluded.vendor_gold_max,
                                 vendor_gold_timer_start = NULL,
+                                councils_earned_current = CASE
+                                    WHEN game_state_npc_vendor.vendor_gold_timer_start IS NOT NULL THEN 0
+                                    ELSE councils_earned_current
+                                END,
                                 last_confirmed_at = excluded.last_confirmed_at",
                             rusqlite::params![character, server, npc_key, *current_gold as i64, *max_gold as i64, dt],
                         ).ok();

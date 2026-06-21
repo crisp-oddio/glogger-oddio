@@ -282,6 +282,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 51)?;
     }
 
+    if current_version < 52 {
+        migration_v52_vendor_earnings(conn)?;
+        super::record_migration(conn, 52)?;
+    }
+
     Ok(())
 }
 
@@ -301,6 +306,16 @@ fn migration_v51_combat_wisdom_earns(conn: &Connection) -> Result<()> {
             ON combat_wisdom_earns(earned_at, source_name, amount);
         CREATE INDEX IF NOT EXISTS idx_cw_source
             ON combat_wisdom_earns(source_name, earned_at);",
+    )?;
+    Ok(())
+}
+
+/// Migration V52: vendor earnings tracking — add columns to track councils
+/// earned from each vendor in the current period and lifetime.
+fn migration_v52_vendor_earnings(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE game_state_npc_vendor ADD COLUMN councils_earned_current INTEGER DEFAULT 0;
+         ALTER TABLE game_state_npc_vendor ADD COLUMN councils_earned_lifetime INTEGER DEFAULT 0;",
     )?;
     Ok(())
 }
