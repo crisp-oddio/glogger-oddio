@@ -1,7 +1,8 @@
-## What's Changed since v0.9.15
+## What's Changed since v0.9.16
 
 ### Features
-- feat(farming): corpse-search drop-rate model, history drop-rate hover, butchering harvest detail (`03e33e8`)
+- feat(vendors): Add historical council earnings tracker with two-tab widget (`bb91b0b`)
+- feat(dashboard): Combat Wisdom tracker widget (`fd4763c`)
 
 ---
-*2 commits since v0.9.15*
+*4 commits since v0.9.16*
