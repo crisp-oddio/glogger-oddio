@@ -1,5 +1,65 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-20 (Session 16 — Vendor council earnings tracker)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (v0.9.16)
+**Status:** ✅ **Shipped.** Second "Earned" tab on the Vendor Councils widget tracks councils
+earned per NPC (current period + lifetime). Committed `bb91b0b`, pushed (`dev`→`main`, clean
+fast-forward — both at `bb91b0b`). `npm run tauri build` (release) compiled clean (frontend
+`vue-tsc` + Rust release build both green).
+
+## TL;DR — Session 16 (Vendor council earnings tracker)
+
+**Problem:** The Vendor Councils widget only showed *currently available* councils per vendor.
+When a vendor's weekly gold reset (the 168h timer), you lost all record of how much you'd earned
+from that NPC that week. **Fix:** a second **Earned** tab that mirrors the first, showing councils
+earned per NPC this period **and** lifetime.
+
+### Data model — two new columns, no new table
+**Migration v52** ([migrations.rs](src-tauri/src/db/migrations.rs)) — `ALTER TABLE
+game_state_npc_vendor ADD COLUMN councils_earned_current INTEGER DEFAULT 0` +
+`councils_earned_lifetime INTEGER DEFAULT 0`. (v51 was Session-15's Combat Wisdom.)
+
+### Backend — accrue on sale, zero `current` on reset
+[game_state.rs](src-tauri/src/game_state.rs) `VendorSold` arm now pulls the `price` field (was
+`..`-ignored) and does `councils_earned_current = councils_earned_current + price` (same for
+lifetime) in the upsert. The `VendorGoldChanged` arm — which already owns the 168h reset detection
+via `vendor_gold_timer_start` — now **zeros `councils_earned_current`** in the same `CASE` that
+detects an expired timer (both the `current < max` branch, comparing
+`datetime(timer_start,'+168 hours') < last_confirmed_at`, and the `>= max` / full-reset branch).
+Lifetime is **never** touched by the reset paths.
+
+### Frontend — new tab + new row component
+- [VendorCouncilWidget.vue](src/components/Dashboard/widgets/VendorCouncilWidget.vue) — added an
+  `activeTab` ref (`'available' | 'earned'`) with a tab toggle at the top. The Available tab is the
+  entire prior widget (view-mode + item-type filter hidden on the Earned tab). Earned tab reuses the
+  same category-grouping machinery: `earnedVendorEntries` (filters to vendors with any earnings from
+  `gameState.vendorByNpc[key].councils_earned_*`), `earnedCategories`, and grand totals
+  `grandTotalEarnedCurrent` / `grandTotalEarnedLifetime`. Earned rows render **current / lifetime**.
+- New [EarnedVendorRow.vue](src/components/Dashboard/widgets/EarnedVendorRow.vue) — minimal row
+  (NpcInline + area + `earnedCurrent.toLocaleString()` / `earnedLifetime`), no quick-edit/aggregate
+  machinery (those are Available-tab concerns).
+- [types/gameState.ts](src/types/gameState.ts) — `GameStateVendor` gained
+  `councils_earned_current: number` + `councils_earned_lifetime: number`.
+
+### ⚠️ Caveats / not-yet-verified
+- **Earned tab is active-character only** (reads `gameState.vendorByNpc`, the live per-character
+  store). Unlike the Available tab it has **no All-Characters aggregate view** — the
+  `get_aggregate_vendor` command doesn't return the new columns. If cross-character lifetime totals
+  are wanted, extend `aggregate_commands.rs` + `AggregateVendorEntry`.
+- **Earnings accrue only from `VendorSold` (Player.log)** — same source as the widget's existing
+  sale tracking. Councils gained any other way aren't counted here (this is "earned *from this
+  vendor*", by design).
+- **Not exercised live** — Tauri `invoke()` doesn't work under the browser-only preview tool
+  (`get_cache_status … Cannot read properties of undefined (reading 'invoke')`), so the Earned tab
+  wasn't click-tested. The release build **compiled** clean. Next session: run `npm run tauri dev`
+  natively, sell to a vendor, confirm the Earned tab increments and survives a reset. Migration v52
+  also hasn't been observed applying on a real DB yet.
+
+---
+
+# glogger — Session Handoff (Session 15)
+
 **Date:** 2026-06-20 (Session 15 — Combat Wisdom tracker widget)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (v0.9.15)
