@@ -100,6 +100,10 @@ pub struct DataIngestCoordinator {
     /// Current area name, updated from AreaTransition events.
     /// Used to attach area context to combat death records.
     current_area: Option<String>,
+    /// Current equipped combat-skill loadout (normalized `skillA+skillB`, sorted),
+    /// updated from ProcessSetActiveSkills / ProcessLoadAbilities. Attached to each
+    /// kill so drop rates can be segmented by loadout. None = unknown.
+    current_combat_skills: Option<String>,
     /// Rolling buffer of recent damage-on-player events (max 10).
     /// Snapshotted into DB when a death occurs for "what killed me" context.
     recent_damage: Vec<crate::chat_combat_parser::ChatCombatEvent>,
@@ -150,6 +154,7 @@ impl DataIngestCoordinator {
             game_state,
             game_data: game_data_clone,
             current_area: None,
+            current_combat_skills: None,
             recent_damage: Vec::new(),
             debug_capture: DebugCaptureState::new(),
             pending_cow_interaction: None,
@@ -1481,6 +1486,12 @@ impl DataIngestCoordinator {
             }
         };
 
+        // Zone (internal area key) the corpse was searched in — drop rates vary
+        // by zone for the same monster name, so it's recorded per kill.
+        let zone = self.current_area.as_deref();
+        // Equipped combat-skill loadout at the time — drop rates also vary by it.
+        let combat_skills = self.current_combat_skills.as_deref();
+
         // INSERT OR IGNORE against the dedup unique index
         // (character, server, entity_id, killed_at) so a corpse already captured
         // by a Player-prev backfill (same entity_id + first-search timestamp) is
@@ -1489,14 +1500,16 @@ impl DataIngestCoordinator {
         match conn.execute(
             "INSERT OR IGNORE INTO enemy_kills
                 (enemy_name, enemy_entity_id, killing_ability,
-                 health_damage, armor_damage, killed_at, character_name, server_name)
-             VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5)",
+                 health_damage, armor_damage, killed_at, character_name, server_name, zone, combat_skills)
+             VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 corpse_name,
                 entity_id_str,
                 timestamp,
                 character_name,
                 server_name,
+                zone,
+                combat_skills,
             ],
         ) {
             Ok(inserted) => {
@@ -1536,6 +1549,13 @@ impl DataIngestCoordinator {
     fn attribute_loot_to_kills(&mut self, events: &[PlayerEvent]) {
         for event in events {
             match event {
+                // Track the equipped combat-skill loadout as it changes so the
+                // next searched corpse is tagged with it. Both events carry the
+                // two active skills; they fire on login/zone-in and on skill swap.
+                PlayerEvent::ActiveSkillsChanged { skill1, skill2, .. }
+                | PlayerEvent::AbilitiesLoaded { skill1, skill2, .. } => {
+                    self.current_combat_skills = normalize_combat_loadout(skill1, skill2);
+                }
                 PlayerEvent::CorpseSearched {
                     timestamp,
                     corpse_entity_id,
@@ -2755,6 +2775,50 @@ fn parse_duration_text(text: &str) -> Option<chrono::Duration> {
         Some(chrono::Duration::seconds(total_seconds))
     } else {
         None
+    }
+}
+
+/// Normalize an equipped combat-skill pair into a stable, order-independent key
+/// (e.g. `Hammer`/`FireMagic` and `FireMagic`/`Hammer` both → `"FireMagic+Hammer"`).
+/// Empty/placeholder slots are dropped; returns None when nothing meaningful is set.
+/// Shared by the live coordinator and the Player.log backfill so both produce
+/// identical loadout keys.
+pub(crate) fn normalize_combat_loadout(skill1: &str, skill2: &str) -> Option<String> {
+    let mut parts: Vec<String> = [skill1, skill2]
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("unknown"))
+        .map(|s| s.to_string())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    parts.sort();
+    Some(parts.join("+"))
+}
+
+#[cfg(test)]
+mod loadout_tests {
+    use super::normalize_combat_loadout;
+
+    #[test]
+    fn order_independent_and_sorted() {
+        assert_eq!(
+            normalize_combat_loadout("Hammer", "FireMagic"),
+            normalize_combat_loadout("FireMagic", "Hammer")
+        );
+        assert_eq!(
+            normalize_combat_loadout("Sword", "Shield").as_deref(),
+            Some("Shield+Sword")
+        );
+    }
+
+    #[test]
+    fn drops_empty_and_placeholder_slots() {
+        assert_eq!(normalize_combat_loadout("Sword", "").as_deref(), Some("Sword"));
+        assert_eq!(normalize_combat_loadout("None", "Mentalism").as_deref(), Some("Mentalism"));
+        assert_eq!(normalize_combat_loadout("", ""), None);
+        assert_eq!(normalize_combat_loadout("none", "unknown"), None);
     }
 }
 

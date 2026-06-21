@@ -73,6 +73,7 @@ export type DatabaseScope = 'mine' | 'imported' | 'combined'
 
 export interface EnemySearchResult {
   enemy_name: string
+  zone: string | null   // internal area key (null = unknown zone)
   total_kills: number
   distinct_loot_items: number
 }
@@ -92,6 +93,7 @@ export interface HarvestSearchResult {
 
 export interface ItemDropSource {
   enemy_name: string
+  zone: string | null   // internal area key (null = unknown zone)
   total_kills: number
   times_dropped: number
   total_quantity: number

@@ -116,24 +116,28 @@
           <template v-if="query.trim()">matching “{{ query.trim() }}”</template>
         </div>
 
-        <!-- Enemy results -->
+        <!-- Enemy results — one row per (monster, zone) -->
         <template v-if="searchTarget === 'enemies'">
           <div
             v-for="row in enemyResults"
-            :key="row.enemy_name"
+            :key="enemyRowKey(row)"
             class="rounded text-xs bg-black/20 border border-border-default">
             <div
               class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-black/30 transition-colors"
-              @click="toggleEnemyExpanded(row.enemy_name)">
-              <EnemyInline :reference="row.enemy_name" />
+              @click="toggleEnemyExpanded(enemyRowKey(row))">
+              <div class="flex items-center gap-2 min-w-0">
+                <EnemyInline :reference="row.enemy_name" />
+                <AreaInline v-if="row.zone" :reference="row.zone" class="text-[0.65rem] text-text-dim truncate" />
+                <span v-else class="text-[0.65rem] text-text-dim italic truncate">Unknown zone</span>
+              </div>
               <div class="flex items-center gap-3 shrink-0">
                 <span class="text-text-secondary">{{ row.total_kills.toLocaleString() }} kills</span>
                 <span class="text-text-dim">{{ row.distinct_loot_items }} loot items</span>
-                <span class="text-text-dim">{{ expandedEnemies.has(row.enemy_name) ? '▲' : '▼' }}</span>
+                <span class="text-text-dim">{{ expandedEnemies.has(enemyRowKey(row)) ? '▲' : '▼' }}</span>
               </div>
             </div>
-            <div v-if="expandedEnemies.has(row.enemy_name)" class="border-t border-border-default px-3 py-2">
-              <EnemyDropTable :enemy-name="row.enemy_name" :scope="scope" />
+            <div v-if="expandedEnemies.has(enemyRowKey(row))" class="border-t border-border-default px-3 py-2">
+              <EnemyDropTable :enemy-name="row.enemy_name" :scope="scope" :zone="row.zone" />
             </div>
           </div>
         </template>
@@ -225,6 +229,7 @@ import type {
 import EmptyState from "../Shared/EmptyState.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 import EnemyInline from "../Shared/Enemy/EnemyInline.vue";
+import AreaInline from "../Shared/Area/AreaInline.vue";
 import EnemyDropTable from "./EnemyDropTable.vue";
 import ItemDropBreakdownTable from "./ItemDropBreakdownTable.vue";
 import ExtractDetailTable from "./ExtractDetailTable.vue";
@@ -262,6 +267,10 @@ const enemyResults = computed(() => {
   if (!q) return allEnemies.value;
   return allEnemies.value.filter((r) => r.enemy_name.toLowerCase().includes(q));
 });
+// A monster appears once per zone, so rows are identified by monster + zone.
+function enemyRowKey(row: EnemySearchResult): string {
+  return `${row.enemy_name}|${row.zone ?? ""}`;
+}
 const itemResults = computed(() => {
   const q = query.value.trim().toLowerCase();
   if (!q) return allItems.value;
@@ -382,8 +391,8 @@ async function doExport() {
   exporting.value = true;
   try {
     const filePath = await save({
-      filters: [{ name: "JSON", extensions: ["json"] }],
-      defaultPath: `glogger-drop-rates-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+      defaultPath: `glogger-drop-rates-${new Date().toISOString().slice(0, 10)}.csv`,
     });
     if (!filePath) return;
     const count = await invoke<number>("export_kill_loot_database", { path: filePath });
@@ -401,7 +410,7 @@ async function doImport() {
   importing.value = true;
   try {
     const filePath = await open({
-      filters: [{ name: "JSON", extensions: ["json"] }],
+      filters: [{ name: "Drop data", extensions: ["csv", "json"] }],
       multiple: false,
     });
     if (!filePath) return;
