@@ -5,9 +5,13 @@
       No drop sources for this scope.
     </div>
     <template v-else>
-      <div v-for="row in sources" :key="row.enemy_name" class="flex flex-col gap-0.5">
+      <div v-for="row in sources" :key="`${row.enemy_name}|${row.zone ?? ''}`" class="flex flex-col gap-0.5">
         <div class="flex items-center justify-between text-xs">
-          <EnemyInline :reference="row.enemy_name" />
+          <div class="flex items-center gap-2 min-w-0">
+            <EnemyInline :reference="row.enemy_name" />
+            <AreaInline v-if="row.zone" :reference="row.zone" class="text-[0.6rem] text-text-dim truncate" />
+            <span v-else class="text-[0.6rem] text-text-dim italic truncate">Unknown zone</span>
+          </div>
           <span class="text-text-dim shrink-0">
             <span class="text-value-positive font-mono font-bold">x{{ row.total_quantity }}</span>
             <span class="text-[0.6rem]"> · {{ row.times_dropped }}/{{ row.total_kills }} kills</span>
@@ -31,6 +35,7 @@ import { ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { DatabaseScope, ItemDropSource } from "../../types/farming";
 import EnemyInline from "../Shared/Enemy/EnemyInline.vue";
+import AreaInline from "../Shared/Area/AreaInline.vue";
 
 const props = defineProps<{
   itemName: string;

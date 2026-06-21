@@ -670,17 +670,26 @@ pub fn ingest_kill_loot_from_logs(
 
     // --- Pass A: collect searched corpses (with permission) + their loot ---
     let mut parser = PlayerEventParser::new();
-    // corpse_entity_id -> (corpse_name, first-search killed_at)
-    let mut corpses: std::collections::HashMap<u32, (String, String)> =
+    // corpse_entity_id -> (corpse_name, first-search killed_at, zone)
+    let mut corpses: std::collections::HashMap<u32, (String, String, Option<String>)> =
         std::collections::HashMap::new();
     // ordered loot: (corpse_entity_id, item_name, quantity, instance_id)
     let mut loot: Vec<(u32, String, u32, i64)> = Vec::new();
+    // Current zone (internal area key) tracked from `LOADING LEVEL <area>` lines,
+    // mirroring the live tailer, so each corpse is tagged with where it was searched.
+    let mut current_zone: Option<String> = None;
 
     for event in &player_events {
         let line = match event {
             TimedEvent::PlayerLine { line, .. } => line,
             _ => continue,
         };
+        if let Some(idx) = line.find("LOADING LEVEL ") {
+            let area = line[idx + "LOADING LEVEL ".len()..].trim();
+            if !area.is_empty() {
+                current_zone = Some(area.to_string());
+            }
+        }
         for ev in parser.process_line(line) {
             match ev {
                 PlayerEvent::CorpseSearched {
@@ -695,7 +704,7 @@ pub fn ingest_kill_loot_from_logs(
                     // Keep the FIRST search per corpse (parity with the live path).
                     corpses
                         .entry(corpse_entity_id)
-                        .or_insert((corpse_name, timestamp));
+                        .or_insert((corpse_name, timestamp, current_zone.clone()));
                 }
                 PlayerEvent::LootPickedUp {
                     corpse_entity_id: Some(cid),
@@ -723,20 +732,21 @@ pub fn ingest_kill_loot_from_logs(
     // corpse_entity_id -> kill_id (row id of the persisted kill)
     let mut kill_ids: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
 
-    for (entity_id, (corpse_name, killed_at)) in &corpses {
+    for (entity_id, (corpse_name, killed_at, zone)) in &corpses {
         let entity_id_str = entity_id.to_string();
         let inserted = conn
             .execute(
                 "INSERT OR IGNORE INTO enemy_kills
                     (enemy_name, enemy_entity_id, killing_ability,
-                     health_damage, armor_damage, killed_at, character_name, server_name)
-                 VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5)",
+                     health_damage, armor_damage, killed_at, character_name, server_name, zone)
+                 VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     corpse_name,
                     entity_id_str,
                     killed_at,
                     character_name,
                     server_name,
+                    zone,
                 ],
             )
             .map_err(|e| format!("Failed to insert kill: {e}"))?;

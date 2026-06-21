@@ -1481,6 +1481,10 @@ impl DataIngestCoordinator {
             }
         };
 
+        // Zone (internal area key) the corpse was searched in — drop rates vary
+        // by zone for the same monster name, so it's recorded per kill.
+        let zone = self.current_area.as_deref();
+
         // INSERT OR IGNORE against the dedup unique index
         // (character, server, entity_id, killed_at) so a corpse already captured
         // by a Player-prev backfill (same entity_id + first-search timestamp) is
@@ -1489,14 +1493,15 @@ impl DataIngestCoordinator {
         match conn.execute(
             "INSERT OR IGNORE INTO enemy_kills
                 (enemy_name, enemy_entity_id, killing_ability,
-                 health_damage, armor_damage, killed_at, character_name, server_name)
-             VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5)",
+                 health_damage, armor_damage, killed_at, character_name, server_name, zone)
+             VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 corpse_name,
                 entity_id_str,
                 timestamp,
                 character_name,
                 server_name,
+                zone,
             ],
         ) {
             Ok(inserted) => {

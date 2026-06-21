@@ -264,9 +264,12 @@
                 <div v-else class="flex flex-col gap-1">
                   <div
                     v-for="src in dropSources"
-                    :key="src.enemy_name"
+                    :key="`${src.enemy_name}|${src.zone ?? ''}`"
                     class="grid grid-cols-[1fr_40px_45px_45px] gap-1 items-center text-xs px-2 py-1 bg-surface-inset border-l-2 border-l-[#e87e7e]">
-                    <EnemyInline :reference="src.enemy_name" />
+                    <span class="flex items-center gap-1.5 min-w-0">
+                      <EnemyInline :reference="src.enemy_name" />
+                      <AreaInline v-if="src.zone" :reference="src.zone" class="text-[0.6rem] text-text-dim truncate" />
+                    </span>
                     <span class="text-right text-text-secondary font-mono">x{{ src.total_quantity }}</span>
                     <span class="text-right text-text-dim font-mono text-[0.65rem]">{{ src.times_dropped }}/{{ src.total_kills }}</span>
                     <span class="text-right font-mono font-bold" :class="dropRateColor(src.drop_rate)">
@@ -505,6 +508,7 @@
 <script setup lang="ts">
 import PaneLayout from "../Shared/PaneLayout.vue";
 import EnemyInline from "../Shared/Enemy/EnemyInline.vue";
+import AreaInline from "../Shared/Area/AreaInline.vue";
 import { ref, computed, watch, onMounted, nextTick } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useGameDataStore } from "../../stores/gameDataStore";
@@ -555,6 +559,7 @@ const listRef = ref<HTMLElement | null>(null);
 
 interface ItemDropSource {
   enemy_name: string;
+  zone: string | null;
   total_kills: number;
   times_dropped: number;
   total_quantity: number;

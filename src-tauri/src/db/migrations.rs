@@ -292,6 +292,27 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 53)?;
     }
 
+    if current_version < 54 {
+        migration_v54_zone_aware_drops(conn)?;
+        super::record_migration(conn, 54)?;
+    }
+
+    Ok(())
+}
+
+/// Migration v54: make kill/loot drop data zone-aware. Drop rates vary by zone
+/// for the same monster name, so each kill records the area it happened in (the
+/// internal area key, e.g. `AreaDesert2`, from `LOADING LEVEL` transitions) and
+/// drop-rate stats are keyed by (enemy_name, zone). Imported aggregates carry the
+/// zone too. Existing rows get NULL (= "unknown zone") since their zone wasn't
+/// captured at the time; new kills and re-imports fill it in.
+fn migration_v54_zone_aware_drops(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE enemy_kills ADD COLUMN zone TEXT;
+         CREATE INDEX idx_enemy_kills_name_zone ON enemy_kills(enemy_name, zone);
+         ALTER TABLE imported_enemy_kills_agg ADD COLUMN zone TEXT;
+         ALTER TABLE imported_enemy_kill_loot_agg ADD COLUMN zone TEXT;",
+    )?;
     Ok(())
 }
 

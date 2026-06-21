@@ -35,6 +35,9 @@ import ItemInline from "../Shared/Item/ItemInline.vue";
 const props = defineProps<{
   enemyName: string;
   scope: DatabaseScope;
+  // Area key to scope stats to. null = the unknown-zone bucket; passed to the
+  // backend as "" (absent/undefined there would mean "all zones").
+  zone?: string | null;
 }>();
 
 const loading = ref(false);
@@ -46,6 +49,7 @@ async function load() {
     stats.value = await invoke<EnemyKillStats>("get_enemy_kill_stats", {
       enemyName: props.enemyName,
       scope: props.scope,
+      zone: props.zone ?? "",
     });
   } catch (e) {
     console.error("[enemy-drop-table] Failed to load stats:", e);
@@ -60,5 +64,5 @@ function fmtPct(rate: number): string {
   return pct >= 10 ? `${pct.toFixed(0)}%` : `${pct.toFixed(1)}%`;
 }
 
-watch(() => [props.enemyName, props.scope], load, { immediate: true });
+watch(() => [props.enemyName, props.scope, props.zone], load, { immediate: true });
 </script>
