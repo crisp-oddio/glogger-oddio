@@ -287,6 +287,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 52)?;
     }
 
+    if current_version < 53 {
+        migration_v53_persist_imported_drop_data(conn)?;
+        super::record_migration(conn, 53)?;
+    }
+
     Ok(())
 }
 
@@ -316,6 +321,55 @@ fn migration_v52_vendor_earnings(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE game_state_npc_vendor ADD COLUMN councils_earned_current INTEGER DEFAULT 0;
          ALTER TABLE game_state_npc_vendor ADD COLUMN councils_earned_lifetime INTEGER DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
+/// Migration v53: make imported drop-rate data permanent.
+///
+/// Originally the imported aggregate tables had a
+/// `FOREIGN KEY (source_label) REFERENCES imported_kill_sources ON DELETE
+/// CASCADE`, so removing an entry from the "Imported Sources" list also deleted
+/// its contributed kill/loot data. The new behavior is that imported data merges
+/// permanently into the player's database; "Remove" only drops the bookkeeping
+/// entry from the sources list, leaving the merged data intact.
+///
+/// SQLite can't drop a foreign key in place, so rebuild both aggregate tables
+/// without the FK (keeping `source_label` as a plain column — re-importing the
+/// same file still replaces just that source's rows via the label). No other
+/// table references these, so the rebuild is self-contained.
+fn migration_v53_persist_imported_drop_data(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE imported_enemy_kills_agg_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_label TEXT NOT NULL,
+            enemy_name TEXT NOT NULL,
+            total_kills INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO imported_enemy_kills_agg_new (id, source_label, enemy_name, total_kills)
+            SELECT id, source_label, enemy_name, total_kills FROM imported_enemy_kills_agg;
+        DROP TABLE imported_enemy_kills_agg;
+        ALTER TABLE imported_enemy_kills_agg_new RENAME TO imported_enemy_kills_agg;
+        CREATE INDEX idx_imported_kills_source ON imported_enemy_kills_agg(source_label);
+        CREATE INDEX idx_imported_kills_enemy ON imported_enemy_kills_agg(enemy_name);
+
+        CREATE TABLE imported_enemy_kill_loot_agg_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_label TEXT NOT NULL,
+            enemy_name TEXT NOT NULL,
+            item_name TEXT NOT NULL,
+            total_quantity INTEGER NOT NULL DEFAULT 0,
+            times_dropped INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO imported_enemy_kill_loot_agg_new
+            (id, source_label, enemy_name, item_name, total_quantity, times_dropped)
+            SELECT id, source_label, enemy_name, item_name, total_quantity, times_dropped
+            FROM imported_enemy_kill_loot_agg;
+        DROP TABLE imported_enemy_kill_loot_agg;
+        ALTER TABLE imported_enemy_kill_loot_agg_new RENAME TO imported_enemy_kill_loot_agg;
+        CREATE INDEX idx_imported_loot_source ON imported_enemy_kill_loot_agg(source_label);
+        CREATE INDEX idx_imported_loot_enemy ON imported_enemy_kill_loot_agg(enemy_name);
+        CREATE INDEX idx_imported_loot_item ON imported_enemy_kill_loot_agg(item_name);"
     )?;
     Ok(())
 }

@@ -175,6 +175,37 @@
             </template>
           </div>
 
+          <!-- Harvest Stats (skinning / butchering) -->
+          <div class="flex flex-col gap-1.5">
+            <div class="text-[0.65rem] uppercase tracking-widest text-[#c8a47e] border-b border-surface-card pb-0.5">
+              Harvest Stats
+              <span v-if="harvestStats && harvestStats.total_extracts > 0" class="text-text-dim font-normal ml-1">
+                ({{ harvestStats.total_extracts }} pull{{ harvestStats.total_extracts !== 1 ? 's' : '' }} recorded)
+              </span>
+            </div>
+            <div v-if="harvestStatsLoading" class="text-text-dim text-xs italic">Loading harvest data...</div>
+            <div v-else-if="!harvestStats || harvestStats.harvests.length === 0" class="text-text-dim text-xs italic">
+              No harvest data yet (corpse not skinned or butchered)
+            </div>
+            <div v-else class="flex flex-col gap-0.5">
+              <div class="grid grid-cols-[1fr_90px_60px_60px] gap-1 text-[0.6rem] uppercase tracking-wider text-text-muted pb-0.5 px-1">
+                <span>Item</span>
+                <span class="text-right">Skill</span>
+                <span class="text-right">Qty</span>
+                <span class="text-right">Pulls</span>
+              </div>
+              <div
+                v-for="row in harvestStats.harvests"
+                :key="`${row.item_name}-${row.skill}`"
+                class="grid grid-cols-[1fr_90px_60px_60px] gap-1 items-center px-1 py-1 text-xs bg-black/20 border border-border-default rounded">
+                <ItemInline :reference="row.item_name" />
+                <span class="text-right text-[#c8a47e] text-[0.7rem]">{{ row.skill }}</span>
+                <span class="text-right text-text-secondary font-mono">{{ row.total_quantity }}</span>
+                <span class="text-right text-text-dim font-mono">{{ row.times }}</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Raw JSON (via settings toggle) -->
           <div v-if="settingsStore.settings.showRawJsonInDataBrowser" class="flex flex-col gap-1.5">
             <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5">Raw JSON</div>
@@ -228,8 +259,24 @@ interface EnemyKillStats {
   loot: EnemyLootDrop[];
 }
 
+interface EnemyHarvestStat {
+  item_name: string;
+  skill: string;
+  total_quantity: number;
+  times: number;
+}
+
+interface EnemyHarvestStats {
+  corpse_name: string;
+  total_extracts: number;
+  harvests: EnemyHarvestStat[];
+}
+
 const killStats = ref<EnemyKillStats | null>(null);
 const killStatsLoading = ref(false);
+
+const harvestStats = ref<EnemyHarvestStats | null>(null);
+const harvestStatsLoading = ref(false);
 
 const isFav = computed(() =>
   selected.value ? dataBrowserStore.isFavorite("enemy", selected.value.key) : false
@@ -278,6 +325,7 @@ function selectEnemy(enemy: MonsterEntry) {
   selected.value = enemy;
   dataBrowserStore.addToHistory({ type: "enemy", reference: enemy.key, label: enemy.name });
   loadKillStats(enemy);
+  loadHarvestStats(enemy);
 }
 
 async function loadKillStats(enemy: MonsterEntry) {
@@ -295,9 +343,24 @@ async function loadKillStats(enemy: MonsterEntry) {
   }
 }
 
+async function loadHarvestStats(enemy: MonsterEntry) {
+  harvestStatsLoading.value = true;
+  harvestStats.value = null;
+  try {
+    harvestStats.value = await invoke<EnemyHarvestStats>("get_enemy_harvest_stats", {
+      corpseName: enemy.name,
+    });
+  } catch (e) {
+    console.error("[enemy-browser] Failed to load harvest stats:", e);
+  } finally {
+    harvestStatsLoading.value = false;
+  }
+}
+
 function clearSelection() {
   selected.value = null;
   killStats.value = null;
+  harvestStats.value = null;
 }
 
 function dropRateColor(rate: number): string {

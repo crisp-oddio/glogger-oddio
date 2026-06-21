@@ -1,5 +1,72 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-21 (Session 18 — Drop-rate DB UX overhaul, harvest stats, app scale → v0.9.20)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (merged `origin/main` v0.9.19 back in first, then released **v0.9.20**)
+**Status:** ✅ **Shipped.** Three user-facing features across the Farming Database tab, the Data
+Browser enemy detail, and Settings. `vue-tsc` + `cargo check` + targeted `cargo test` all green;
+verified live in `npm run tauri dev` (app reached "interactive", zero errors). Released v0.9.20
+via the Release workflow.
+
+## TL;DR — Session 18
+
+### 1. Farming → Database tab: list-first, permanent imports, harvested box
+[DatabaseTab.vue](src/components/Farming/DatabaseTab.vue) +
+[kill_tracking_commands.rs](src-tauri/src/db/kill_tracking_commands.rs)
+- **Lists everything up front.** Clicking the **Monsters / Items / Harvested** box loads the
+  full list for the active scope (empty query → all, no limit). No search required.
+- **Search is now a client-side filter** — isolates rows whose name contains the text, hides
+  the rest, instantly (no debounce/round-trip). Added a result count + ✕ clear button.
+- **Imports merge permanently.** **Migration v53** rebuilds `imported_enemy_kills_agg` /
+  `imported_enemy_kill_loot_agg` **without** the old `ON DELETE CASCADE`, so removing an entry
+  from the Imported Sources list (`delete_imported_source`, now non-destructive) keeps the
+  merged data forever. Re-import still replaces by `source_label` → no double-count. (User chose
+  "keep the list, Remove = hide only".)
+- **New "Harvested" box** (3rd toggle): lists skinning/butchering yields from `corpse_extracts`
+  via new `search_database_harvested`; each row expands to the existing
+  [ExtractDetailTable.vue](src/components/Farming/ExtractDetailTable.vue). Harvested is local-only
+  → the My Data / Imported / Combined scope toggle auto-disables for it.
+- **Scroll fix:** tab root switched to `overflow-hidden` so the result list (`flex-1 min-h-0
+  overflow-y-auto`) is the sole scroll region; toolbar/search/imported-sources stay pinned.
+- `search_database_enemies` rewritten from N+1 per-enemy queries to set-based aggregation; both
+  search commands take an optional `limit` (`None` = all) and an empty `query` = list all.
+
+### 2. Data Browser → Enemies: "Harvest Stats" section
+[EnemyBrowser.vue](src/components/DataBrowser/EnemyBrowser.vue) + `get_enemy_harvest_stats`
+- Under **Kill Stats**, a new **Harvest Stats** table (Item · Skill · Qty · Pulls) shows what a
+  monster skins/butchers into. `corpse_extracts.corpse_name` == `enemy_kills.enemy_name` (both
+  from the "Search Corpse of X" context), so it's queried by the monster's display name.
+  Local-only; shows "No harvest data yet" when none.
+
+### 3. Settings → Appearance: Application Scale
+[AppSettingsTab.vue](src/components/Settings/AppSettingsTab.vue) +
+[settingsStore.ts](src/stores/settingsStore.ts) + [settings.rs](src-tauri/src/settings.rs)
+- New `ui_scale` setting (percent, 50–200, default 100). Applied via **CSS `zoom`** on
+  `document.documentElement` (`applyUiScale`) so it scales the **whole** app uniformly —
+  distinct from the existing font-size "Interface Size" which only scales rem-based text.
+- Slider previews live while dragging + an **editable number box** (type an exact %, clamps on
+  commit). Persists on release; re-applied on startup in the store's `initialize()`. Built for
+  the 4K "everything is massive" case.
+
+### Backend summary
+- **Migration v53** (`migration_v53_persist_imported_drop_data`) — table rebuild, drops the FK
+  cascade on the two imported-aggregate tables. Applied cleanly through the full chain.
+- New commands: `search_database_harvested`, `get_enemy_harvest_stats` (both registered in
+  [lib.rs](src-tauri/src/lib.rs)). `ui_scale` added to `AppSettings`.
+- **Tests:** 2 regression tests in `kill_tracking_commands.rs::tests` — removing an imported
+  source keeps its merged data, and re-import-after-removal replaces (no double-count).
+
+### Release / branch note
+`origin/main` was 1 commit ahead of `dev` (the `release: v0.9.19` version bump never merged
+back). Merged `origin/main` into `dev` **before** releasing so the Release workflow's
+`git push origin main` fast-forwards. Released as **v0.9.20** (`--ref dev -f version=patch`).
+Next session: as usual `dev` will lag `main` by the v0.9.20 release commit — merge it back before
+the next release.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-20 (Session 17 — Linux WebKit DMABUF crash: broadened fix + v0.9.19)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (was @ `origin/main` v0.9.18 `c6b43a2`; now ahead with the broaden fix)

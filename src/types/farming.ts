@@ -83,6 +83,13 @@ export interface ItemSearchResult {
   distinct_enemies: number
 }
 
+export interface HarvestSearchResult {
+  item_name: string
+  total_quantity: number
+  distinct_corpses: number
+  total_extracts: number
+}
+
 export interface ItemDropSource {
   enemy_name: string
   total_kills: number

@@ -180,8 +180,8 @@ use db::farming_commands::{
 };
 use db::kill_tracking_commands::{
     delete_imported_source, export_kill_loot_database, get_corpse_extract_details,
-    get_enemy_kill_stats, get_item_drop_sources, import_kill_loot_database, list_imported_sources,
-    search_database_enemies, search_database_items,
+    get_enemy_harvest_stats, get_enemy_kill_stats, get_item_drop_sources, import_kill_loot_database,
+    list_imported_sources, search_database_enemies, search_database_harvested, search_database_items,
 };
 use db::game_state_commands::{
     get_game_state_active_skills, get_game_state_attributes, get_game_state_currencies,
@@ -797,11 +797,13 @@ pub fn run() {
             get_item_drop_sources,
             search_database_enemies,
             search_database_items,
+            search_database_harvested,
             export_kill_loot_database,
             import_kill_loot_database,
             list_imported_sources,
             delete_imported_source,
             get_corpse_extract_details,
+            get_enemy_harvest_stats,
             // Crafting helper
             create_crafting_project,
             get_crafting_projects,

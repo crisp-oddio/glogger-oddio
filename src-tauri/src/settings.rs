@@ -174,6 +174,12 @@ pub struct AppSettings {
     #[serde(default = "default_dashboard_widget_opacity")]
     pub dashboard_widget_opacity: u32,
 
+    /// Whole-app UI scale as a percentage (50–200). 100 = native size (default).
+    /// Frontend-managed; applied via CSS `zoom` on the document root so it scales
+    /// everything uniformly (handy on high-DPI / 4K displays).
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: u32,
+
     /// When true, re-run platform path auto-detection on every startup,
     /// overwriting the game data and Player.log paths with the OS defaults.
     /// Useful when the game install or user profile moves between launches.
@@ -189,6 +195,10 @@ pub struct AppSettings {
 }
 
 fn default_dashboard_widget_opacity() -> u32 {
+    100
+}
+
+fn default_ui_scale() -> u32 {
     100
 }
 
@@ -343,6 +353,7 @@ impl Default for AppSettings {
             ui_font_family: default_ui_font_family(),
             ui_font_size: default_ui_font_size(),
             dashboard_widget_opacity: default_dashboard_widget_opacity(),
+            ui_scale: default_ui_scale(),
             auto_detect_paths_on_startup: false,
             auto_ingest_player_prev: true,
         }

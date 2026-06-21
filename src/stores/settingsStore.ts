@@ -40,6 +40,7 @@ export interface AppSettings {
   uiFontFamily: string;
   uiFontSize: number;
   dashboardWidgetOpacity: number;
+  uiScale: number;
   autoDetectPathsOnStartup: boolean;
   autoIngestPlayerPrev: boolean;
   viewPreferences: Record<string, Record<string, unknown>>;
@@ -83,6 +84,7 @@ interface BackendSettings {
   ui_font_family: string;
   ui_font_size: number;
   dashboard_widget_opacity: number;
+  ui_scale: number;
   auto_detect_paths_on_startup: boolean;
   auto_ingest_player_prev: boolean;
   view_preferences: Record<string, Record<string, unknown>>;
@@ -127,6 +129,7 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     ui_font_family: settings.uiFontFamily,
     ui_font_size: settings.uiFontSize,
     dashboard_widget_opacity: settings.dashboardWidgetOpacity,
+    ui_scale: settings.uiScale,
     auto_detect_paths_on_startup: settings.autoDetectPathsOnStartup,
     auto_ingest_player_prev: settings.autoIngestPlayerPrev,
     view_preferences: settings.viewPreferences,
@@ -189,6 +192,20 @@ export function applyDashboardWidgetOpacity(percent: number) {
   document.documentElement.style.setProperty("--dashboard-widget-bg-opacity", `${clamped / 100}`);
 }
 
+// Whole-app UI scale as a percentage. 100 = native. Applied via CSS `zoom` on the
+// document root, which scales the entire interface uniformly (text, spacing,
+// icons, fixed elements) — useful on high-DPI / 4K displays where everything
+// renders too large.
+export const DEFAULT_UI_SCALE = 100;
+export const MIN_UI_SCALE = 50;
+export const MAX_UI_SCALE = 200;
+
+export function applyUiScale(percent: number) {
+  const clamped = Math.min(MAX_UI_SCALE, Math.max(MIN_UI_SCALE, percent || DEFAULT_UI_SCALE));
+  // `zoom` takes a unitless multiplier (1 = 100%).
+  (document.documentElement.style as CSSStyleDeclaration & { zoom: string }).zoom = `${clamped / 100}`;
+}
+
 // Convert backend format to frontend format
 function fromBackendSettings(settings: BackendSettings): AppSettings {
   return {
@@ -228,6 +245,7 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     uiFontFamily: settings.ui_font_family ?? DEFAULT_FONT_FAMILY,
     uiFontSize: settings.ui_font_size ?? DEFAULT_FONT_SIZE,
     dashboardWidgetOpacity: settings.dashboard_widget_opacity ?? DEFAULT_WIDGET_OPACITY,
+    uiScale: settings.ui_scale ?? DEFAULT_UI_SCALE,
     autoDetectPathsOnStartup: settings.auto_detect_paths_on_startup ?? false,
     autoIngestPlayerPrev: settings.auto_ingest_player_prev ?? true,
     viewPreferences: settings.view_preferences ?? {},
@@ -273,6 +291,7 @@ function getDefaultSettings(): AppSettings {
     uiFontFamily: DEFAULT_FONT_FAMILY,
     uiFontSize: DEFAULT_FONT_SIZE,
     dashboardWidgetOpacity: DEFAULT_WIDGET_OPACITY,
+    uiScale: DEFAULT_UI_SCALE,
     autoDetectPathsOnStartup: false,
     autoIngestPlayerPrev: true,
     viewPreferences: {},
@@ -311,6 +330,7 @@ export const useSettingsStore = defineStore("settings", () => {
     applyFontFamily(settings.value.uiFontFamily);
     applyFontSize(settings.value.uiFontSize);
     applyDashboardWidgetOpacity(settings.value.dashboardWidgetOpacity);
+    applyUiScale(settings.value.uiScale);
     isLoaded.value = true;
 
     // Get settings file path for user reference
@@ -352,6 +372,9 @@ export const useSettingsStore = defineStore("settings", () => {
     }
     if (newSettings.dashboardWidgetOpacity !== undefined) {
       applyDashboardWidgetOpacity(settings.value.dashboardWidgetOpacity);
+    }
+    if (newSettings.uiScale !== undefined) {
+      applyUiScale(settings.value.uiScale);
     }
     await saveSettings(settings.value);
   }

@@ -248,6 +248,21 @@ pub struct ItemSearchResult {
     pub distinct_enemies: i64,
 }
 
+#[derive(Serialize)]
+pub struct HarvestSearchResult {
+    pub item_name: String,
+    pub total_quantity: i64,
+    /// Distinct corpse types this item was harvested from.
+    pub distinct_corpses: i64,
+    /// How many harvest pulls yielded this item.
+    pub total_extracts: i64,
+}
+
+/// List/search enemies in the drop-rate database. An empty `query` returns every
+/// enemy in the selected scope (the Database tab loads the full list up front and
+/// filters client-side); a non-empty `query` does a case-insensitive substring
+/// match. `limit` is optional — `None` returns all rows. Aggregates are computed
+/// set-based in a handful of grouped queries rather than per-enemy.
 #[tauri::command]
 pub fn search_database_enemies(
     db: State<'_, DbPool>,
@@ -258,62 +273,86 @@ pub fn search_database_enemies(
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    let limit = limit.unwrap_or(50) as i64;
-    let pattern = format!("%{}%", query.to_lowercase());
 
-    let mut names: Vec<String> = Vec::new();
+    // enemy_name -> (total_kills, set of distinct loot item names)
+    let mut agg: HashMap<String, (i64, std::collections::HashSet<String>)> = HashMap::new();
+
     if scope == "mine" || scope == "combined" {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT enemy_name FROM enemy_kills WHERE LOWER(enemy_name) LIKE ?1")
+        let mut kill_stmt = conn
+            .prepare("SELECT enemy_name, COUNT(*) FROM enemy_kills GROUP BY enemy_name")
             .map_err(|e| format!("Failed to prepare query: {e}"))?;
-        let rows = stmt
-            .query_map([&pattern], |row| row.get::<_, String>(0))
+        let rows = kill_stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
             .map_err(|e| format!("Query failed: {e}"))?;
         for row in rows {
-            names.push(row.map_err(|e| format!("Row error: {e}"))?);
+            let (enemy_name, kills) = row.map_err(|e| format!("Row error: {e}"))?;
+            agg.entry(enemy_name).or_insert((0, std::collections::HashSet::new())).0 += kills;
         }
-    }
-    if scope == "imported" || scope == "combined" {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT enemy_name FROM imported_enemy_kills_agg WHERE LOWER(enemy_name) LIKE ?1")
-            .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
-        let rows = stmt
-            .query_map([&pattern], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("Imported query failed: {e}"))?;
+
+        let mut loot_stmt = conn
+            .prepare(
+                "SELECT DISTINCT k.enemy_name, l.item_name
+                 FROM enemy_kill_loot l JOIN enemy_kills k ON l.kill_id = k.id",
+            )
+            .map_err(|e| format!("Failed to prepare loot query: {e}"))?;
+        let rows = loot_stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| format!("Loot query failed: {e}"))?;
         for row in rows {
-            let name = row.map_err(|e| format!("Row error: {e}"))?;
-            if !names.contains(&name) {
-                names.push(name);
-            }
+            let (enemy_name, item_name) = row.map_err(|e| format!("Row error: {e}"))?;
+            agg.entry(enemy_name).or_insert((0, std::collections::HashSet::new())).1.insert(item_name);
         }
     }
 
-    let mut results: Vec<EnemySearchResult> = names
+    if scope == "imported" || scope == "combined" {
+        let mut kill_stmt = conn
+            .prepare("SELECT enemy_name, COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg GROUP BY enemy_name")
+            .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
+        let rows = kill_stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(|e| format!("Imported query failed: {e}"))?;
+        for row in rows {
+            let (enemy_name, kills) = row.map_err(|e| format!("Row error: {e}"))?;
+            agg.entry(enemy_name).or_insert((0, std::collections::HashSet::new())).0 += kills;
+        }
+
+        let mut loot_stmt = conn
+            .prepare("SELECT DISTINCT enemy_name, item_name FROM imported_enemy_kill_loot_agg")
+            .map_err(|e| format!("Failed to prepare imported loot query: {e}"))?;
+        let rows = loot_stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| format!("Imported loot query failed: {e}"))?;
+        for row in rows {
+            let (enemy_name, item_name) = row.map_err(|e| format!("Row error: {e}"))?;
+            agg.entry(enemy_name).or_insert((0, std::collections::HashSet::new())).1.insert(item_name);
+        }
+    }
+
+    let needle = query.trim().to_lowercase();
+    let mut results: Vec<EnemySearchResult> = agg
         .into_iter()
-        .map(|enemy_name| {
-            let total_kills = match scope.as_str() {
-                "mine" => mine_total_kills(&conn, &enemy_name),
-                "imported" => imported_total_kills(&conn, &enemy_name),
-                _ => mine_total_kills(&conn, &enemy_name) + imported_total_kills(&conn, &enemy_name),
-            };
-            let loot_rows = match scope.as_str() {
-                "mine" => mine_loot_rows(&conn, &enemy_name),
-                "imported" => imported_loot_rows(&conn, &enemy_name),
-                _ => combine_loot_rows(mine_loot_rows(&conn, &enemy_name), imported_loot_rows(&conn, &enemy_name)),
-            };
-            EnemySearchResult {
-                enemy_name,
-                total_kills,
-                distinct_loot_items: loot_rows.len() as i64,
-            }
+        .filter(|(enemy_name, _)| needle.is_empty() || enemy_name.to_lowercase().contains(&needle))
+        .map(|(enemy_name, (total_kills, loot_items))| EnemySearchResult {
+            enemy_name,
+            total_kills,
+            distinct_loot_items: loot_items.len() as i64,
         })
         .collect();
-    results.sort_by(|a, b| b.total_kills.cmp(&a.total_kills));
-    results.truncate(limit as usize);
+    results.sort_by(|a, b| {
+        b.total_kills
+            .cmp(&a.total_kills)
+            .then_with(|| a.enemy_name.to_lowercase().cmp(&b.enemy_name.to_lowercase()))
+    });
+    if let Some(lim) = limit {
+        results.truncate(lim);
+    }
 
     Ok(results)
 }
 
+/// List/search items in the drop-rate database. An empty `query` returns every
+/// item in the selected scope; a non-empty `query` does a case-insensitive
+/// substring match. `limit` is optional — `None` returns all rows.
 #[tauri::command]
 pub fn search_database_items(
     db: State<'_, DbPool>,
@@ -324,8 +363,6 @@ pub fn search_database_items(
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    let limit = limit.unwrap_or(50) as i64;
-    let pattern = format!("%{}%", query.to_lowercase());
 
     let mut agg: HashMap<String, (i64, std::collections::HashSet<String>)> = HashMap::new();
 
@@ -335,12 +372,11 @@ pub fn search_database_items(
                 "SELECT l.item_name, SUM(l.quantity), k.enemy_name
                  FROM enemy_kill_loot l
                  JOIN enemy_kills k ON l.kill_id = k.id
-                 WHERE LOWER(l.item_name) LIKE ?1
                  GROUP BY l.item_name, k.enemy_name",
             )
             .map_err(|e| format!("Failed to prepare query: {e}"))?;
         let rows = stmt
-            .query_map([&pattern], |row| {
+            .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
             })
             .map_err(|e| format!("Query failed: {e}"))?;
@@ -357,12 +393,11 @@ pub fn search_database_items(
             .prepare(
                 "SELECT item_name, SUM(total_quantity), enemy_name
                  FROM imported_enemy_kill_loot_agg
-                 WHERE LOWER(item_name) LIKE ?1
                  GROUP BY item_name, enemy_name",
             )
             .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
         let rows = stmt
-            .query_map([&pattern], |row| {
+            .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
             })
             .map_err(|e| format!("Imported query failed: {e}"))?;
@@ -374,16 +409,76 @@ pub fn search_database_items(
         }
     }
 
+    let needle = query.trim().to_lowercase();
     let mut results: Vec<ItemSearchResult> = agg
         .into_iter()
+        .filter(|(item_name, _)| needle.is_empty() || item_name.to_lowercase().contains(&needle))
         .map(|(item_name, (total_quantity, enemies))| ItemSearchResult {
             item_name,
             total_quantity,
             distinct_enemies: enemies.len() as i64,
         })
         .collect();
-    results.sort_by(|a, b| b.total_quantity.cmp(&a.total_quantity));
-    results.truncate(limit as usize);
+    results.sort_by(|a, b| {
+        b.total_quantity
+            .cmp(&a.total_quantity)
+            .then_with(|| a.item_name.to_lowercase().cmp(&b.item_name.to_lowercase()))
+    });
+    if let Some(lim) = limit {
+        results.truncate(lim);
+    }
+
+    Ok(results)
+}
+
+/// List/search harvested items (skinning/butchering yields from `corpse_extracts`).
+/// An empty `query` returns everything harvested; a non-empty `query` does a
+/// case-insensitive substring match. Local-only — extracts have no imported
+/// counterpart, so there is no scope. `limit` is optional (`None` = all).
+#[tauri::command]
+pub fn search_database_harvested(
+    db: State<'_, DbPool>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<HarvestSearchResult>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT item_name, SUM(quantity), COUNT(DISTINCT corpse_name), COUNT(*)
+             FROM corpse_extracts
+             GROUP BY item_name",
+        )
+        .map_err(|e| format!("Failed to prepare harvested query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(HarvestSearchResult {
+                item_name: row.get::<_, String>(0)?,
+                total_quantity: row.get::<_, i64>(1)?,
+                distinct_corpses: row.get::<_, i64>(2)?,
+                total_extracts: row.get::<_, i64>(3)?,
+            })
+        })
+        .map_err(|e| format!("Harvested query failed: {e}"))?;
+
+    let needle = query.trim().to_lowercase();
+    let mut results: Vec<HarvestSearchResult> = Vec::new();
+    for row in rows {
+        let row = row.map_err(|e| format!("Row error: {e}"))?;
+        if needle.is_empty() || row.item_name.to_lowercase().contains(&needle) {
+            results.push(row);
+        }
+    }
+    results.sort_by(|a, b| {
+        b.total_quantity
+            .cmp(&a.total_quantity)
+            .then_with(|| a.item_name.to_lowercase().cmp(&b.item_name.to_lowercase()))
+    });
+    if let Some(lim) = limit {
+        results.truncate(lim);
+    }
 
     Ok(results)
 }
@@ -467,8 +562,10 @@ pub struct ImportSummary {
     pub loot_rows_imported: usize,
 }
 
-/// Import a previously-exported drop-rate bundle. Tagged by the file's name
-/// (`source_label`) so re-importing the same file replaces just that
+/// Import a previously-exported drop-rate bundle. The data merges permanently
+/// into the local database — removing the source from the "Imported Sources"
+/// list (see `delete_imported_source`) no longer deletes it. Tagged by the
+/// file's name (`source_label`) so re-importing the same file replaces just that
 /// source's rows instead of double-counting. Never touches the player's own
 /// `enemy_kills`/`enemy_kill_loot` ground truth.
 #[tauri::command]
@@ -582,6 +679,11 @@ pub fn list_imported_sources(db: State<'_, DbPool>) -> Result<Vec<ImportedSource
     Ok(sources)
 }
 
+/// Remove an entry from the "Imported Sources" list. This only drops the
+/// bookkeeping row; the imported kill/loot data stays merged in the database
+/// permanently (migration v53 removed the `ON DELETE CASCADE` that used to wipe
+/// it). The aggregate rows keep their `source_label`, so re-importing the same
+/// file later still cleanly replaces them rather than double-counting.
 #[tauri::command]
 pub fn delete_imported_source(db: State<'_, DbPool>, source_label: String) -> Result<(), String> {
     let conn = db
@@ -647,4 +749,160 @@ pub fn get_corpse_extract_details(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read extract details: {e}"))?;
     Ok(rows)
+}
+
+#[derive(Serialize)]
+pub struct EnemyHarvestStat {
+    pub item_name: String,
+    /// "Butchering" or "Skinning".
+    pub skill: String,
+    pub total_quantity: i64,
+    /// How many harvest pulls yielded this item.
+    pub times: i64,
+}
+
+#[derive(Serialize)]
+pub struct EnemyHarvestStats {
+    pub corpse_name: String,
+    /// Total harvest yields recorded for this corpse type.
+    pub total_extracts: i64,
+    pub harvests: Vec<EnemyHarvestStat>,
+}
+
+/// Harvest (skinning/butchering) breakdown for a given corpse/monster name — what
+/// it extracts into and how often. The `corpse_extracts.corpse_name` is the same
+/// "Search Corpse of X" name stored as `enemy_kills.enemy_name`, so callers pass
+/// the monster's display name. Local-only — extracts have no imported counterpart.
+#[tauri::command]
+pub fn get_enemy_harvest_stats(
+    db: State<'_, DbPool>,
+    corpse_name: String,
+) -> Result<EnemyHarvestStats, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT item_name, skill, SUM(quantity), COUNT(*)
+             FROM corpse_extracts
+             WHERE corpse_name = ?1
+             GROUP BY item_name, skill
+             ORDER BY SUM(quantity) DESC",
+        )
+        .map_err(|e| format!("Failed to prepare harvest query: {e}"))?;
+    let rows = stmt
+        .query_map([&corpse_name], |row| {
+            Ok(EnemyHarvestStat {
+                item_name: row.get::<_, String>(0)?,
+                skill: row.get::<_, String>(1)?,
+                total_quantity: row.get::<_, i64>(2)?,
+                times: row.get::<_, i64>(3)?,
+            })
+        })
+        .map_err(|e| format!("Harvest query failed: {e}"))?;
+    let mut harvests = Vec::new();
+    let mut total_extracts = 0i64;
+    for row in rows {
+        let row = row.map_err(|e| format!("Harvest row error: {e}"))?;
+        total_extracts += row.times;
+        harvests.push(row);
+    }
+    Ok(EnemyHarvestStats {
+        corpse_name,
+        total_extracts,
+        harvests,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::migrations::run_migrations;
+    use rusqlite::Connection;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // Mirror production: cascades are only meaningful with FKs enforced.
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn, None).unwrap();
+        conn
+    }
+
+    /// After migration v53, removing an entry from the Imported Sources list
+    /// (i.e. deleting the `imported_kill_sources` row) must NOT delete the
+    /// imported drop data — it stays merged in the database permanently.
+    #[test]
+    fn removing_an_imported_source_keeps_its_merged_data() {
+        let conn = setup();
+
+        // Record a source + its aggregate rows, as import_kill_loot_database does.
+        conn.execute(
+            "INSERT INTO imported_kill_sources (source_label, display_name) VALUES ('friend.json', 'friend.json')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO imported_enemy_kills_agg (source_label, enemy_name, total_kills) VALUES ('friend.json', 'Goblin', 42)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO imported_enemy_kill_loot_agg (source_label, enemy_name, item_name, total_quantity, times_dropped)
+             VALUES ('friend.json', 'Goblin', 'Gold Coin', 100, 30)",
+            [],
+        )
+        .unwrap();
+
+        // Remove the source from the list (what delete_imported_source does).
+        conn.execute("DELETE FROM imported_kill_sources WHERE source_label = 'friend.json'", [])
+            .unwrap();
+
+        let kills: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg WHERE enemy_name = 'Goblin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kills, 42, "imported kill aggregate should survive source removal");
+
+        let loot: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_quantity), 0) FROM imported_enemy_kill_loot_agg WHERE item_name = 'Gold Coin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(loot, 100, "imported loot aggregate should survive source removal");
+    }
+
+    /// Re-importing the same file after its source entry was removed replaces the
+    /// orphaned rows (matched by `source_label`) rather than double-counting.
+    #[test]
+    fn reimport_after_removal_replaces_rather_than_doublecounts() {
+        let conn = setup();
+
+        conn.execute(
+            "INSERT INTO imported_enemy_kills_agg (source_label, enemy_name, total_kills) VALUES ('friend.json', 'Goblin', 42)",
+            [],
+        )
+        .unwrap();
+
+        // A re-import clears prior rows for the same label first, then re-inserts.
+        conn.execute("DELETE FROM imported_enemy_kills_agg WHERE source_label = 'friend.json'", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO imported_enemy_kills_agg (source_label, enemy_name, total_kills) VALUES ('friend.json', 'Goblin', 42)",
+            [],
+        )
+        .unwrap();
+
+        let kills: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg WHERE enemy_name = 'Goblin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kills, 42, "re-import should replace, not double-count");
+    }
 }
