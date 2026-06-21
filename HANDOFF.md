@@ -1,39 +1,39 @@
 # glogger — Session Handoff
 
-**Date:** 2026-06-20 (Session 17 — Linux WebKit crash triage; no code change)
+**Date:** 2026-06-20 (Session 17 — Linux WebKit DMABUF crash: broadened fix + v0.9.19)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` (fast-forwarded to `origin/main` @ **v0.9.18**, `c6b43a2`)
-**Status:** ✅ **No code change / no new release.** Investigated a user crash report and
-found the fix was **already shipped** by a parallel session on the other machine. Decided
-(with the user) to have the reporter test v0.9.18 + a manual env override before broadening.
+**Branch:** `dev` (was @ `origin/main` v0.9.18 `c6b43a2`; now ahead with the broaden fix)
+**Status:** ✅ **Shipped.** The NVIDIA-gated DMABUF workaround from v0.9.18 left **Mesa**
+(AMD/Intel) users still crashing. Broadened it to apply on **all Linux** and released
+**v0.9.19** via the Release workflow.
 
-## TL;DR — Session 17 (Flatpak/Linux crash triage)
+## TL;DR — Session 17 (WebKitGTK DMABUF crash, broadened)
 
-**Trigger:** A user on **Fedora 43** couldn't launch the **AppImage v0.8.7** — screenshot
-showed `WebKitWebProcess` aborting with **SIGABRT** before any window appeared. Asked to
-"check the flatpak status."
+**Trigger:** A user couldn't launch glogger on Linux. First screenshot was **AppImage v0.8.7**
+(Fedora 43), then a retest on **v0.9.18** (Nobara 43 / KDE) **still crashed** — both
+`WebKitWebProcess` aborting with **SIGABRT** before any window appeared.
 
-**Findings:**
-1. **Flatpak CI is healthy.** Last builds `v0.9.10`/`v0.9.11` succeeded; the only failures
-   were `v0.9.2` (long since fixed in Session 7). The screenshot is **not** a Flatpak issue —
-   it's the **AppImage**, and a **runtime** WebKitGTK renderer crash, not a build failure.
-2. **The crash is the WebKitGTK DMABUF-renderer abort.** Classic on fresh GPU stacks
-   (the screenshot shows a **Mesa 26.1** stack: `libgbm`/`libglvnd`).
-3. **The fix is already in `main`.** A parallel session (machine `gcfbrian`, author
-   `gcfhtpc`) shipped commit **`c6b43a2`** in **v0.9.17/v0.9.18**:
-   `apply_nvidia_webkit_workaround()` in [lib.rs](src-tauri/src/lib.rs) sets
-   `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup — **but only when the proprietary NVIDIA
-   driver is detected** (`/sys/module/nvidia`, `/dev/nvidiactl`, `/proc/driver/nvidia`).
+**Diagnosis:**
+1. **Flatpak CI is healthy** — not the problem. The crash is the native AppImage/.deb, and
+   it's a **runtime** WebKitGTK **DMABUF-renderer abort**, not a build failure.
+2. **v0.9.17/v0.9.18 already had a fix** (`c6b43a2`, parallel session on machine `gcfbrian`):
+   `apply_nvidia_webkit_workaround()` set `WEBKIT_DISABLE_DMABUF_RENDERER=1` — **but only when
+   proprietary NVIDIA was detected**.
+3. **The reporter is on Mesa, not NVIDIA.** v0.9.18's coredump showed `libgbm` from
+   `mesa-26.1.0` + `libglvnd`, no NVIDIA nodes → the gate never fired → still crashed. The
+   crash is **not** NVIDIA-specific; bleeding-edge Mesa 26.1 hits it too.
 
-**⚠️ Open risk:** the shipped fix is **NVIDIA-gated**. The Fedora-43 reporter shows a **Mesa**
-stack (likely AMD/Intel/nouveau), so v0.9.18 **may not trigger for them**. We won't know until
-they test. **Decision (user):** have them update to **v0.9.18** and, as a guaranteed immediate
-unblock, launch with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. **If v0.9.18 still crashes → they are
-non-NVIDIA → broaden the gate** (disable DMABUF on all Linux, accepting a minor HW-accel
-tradeoff for AMD/Intel) and cut **v0.9.19**. No release done this session.
+**The fix (this session):** renamed `apply_nvidia_webkit_workaround` →
+**`apply_webkit_dmabuf_workaround`** in [lib.rs](src-tauri/src/lib.rs) — now sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` **unconditionally on Linux** (still skips if the user set
+the var; opt back in with `…=0`). Dropped the NVIDIA device-node detection entirely. Doc
+[flatpak-build.md](docs/flatpak-build.md) updated to match. `cargo check` clean (note: the
+`#[cfg(target_os="linux")]` body isn't compiled on the Windows dev box — real verification is
+the Linux CI build + the user re-testing v0.9.19).
 
-**Repo state:** `dev` clean, fast-forwarded `dd4b190 → c6b43a2` (v0.9.18). My local naive
-"disable on all Linux" edit was **reverted** in favor of the existing better NVIDIA-gated fn.
+**Rationale:** disabling DMABUF compositing has negligible perf cost for this data-tracker UI,
+and trying to fingerprint every affected driver/Mesa-version combo is a losing game. Two
+distinct stacks (NVIDIA + Mesa 26.1) already crash, so go unconditional.
 
 ---
 

@@ -108,20 +108,24 @@ If the window is ever blank on a GPU where compositing misbehaves, launching wit
 forces a software path and clears the GBM/DRM errors. The app itself renders fine
 without these once fix #3 is in place.
 
-### NVIDIA DMABUF crash on the native builds (AppImage / .deb)
+### WebKitGTK DMABUF crash on the native builds (AppImage / .deb)
 
 Inside the Flatpak sandbox the GBM/DRM errors above are merely noise. On the
 **native** AppImage and `.deb` builds, however, the same WebKitGTK DMABUF
-renderer hard-aborts the process with `SIGABRT` on the proprietary NVIDIA
-driver — the window never appears (exit code 134).
+renderer hard-aborts the process with `SIGABRT` — the window never appears
+(exit code 134). First seen on the proprietary NVIDIA driver, then reproduced on
+a pure **Mesa** stack (AMD/Intel) with a bleeding-edge Mesa — `mesa 26.1` on
+Nobara / Fedora 43 — so the crash is **not** NVIDIA-specific.
 
-The fix lives in the binary itself: `apply_nvidia_webkit_workaround()` in
+The fix lives in the binary itself: `apply_webkit_dmabuf_workaround()` in
 [`src-tauri/src/lib.rs`](../src-tauri/src/lib.rs) sets
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup when an NVIDIA driver is detected
-(`/sys/module/nvidia`, `/dev/nvidiactl`, or `/proc/driver/nvidia`), unless the
-user already set the variable. AMD/Intel machines are untouched and keep
-hardware-accelerated DMABUF. This runs in every Linux package, so the Flatpak
-picks it up too (the NVIDIA device nodes are visible via `--device=dri`).
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup on **all** Linux, unless the user
+already set the variable. We disable DMABUF unconditionally rather than trying to
+fingerprint affected driver/version combos — the compositing perf cost is
+negligible for this UI, and the earlier NVIDIA-only gate (`v0.9.17`/`v0.9.18`)
+left Mesa users still crashing. Anyone who wants DMABUF back can export
+`WEBKIT_DISABLE_DMABUF_RENDERER=0`. This runs in every Linux package, so the
+Flatpak picks it up too.
 
 ## Verified
 
