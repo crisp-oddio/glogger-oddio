@@ -188,20 +188,27 @@
               No harvest data yet (corpse not skinned or butchered)
             </div>
             <div v-else class="flex flex-col gap-0.5">
-              <div class="grid grid-cols-[1fr_90px_60px_60px] gap-1 text-[0.6rem] uppercase tracking-wider text-text-muted pb-0.5 px-1">
+              <div class="grid grid-cols-[1fr_80px_45px_45px_55px] gap-1 text-[0.6rem] uppercase tracking-wider text-text-muted pb-0.5 px-1">
                 <span>Item</span>
                 <span class="text-right">Skill</span>
                 <span class="text-right">Qty</span>
                 <span class="text-right">Pulls</span>
+                <span class="text-right">Rate</span>
               </div>
               <div
                 v-for="row in harvestStats.harvests"
                 :key="`${row.item_name}-${row.skill}`"
-                class="grid grid-cols-[1fr_90px_60px_60px] gap-1 items-center px-1 py-1 text-xs bg-black/20 border border-border-default rounded">
+                class="grid grid-cols-[1fr_80px_45px_45px_55px] gap-1 items-center px-1 py-1 text-xs bg-black/20 border border-border-default rounded">
                 <ItemInline :reference="row.item_name" />
                 <span class="text-right text-[#c8a47e] text-[0.7rem]">{{ row.skill }}</span>
                 <span class="text-right text-text-secondary font-mono">{{ row.total_quantity }}</span>
                 <span class="text-right text-text-dim font-mono">{{ row.times }}</span>
+                <span
+                  class="text-right font-mono font-bold"
+                  :class="dropRateColor(row.times / harvestStats.total_extracts)"
+                  :title="`${row.times} of ${harvestStats.total_extracts} harvest pulls`">
+                  {{ ((row.times / harvestStats.total_extracts) * 100).toFixed(0) }}%
+                </span>
               </div>
             </div>
           </div>
