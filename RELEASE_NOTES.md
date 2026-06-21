@@ -1,8 +1,7 @@
-## What's Changed since v0.9.18
+## What's Changed since v0.9.19
 
-### Fixes
-- fix(linux): disable WebKitGTK DMABUF renderer on all Linux, not just NVIDIA (`82d1dd2`)
-- fix(linux): disable WebKitGTK DMABUF renderer on NVIDIA to stop native crash (`c6b43a2`)
+### Features
+- feat(database): list-first drop DB, permanent imports, harvest stats + app scale (`49c7544`)
 
 ---
-*3 commits since v0.9.18*
+*2 commits since v0.9.19*
