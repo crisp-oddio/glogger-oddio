@@ -22,6 +22,37 @@
         </button>
       </div>
 
+      <!-- Equipped Skills loadout selector — filters drop tables to data collected
+           under the chosen combat-skill pair. Defaults to your in-game loadout. -->
+      <div
+        class="flex flex-col items-center gap-1"
+        :class="loadoutDisabled ? 'opacity-40 pointer-events-none' : ''"
+        :title="loadoutDisabled ? 'Harvested items aren’t affected by combat skills.' : ''">
+        <span class="text-[0.6rem] uppercase tracking-widest text-text-dim font-bold leading-none">Equipped Skills</span>
+        <div class="flex items-center gap-1">
+          <select
+            v-model="selectedSkill1"
+            @change="onLoadoutChange"
+            class="px-2 py-1 text-xs bg-surface-card border border-border-light rounded text-text-primary outline-none focus:border-entity-item cursor-pointer max-w-[8.5rem]">
+            <option value="">— Any —</option>
+            <option v-for="s in combatSkillOptions" :key="s.internal_name" :value="s.internal_name">{{ s.name }}</option>
+          </select>
+          <span class="text-text-dim text-xs">+</span>
+          <select
+            v-model="selectedSkill2"
+            @change="onLoadoutChange"
+            class="px-2 py-1 text-xs bg-surface-card border border-border-light rounded text-text-primary outline-none focus:border-entity-item cursor-pointer max-w-[8.5rem]">
+            <option value="">— Any —</option>
+            <option v-for="s in combatSkillOptions" :key="s.internal_name" :value="s.internal_name">{{ s.name }}</option>
+          </select>
+          <button
+            v-if="liveLoadoutAvailable"
+            @click="resetToLiveLoadout"
+            title="Reset to your in-game equipped skills"
+            class="text-text-dim hover:text-entity-item cursor-pointer text-sm leading-none px-1">↺</button>
+        </div>
+      </div>
+
       <div class="flex items-center gap-2">
         <button
           @click="doExport"
@@ -137,7 +168,7 @@
               </div>
             </div>
             <div v-if="expandedEnemies.has(enemyRowKey(row))" class="border-t border-border-default px-3 py-2">
-              <EnemyDropTable :enemy-name="row.enemy_name" :scope="scope" :zone="row.zone" />
+              <EnemyDropTable :enemy-name="row.enemy_name" :scope="scope" :zone="row.zone" :combat-skills="selectedLoadout" />
             </div>
           </div>
         </template>
@@ -159,7 +190,7 @@
               </div>
             </div>
             <div v-if="expandedItems.has(row.item_name)" class="border-t border-border-default px-3 py-2">
-              <ItemDropBreakdownTable :item-name="row.item_name" :scope="scope" />
+              <ItemDropBreakdownTable :item-name="row.item_name" :scope="scope" :combat-skills="selectedLoadout" />
             </div>
           </div>
         </template>
@@ -234,6 +265,9 @@ import EnemyDropTable from "./EnemyDropTable.vue";
 import ItemDropBreakdownTable from "./ItemDropBreakdownTable.vue";
 import ExtractDetailTable from "./ExtractDetailTable.vue";
 import { formatDateTimeShort } from "../../composables/useTimestamp";
+import { useGameDataStore } from "../../stores/gameDataStore";
+import { useGameStateStore } from "../../stores/gameStateStore";
+import type { SkillInfo } from "../../types/gameData/skills";
 
 const scope = ref<DatabaseScope>("combined");
 const scopeOptions: Array<{ value: DatabaseScope; label: string }> = [
@@ -332,6 +366,74 @@ function toggleHarvestedExpanded(name: string) {
   expandedHarvested.value = new Set(expandedHarvested.value);
 }
 
+// ── Equipped Skills (combat loadout) filter ─────────────────────────────
+const gameDataStore = useGameDataStore();
+const gameStateStore = useGameStateStore();
+
+const combatSkillOptions = ref<SkillInfo[]>([]);
+const selectedSkill1 = ref("");
+const selectedSkill2 = ref("");
+// True once the user hand-picks a loadout — stops auto-following the live one.
+const manualOverride = ref(false);
+
+// Loadout only applies to kill/loot drop tables, not harvested extracts.
+const loadoutDisabled = computed(() => searchTarget.value === "harvested");
+
+// The character's current in-game loadout as internal skill names. Reactive:
+// gameStateStore.activeSkills is refreshed live by the `active_skills`
+// game-state-updated event, so this follows skill swaps / zone reloads.
+const liveLoadout = computed<{ s1: string; s2: string }>(() => {
+  const a = gameStateStore.activeSkills;
+  if (!a) return { s1: "", s2: "" };
+  const byId = (id: number) => combatSkillOptions.value.find((s) => s.id === id)?.internal_name ?? "";
+  return { s1: byId(a.skill1_id), s2: byId(a.skill2_id) };
+});
+const liveLoadoutAvailable = computed(() => !!(liveLoadout.value.s1 || liveLoadout.value.s2));
+
+// Normalized, order-independent loadout key (matches the backend's `skillA+skillB`).
+// Both slots must be set to form a valid pair; otherwise no loadout filter.
+const selectedLoadout = computed<string | null>(() => {
+  const parts = [selectedSkill1.value, selectedSkill2.value].filter((s) => !!s);
+  if (parts.length < 2) return null;
+  return [...parts].sort().join("+");
+});
+
+async function loadCombatSkills() {
+  try {
+    const all = await gameDataStore.getAllSkills();
+    combatSkillOptions.value = all
+      .filter((s) => s.combat === true)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (e) {
+    console.error("[database-tab] Failed to load combat skills:", e);
+  }
+}
+
+// Auto-follow the live in-game loadout until the user overrides it manually.
+watch(
+  liveLoadout,
+  (lv) => {
+    if (!manualOverride.value) {
+      selectedSkill1.value = lv.s1;
+      selectedSkill2.value = lv.s2;
+    }
+  },
+  { immediate: true },
+);
+
+// A manual dropdown change pins the selection (stops auto-follow). The reload is
+// driven by the [searchTarget, scope, selectedLoadout] watch below.
+function onLoadoutChange() {
+  manualOverride.value = true;
+}
+
+// Snap back to the live in-game loadout and resume auto-following.
+function resetToLiveLoadout() {
+  manualOverride.value = false;
+  selectedSkill1.value = liveLoadout.value.s1;
+  selectedSkill2.value = liveLoadout.value.s2;
+}
+
 // Load the full list for the active target + scope (empty query, no limit).
 async function loadDatabase() {
   loading.value = true;
@@ -341,12 +443,14 @@ async function loadDatabase() {
         query: "",
         scope: scope.value,
         limit: null,
+        combatSkills: selectedLoadout.value,
       });
     } else if (searchTarget.value === "items") {
       allItems.value = await invoke<ItemSearchResult[]>("search_database_items", {
         query: "",
         scope: scope.value,
         limit: null,
+        combatSkills: selectedLoadout.value,
       });
     } else {
       allHarvested.value = await invoke<HarvestSearchResult[]>("search_database_harvested", {
@@ -361,8 +465,9 @@ async function loadDatabase() {
   }
 }
 
-// Reload whenever the box (Monsters/Items/Harvested) or scope changes; clear stale expansions.
-watch([searchTarget, scope], () => {
+// Reload whenever the box (Monsters/Items/Harvested), scope, or equipped-skill
+// loadout changes; clear stale expansions.
+watch([searchTarget, scope, selectedLoadout], () => {
   expandedEnemies.value = new Set();
   expandedItems.value = new Set();
   expandedHarvested.value = new Set();
@@ -467,7 +572,8 @@ function formatDate(isoStr: string): string {
   return formatDateTimeShort(isoStr);
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await loadCombatSkills();
   loadDatabase();
   loadImportedSources();
 });

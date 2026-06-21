@@ -40,6 +40,8 @@ import AreaInline from "../Shared/Area/AreaInline.vue";
 const props = defineProps<{
   itemName: string;
   scope: DatabaseScope;
+  // Equipped combat-skill loadout to filter by (null = all loadouts).
+  combatSkills?: string | null;
 }>();
 
 const loading = ref(false);
@@ -52,6 +54,7 @@ async function load() {
       itemName: props.itemName,
       internalName: null,
       scope: props.scope,
+      combatSkills: props.combatSkills ?? null,
     });
   } catch (e) {
     console.error("[item-drop-breakdown-table] Failed to load sources:", e);
@@ -66,5 +69,5 @@ function fmtPct(rate: number): string {
   return pct >= 10 ? `${pct.toFixed(0)}%` : `${pct.toFixed(1)}%`;
 }
 
-watch(() => [props.itemName, props.scope], load, { immediate: true });
+watch(() => [props.itemName, props.scope, props.combatSkills], load, { immediate: true });
 </script>

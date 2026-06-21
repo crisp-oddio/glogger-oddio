@@ -76,44 +76,92 @@ impl ZoneFilter {
     }
 }
 
-fn zone_binds(enemy_name: &str, zf: &ZoneFilter) -> Vec<rusqlite::types::Value> {
+/// Filter on the equipped combat-skill loadout recorded per kill. `All` ignores
+/// it; `Match(loadout)` keeps that loadout PLUS the unattributed (NULL) baseline —
+/// legacy + imported rows that have no loadout — so tables stay populated. From a
+/// command's `combat_skills: Option<String>`: absent/"" = `All`, else `Match`.
+enum LoadoutFilter {
+    All,
+    Match(String),
+}
+
+impl LoadoutFilter {
+    fn from_opt(loadout: Option<&str>) -> Self {
+        match loadout {
+            Some(l) if !l.trim().is_empty() => LoadoutFilter::Match(l.trim().to_string()),
+            _ => LoadoutFilter::All,
+        }
+    }
+
+    /// Clause appended after an existing `WHERE …`; `col` is the qualified column.
+    /// Anonymous `?` placeholder, bound after the zone bind (see `drop_binds`).
+    fn sql(&self, col: &str) -> String {
+        match self {
+            LoadoutFilter::All => String::new(),
+            LoadoutFilter::Match(_) => format!(" AND ({col} = ? OR {col} IS NULL)"),
+        }
+    }
+
+    /// Standalone `WHERE …` for queries that don't otherwise filter.
+    fn where_clause(&self, col: &str) -> String {
+        match self {
+            LoadoutFilter::All => String::new(),
+            LoadoutFilter::Match(_) => format!(" WHERE ({col} = ? OR {col} IS NULL)"),
+        }
+    }
+
+    fn bind(&self) -> Option<rusqlite::types::Value> {
+        match self {
+            LoadoutFilter::Match(l) => Some(rusqlite::types::Value::Text(l.clone())),
+            _ => None,
+        }
+    }
+}
+
+fn drop_binds(enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> Vec<rusqlite::types::Value> {
     let mut binds = vec![rusqlite::types::Value::Text(enemy_name.to_string())];
     if let Some(b) = zf.bind() {
+        binds.push(b);
+    }
+    if let Some(b) = lf.bind() {
         binds.push(b);
     }
     binds
 }
 
-fn mine_total_kills(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter) -> i64 {
+fn mine_total_kills(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> i64 {
     let sql = format!(
-        "SELECT COUNT(*) FROM enemy_kills WHERE enemy_name = ?{}",
-        zf.sql("zone")
+        "SELECT COUNT(*) FROM enemy_kills WHERE enemy_name = ?{}{}",
+        zf.sql("zone"),
+        lf.sql("combat_skills")
     );
-    let binds = zone_binds(enemy_name, zf);
+    let binds = drop_binds(enemy_name, zf, lf);
     conn.query_row(&sql, rusqlite::params_from_iter(binds.iter()), |row| row.get(0))
         .unwrap_or(0)
 }
 
-fn imported_total_kills(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter) -> i64 {
+fn imported_total_kills(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> i64 {
     let sql = format!(
-        "SELECT COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg WHERE enemy_name = ?{}",
-        zf.sql("zone")
+        "SELECT COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg WHERE enemy_name = ?{}{}",
+        zf.sql("zone"),
+        lf.sql("combat_skills")
     );
-    let binds = zone_binds(enemy_name, zf);
+    let binds = drop_binds(enemy_name, zf, lf);
     conn.query_row(&sql, rusqlite::params_from_iter(binds.iter()), |row| row.get(0))
         .unwrap_or(0)
 }
 
-fn mine_loot_rows(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter) -> Vec<(String, i64, i64)> {
+fn mine_loot_rows(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> Vec<(String, i64, i64)> {
     let sql = format!(
         "SELECT l.item_name, SUM(l.quantity), COUNT(DISTINCT l.kill_id)
          FROM enemy_kill_loot l
          JOIN enemy_kills k ON l.kill_id = k.id
-         WHERE k.enemy_name = ?{}
+         WHERE k.enemy_name = ?{}{}
          GROUP BY l.item_name",
-        zf.sql("k.zone")
+        zf.sql("k.zone"),
+        lf.sql("k.combat_skills")
     );
-    let binds = zone_binds(enemy_name, zf);
+    let binds = drop_binds(enemy_name, zf, lf);
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -125,15 +173,16 @@ fn mine_loot_rows(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter
     .unwrap_or_default()
 }
 
-fn imported_loot_rows(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter) -> Vec<(String, i64, i64)> {
+fn imported_loot_rows(conn: &rusqlite::Connection, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> Vec<(String, i64, i64)> {
     let sql = format!(
         "SELECT item_name, SUM(total_quantity), SUM(times_dropped)
          FROM imported_enemy_kill_loot_agg
-         WHERE enemy_name = ?{}
+         WHERE enemy_name = ?{}{}
          GROUP BY item_name",
-        zf.sql("zone")
+        zf.sql("zone"),
+        lf.sql("combat_skills")
     );
-    let binds = zone_binds(enemy_name, zf);
+    let binds = drop_binds(enemy_name, zf, lf);
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -164,16 +213,18 @@ pub fn get_enemy_kill_stats(
     enemy_name: String,
     scope: String,
     zone: Option<String>,
+    combat_skills: Option<String>,
 ) -> Result<EnemyKillStats, String> {
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
     let zf = ZoneFilter::from_opt(zone.as_deref());
+    let lf = LoadoutFilter::from_opt(combat_skills.as_deref());
 
     let total_kills = match scope.as_str() {
-        "mine" => mine_total_kills(&conn, &enemy_name, &zf),
-        "imported" => imported_total_kills(&conn, &enemy_name, &zf),
-        _ => mine_total_kills(&conn, &enemy_name, &zf) + imported_total_kills(&conn, &enemy_name, &zf),
+        "mine" => mine_total_kills(&conn, &enemy_name, &zf, &lf),
+        "imported" => imported_total_kills(&conn, &enemy_name, &zf, &lf),
+        _ => mine_total_kills(&conn, &enemy_name, &zf, &lf) + imported_total_kills(&conn, &enemy_name, &zf, &lf),
     };
 
     if total_kills == 0 {
@@ -185,11 +236,11 @@ pub fn get_enemy_kill_stats(
     }
 
     let loot_rows = match scope.as_str() {
-        "mine" => mine_loot_rows(&conn, &enemy_name, &zf),
-        "imported" => imported_loot_rows(&conn, &enemy_name, &zf),
+        "mine" => mine_loot_rows(&conn, &enemy_name, &zf, &lf),
+        "imported" => imported_loot_rows(&conn, &enemy_name, &zf, &lf),
         _ => combine_loot_rows(
-            mine_loot_rows(&conn, &enemy_name, &zf),
-            imported_loot_rows(&conn, &enemy_name, &zf),
+            mine_loot_rows(&conn, &enemy_name, &zf, &lf),
+            imported_loot_rows(&conn, &enemy_name, &zf, &lf),
         ),
     };
 
@@ -231,26 +282,46 @@ pub fn get_item_drop_sources(
     item_name: String,
     internal_name: Option<String>,
     scope: String,
+    combat_skills: Option<String>,
 ) -> Result<Vec<ItemDropSource>, String> {
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
+    let lf = LoadoutFilter::from_opt(combat_skills.as_deref());
 
     // (enemy_name, zone) -> (times_dropped, total_qty)
     let mut per_source: HashMap<(String, Option<String>), (i64, i64)> = HashMap::new();
 
+    // item_name + internal_name binds (internal NULL → never matches the 2nd `?`).
+    let item_binds = || -> Vec<rusqlite::types::Value> {
+        let mut b = vec![
+            rusqlite::types::Value::Text(item_name.clone()),
+            match &internal_name {
+                Some(s) => rusqlite::types::Value::Text(s.clone()),
+                None => rusqlite::types::Value::Null,
+            },
+        ];
+        if let Some(lb) = lf.bind() {
+            b.push(lb);
+        }
+        b
+    };
+
     if scope == "mine" || scope == "combined" {
+        let sql = format!(
+            "SELECT k.enemy_name, k.zone, COUNT(DISTINCT l.kill_id), SUM(l.quantity)
+             FROM enemy_kill_loot l
+             JOIN enemy_kills k ON l.kill_id = k.id
+             WHERE (l.item_name = ? OR l.item_name = ?){}
+             GROUP BY k.enemy_name, k.zone",
+            lf.sql("k.combat_skills")
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT k.enemy_name, k.zone, COUNT(DISTINCT l.kill_id), SUM(l.quantity)
-                 FROM enemy_kill_loot l
-                 JOIN enemy_kills k ON l.kill_id = k.id
-                 WHERE l.item_name = ?1 OR (?2 IS NOT NULL AND l.item_name = ?2)
-                 GROUP BY k.enemy_name, k.zone",
-            )
+            .prepare(&sql)
             .map_err(|e| format!("Failed to prepare drop source query: {e}"))?;
+        let binds = item_binds();
         let rows = stmt
-            .query_map(rusqlite::params![&item_name, &internal_name], |row| {
+            .query_map(rusqlite::params_from_iter(binds.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
@@ -268,16 +339,19 @@ pub fn get_item_drop_sources(
     }
 
     if scope == "imported" || scope == "combined" {
+        let sql = format!(
+            "SELECT enemy_name, zone, SUM(times_dropped), SUM(total_quantity)
+             FROM imported_enemy_kill_loot_agg
+             WHERE (item_name = ? OR item_name = ?){}
+             GROUP BY enemy_name, zone",
+            lf.sql("combat_skills")
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT enemy_name, zone, SUM(times_dropped), SUM(total_quantity)
-                 FROM imported_enemy_kill_loot_agg
-                 WHERE item_name = ?1 OR (?2 IS NOT NULL AND item_name = ?2)
-                 GROUP BY enemy_name, zone",
-            )
+            .prepare(&sql)
             .map_err(|e| format!("Failed to prepare imported drop source query: {e}"))?;
+        let binds = item_binds();
         let rows = stmt
-            .query_map(rusqlite::params![&item_name, &internal_name], |row| {
+            .query_map(rusqlite::params_from_iter(binds.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
@@ -298,9 +372,9 @@ pub fn get_item_drop_sources(
     for ((enemy_name, zone), (times_dropped, total_quantity)) in per_source {
         let zf = ZoneFilter::from_stored(zone.clone());
         let total_kills = match scope.as_str() {
-            "mine" => mine_total_kills(&conn, &enemy_name, &zf),
-            "imported" => imported_total_kills(&conn, &enemy_name, &zf),
-            _ => mine_total_kills(&conn, &enemy_name, &zf) + imported_total_kills(&conn, &enemy_name, &zf),
+            "mine" => mine_total_kills(&conn, &enemy_name, &zf, &lf),
+            "imported" => imported_total_kills(&conn, &enemy_name, &zf, &lf),
+            _ => mine_total_kills(&conn, &enemy_name, &zf, &lf) + imported_total_kills(&conn, &enemy_name, &zf, &lf),
         };
         sources.push(ItemDropSource {
             enemy_name,
@@ -360,21 +434,26 @@ pub fn search_database_enemies(
     query: String,
     scope: String,
     limit: Option<usize>,
+    combat_skills: Option<String>,
 ) -> Result<Vec<EnemySearchResult>, String> {
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
+    let lf = LoadoutFilter::from_opt(combat_skills.as_deref());
+    let lf_binds = || -> Vec<rusqlite::types::Value> { lf.bind().into_iter().collect() };
 
     // (enemy_name, zone) -> (total_kills, set of distinct loot item names)
     type EnemyAgg = HashMap<(String, Option<String>), (i64, std::collections::HashSet<String>)>;
     let mut agg: EnemyAgg = HashMap::new();
 
     if scope == "mine" || scope == "combined" {
-        let mut kill_stmt = conn
-            .prepare("SELECT enemy_name, zone, COUNT(*) FROM enemy_kills GROUP BY enemy_name, zone")
-            .map_err(|e| format!("Failed to prepare query: {e}"))?;
+        let sql = format!(
+            "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills{} GROUP BY enemy_name, zone",
+            lf.where_clause("combat_skills")
+        );
+        let mut kill_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare query: {e}"))?;
         let rows = kill_stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))
             })
             .map_err(|e| format!("Query failed: {e}"))?;
@@ -383,14 +462,14 @@ pub fn search_database_enemies(
             agg.entry((enemy_name, zone)).or_default().0 += kills;
         }
 
-        let mut loot_stmt = conn
-            .prepare(
-                "SELECT DISTINCT k.enemy_name, k.zone, l.item_name
-                 FROM enemy_kill_loot l JOIN enemy_kills k ON l.kill_id = k.id",
-            )
-            .map_err(|e| format!("Failed to prepare loot query: {e}"))?;
+        let sql = format!(
+            "SELECT DISTINCT k.enemy_name, k.zone, l.item_name
+             FROM enemy_kill_loot l JOIN enemy_kills k ON l.kill_id = k.id{}",
+            lf.where_clause("k.combat_skills")
+        );
+        let mut loot_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare loot query: {e}"))?;
         let rows = loot_stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?))
             })
             .map_err(|e| format!("Loot query failed: {e}"))?;
@@ -401,11 +480,13 @@ pub fn search_database_enemies(
     }
 
     if scope == "imported" || scope == "combined" {
-        let mut kill_stmt = conn
-            .prepare("SELECT enemy_name, zone, COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg GROUP BY enemy_name, zone")
-            .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
+        let sql = format!(
+            "SELECT enemy_name, zone, COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg{} GROUP BY enemy_name, zone",
+            lf.where_clause("combat_skills")
+        );
+        let mut kill_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare imported query: {e}"))?;
         let rows = kill_stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))
             })
             .map_err(|e| format!("Imported query failed: {e}"))?;
@@ -414,11 +495,13 @@ pub fn search_database_enemies(
             agg.entry((enemy_name, zone)).or_default().0 += kills;
         }
 
-        let mut loot_stmt = conn
-            .prepare("SELECT DISTINCT enemy_name, zone, item_name FROM imported_enemy_kill_loot_agg")
-            .map_err(|e| format!("Failed to prepare imported loot query: {e}"))?;
+        let sql = format!(
+            "SELECT DISTINCT enemy_name, zone, item_name FROM imported_enemy_kill_loot_agg{}",
+            lf.where_clause("combat_skills")
+        );
+        let mut loot_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare imported loot query: {e}"))?;
         let rows = loot_stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?))
             })
             .map_err(|e| format!("Imported loot query failed: {e}"))?;
@@ -461,26 +544,29 @@ pub fn search_database_items(
     query: String,
     scope: String,
     limit: Option<usize>,
+    combat_skills: Option<String>,
 ) -> Result<Vec<ItemSearchResult>, String> {
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
+    let lf = LoadoutFilter::from_opt(combat_skills.as_deref());
+    let lf_binds = || -> Vec<rusqlite::types::Value> { lf.bind().into_iter().collect() };
 
     // item_name -> (total_quantity, set of distinct (enemy, zone) sources)
     type ItemAgg = HashMap<String, (i64, std::collections::HashSet<(String, Option<String>)>)>;
     let mut agg: ItemAgg = HashMap::new();
 
     if scope == "mine" || scope == "combined" {
-        let mut stmt = conn
-            .prepare(
-                "SELECT l.item_name, SUM(l.quantity), k.enemy_name, k.zone
-                 FROM enemy_kill_loot l
-                 JOIN enemy_kills k ON l.kill_id = k.id
-                 GROUP BY l.item_name, k.enemy_name, k.zone",
-            )
-            .map_err(|e| format!("Failed to prepare query: {e}"))?;
+        let sql = format!(
+            "SELECT l.item_name, SUM(l.quantity), k.enemy_name, k.zone
+             FROM enemy_kill_loot l
+             JOIN enemy_kills k ON l.kill_id = k.id{}
+             GROUP BY l.item_name, k.enemy_name, k.zone",
+            lf.where_clause("k.combat_skills")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare query: {e}"))?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -498,15 +584,15 @@ pub fn search_database_items(
     }
 
     if scope == "imported" || scope == "combined" {
-        let mut stmt = conn
-            .prepare(
-                "SELECT item_name, SUM(total_quantity), enemy_name, zone
-                 FROM imported_enemy_kill_loot_agg
-                 GROUP BY item_name, enemy_name, zone",
-            )
-            .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
+        let sql = format!(
+            "SELECT item_name, SUM(total_quantity), enemy_name, zone
+             FROM imported_enemy_kill_loot_agg{}
+             GROUP BY item_name, enemy_name, zone",
+            lf.where_clause("combat_skills")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare imported query: {e}"))?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -665,11 +751,14 @@ pub fn export_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
     ])
     .map_err(|e| format!("Failed to write CSV header: {e}"))?;
 
+    // Export sums across loadouts (per enemy + zone); the loadout dimension is a
+    // live query-time filter, not part of the shared CSV.
+    let lf = LoadoutFilter::All;
     let count = pairs.len();
     for (enemy_name, zone) in pairs {
         let zf = ZoneFilter::from_stored(zone.clone());
-        let total_kills = mine_total_kills(&conn, &enemy_name, &zf);
-        let mut loot = mine_loot_rows(&conn, &enemy_name, &zf);
+        let total_kills = mine_total_kills(&conn, &enemy_name, &zf, &lf);
+        let mut loot = mine_loot_rows(&conn, &enemy_name, &zf, &lf);
         // Most-dropped first for readability in a spreadsheet.
         loot.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
         let zone_str = zone.as_deref().unwrap_or("");

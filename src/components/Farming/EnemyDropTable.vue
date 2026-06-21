@@ -38,6 +38,8 @@ const props = defineProps<{
   // Area key to scope stats to. null = the unknown-zone bucket; passed to the
   // backend as "" (absent/undefined there would mean "all zones").
   zone?: string | null;
+  // Equipped combat-skill loadout to filter by (null = all loadouts).
+  combatSkills?: string | null;
 }>();
 
 const loading = ref(false);
@@ -50,6 +52,7 @@ async function load() {
       enemyName: props.enemyName,
       scope: props.scope,
       zone: props.zone ?? "",
+      combatSkills: props.combatSkills ?? null,
     });
   } catch (e) {
     console.error("[enemy-drop-table] Failed to load stats:", e);
@@ -64,5 +67,5 @@ function fmtPct(rate: number): string {
   return pct >= 10 ? `${pct.toFixed(0)}%` : `${pct.toFixed(1)}%`;
 }
 
-watch(() => [props.enemyName, props.scope, props.zone], load, { immediate: true });
+watch(() => [props.enemyName, props.scope, props.zone, props.combatSkills], load, { immediate: true });
 </script>

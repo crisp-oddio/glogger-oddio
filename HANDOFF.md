@@ -1,5 +1,66 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-21 (Session 19 — Drop database: CSV, zones, combat-loadout segmentation)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (base v0.9.20; these commits are **unreleased** — opened a `dev → main` PR)
+**Status:** ✅ Working, verified live in `npm run tauri dev`. `vue-tsc` + `cargo check` + targeted
+`cargo test` green. Not yet released — next release bumps from 0.9.20.
+
+## TL;DR — Session 19 (the kill/loot "drop database" grew up)
+
+Turned the drop-rate database into a sharable, zone- and build-aware dataset. Four layers, each
+its own commit:
+
+### 1. CSV import/export + friend-format raw-event import (`554e7e4`)
+[kill_tracking_commands.rs](src-tauri/src/db/kill_tracking_commands.rs) — replaced the JSON
+bundle with **CSV** (added the `csv` crate). Export writes `enemy_name,total_kills,item_name,
+total_quantity,times_dropped,drop_rate` (+ zone/combat cols, below); opens cleanly in a sheet.
+Import **auto-detects** two layouts via header sniffing (`parse_drop_data` → `parse_csv_drop_data`):
+- **Aggregated** (our export, or any sheet with `total_kills`/`total_quantity`/`times_dropped`).
+- **Raw loot-event log** (one row per looted item, with a per-corpse id like `enemy_id`):
+  `parse_csv_raw_events` aggregates it — distinct corpse ids per enemy = kills, distinct corpse
+  ids per (enemy,item) = times dropped, `Item_Amount` summed = qty. This is the format a
+  community member already collects (validated against his 4,966-row file: 183 enemies, sane
+  rates). Legacy JSON still imports (sniffed by leading `{`). Caveat: raw logs omit empty corpse
+  searches, so their denominators (and rates) run slightly high.
+
+### 2. Zone-aware drops — migration **v54** (`554e7e4`)
+Same monster in different zones has different loot, so zone is part of the key now. `enemy_kills`
++ both `imported_*_agg` tables gained `zone`; the coordinator stamps the current area on each
+corpse-search kill; stats/search/export/import group by `(enemy, zone[, item])`. The friend's
+`Zone` column maps straight in.
+
+### 3. Combat-loadout segmentation — migration **v55** (`ba4389b`) + this session's selector
+PG drops vary by the **equipped combat-skill pair** (Sword/Shield vs Fire/Ice…), which we already
+parse (`SetActiveSkills`). `enemy_kills` + imported aggregates gained `combat_skills` (normalized
+`skillA+skillB`, blank = unattributed). Backend filters drop stats by loadout with the agreed
+policy: **strict loadout match + an "unattributed" baseline** (so legacy/imported data — which
+has no loadout — stays visible).
+- **Equipped Skills selector** in the Database tab header (between scope toggle and Export): two
+  combat-skill dropdowns ("Combat" skills from `get_all_skills` where `combat===true`), defaulting
+  to the live in-game loadout and editable on the fly to preview other builds' tables.
+- **Live-reactivity fix (key bug):** first cut read the loadout once via a one-shot `invoke` and the
+  ↺ button reused stale captured values, so it never followed in-game changes. Rewired to bind to
+  `gameStateStore.activeSkills` — a reactive ref already refreshed by the `active_skills`
+  `game-state-updated` event — so the selector now **auto-follows** skill swaps/zone reloads unless
+  the user manually overrides (↺ clears the override and re-syncs to live). The
+  `[searchTarget, scope, selectedLoadout]` watch drives reloads.
+
+### 4. Harvest Stats on Data Browser > Enemies (`49c7544` section, `1208f02` %)
+The enemy detail pane shows what a monster skins/butchers into (`get_enemy_harvest_stats`), now
+with a colored **Rate** column (each item's share of harvest pulls), mirroring Kill Stats.
+
+### Also shipped earlier this session (already in v0.9.20): app **Scale** setting (CSS zoom 50–200%,
+slider + editable %), permanent imports (migration v53 dropped the FK cascade), list-first DB tab.
+
+### Next up (queued, not started)
+"Capture every skill" per kill — a deduped full-skill-snapshot table — for richer future analysis
+beyond the combat-loadout segmentation. Schema would hang a `skill_snapshot_id` off `enemy_kills`.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-21 (Session 18 — Drop-rate DB UX overhaul, harvest stats, app scale → v0.9.20)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (merged `origin/main` v0.9.19 back in first, then released **v0.9.20**)
