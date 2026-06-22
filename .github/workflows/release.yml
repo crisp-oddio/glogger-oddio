@@ -1,5 +1,14 @@
 name: Release
 
+# Phase 1 of the release: validate, bump the version on a `release/vX` branch,
+# and open a PR for review. Merging that PR to `main` is what publishes the
+# release — see release-publish.yml, which builds + publishes once the bump
+# lands on `main`.
+#
+# This two-phase split exists because `main` is protected (PRs required), so
+# the release bot cannot push the version-bump commit directly. The bump goes
+# through a normal PR you approve + merge.
+
 on:
   workflow_dispatch:
     inputs:
@@ -11,9 +20,7 @@ on:
 
 permissions:
   contents: write
-
-env:
-  RELEASE_REPO: ${{ github.repository }}
+  pull-requests: write
 
 jobs:
   # ── Step 0: validate the project builds and tests pass ──
@@ -54,13 +61,10 @@ jobs:
           cargo check
           cargo test
 
-  # ── Step 1: bump version, generate changelog, push tag ──
-  prepare:
+  # ── Step 1: bump version + changelog on a branch, open the release PR ──
+  open-release-pr:
     needs: validate
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -75,7 +79,6 @@ jobs:
           scripts/bump-version.sh "${{ github.event.inputs.version }}"
           NEW_VERSION=$(sed -n 's/.*"version"\s*:\s*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog
         shell: bash
@@ -84,277 +87,31 @@ jobs:
           scripts/generate-changelog.sh > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
-      - name: Commit version bump and tag
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "release: v${{ steps.version.outputs.version }}"
-          git tag "v${{ steps.version.outputs.version }}"
-          git push origin main --tags
-
-      - name: Upload release notes
-        uses: actions/upload-artifact@v6
-        with:
-          name: release-notes
-          path: RELEASE_NOTES.md
-
-  # ── Step 2: build on all platforms with tauri-action (build only, no release) ──
-  build:
-    needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            label: windows
-            args: ""
-          - platform: macos-latest
-            label: macos
-            args: "--target aarch64-apple-darwin"
-          - platform: ubuntu-latest
-            label: linux
-            args: ""
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - name: Checkout (at release tag)
-        uses: actions/checkout@v6
-        with:
-          ref: v${{ needs.prepare.outputs.version }}
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      # Build only — omit tagName/releaseName so tauri-action doesn't create a release
-      - name: Build with tauri-action
-        id: tauri
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tauriScript: npx tauri
-          args: ${{ matrix.args }} --config '{"identifier":"glogger.Release","app":{"windows":[{"title":"glogger v${{ needs.prepare.outputs.version }}"}]}}'
-          updaterJsonPreferNsis: true
-
-      # Collect artifacts for the publish step
-      # macOS cross-compile puts artifacts in target/<triple>/release/bundle
-      # while native builds use target/release/bundle
-      - name: Collect artifacts
-        shell: bash
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          mkdir -p release-artifacts
-
-          # Find the bundle directory — handle both native and cross-compile paths
-          BUNDLE_DIR=$(find src-tauri/target -path "*/release/bundle" -type d 2>/dev/null | head -1)
-          if [ -z "$BUNDLE_DIR" ]; then
-            echo "ERROR: Could not find bundle directory"
-            find src-tauri/target -name "bundle" -type d
-            exit 1
-          fi
-          echo "Found bundle directory: $BUNDLE_DIR"
-          find "$BUNDLE_DIR" -type f 2>/dev/null | head -30 || true
-
-          # Windows: NSIS installer + signature
-          for f in "$BUNDLE_DIR"/nsis/*.exe; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-windows-setup.exe"
-          done
-          for f in "$BUNDLE_DIR"/nsis/*.exe.sig; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-windows-setup.exe.sig"
-          done
-
-          # macOS: DMG (for direct download) + .app.tar.gz updater artifact + signatures
-          for f in "$BUNDLE_DIR"/dmg/*.dmg; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-macos.dmg"
-          done
-          for f in "$BUNDLE_DIR"/macos/*.tar.gz; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-macos.app.tar.gz"
-          done
-          for f in "$BUNDLE_DIR"/macos/*.tar.gz.sig; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig"
-          done
-
-          # Linux: deb + AppImage + signatures
-          for f in "$BUNDLE_DIR"/deb/*.deb; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-linux.deb"
-          done
-          for f in "$BUNDLE_DIR"/appimage/*.AppImage; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-linux.AppImage"
-          done
-          for f in "$BUNDLE_DIR"/appimage/*.AppImage.sig; do
-            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-linux.AppImage.sig"
-          done
-
-          echo "Collected artifacts:"
-          ls -la release-artifacts/
-
-      - name: Upload platform artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: artifacts-${{ matrix.label }}
-          path: release-artifacts/*
-
-  # ── Step 3: create release and upload everything ──
-  publish:
-    needs: [prepare, build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download release notes
-        uses: actions/download-artifact@v7
-        with:
-          name: release-notes
-
-      - name: Download all platform artifacts
-        uses: actions/download-artifact@v7
-        with:
-          pattern: artifacts-*
-          path: all-artifacts
-          merge-multiple: true
-
-      - name: List artifacts
-        run: ls -la all-artifacts/
-
-      - name: Generate latest.json updater manifest
-        shell: bash
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          TAG="v${VERSION}"
-          BASE_URL="https://github.com/$RELEASE_REPO/releases/download/$TAG"
-
-          # Read signatures from .sig files
-          WIN_SIG=""
-          MAC_SIG=""
-          LINUX_APPIMAGE_SIG=""
-
-          [ -f "all-artifacts/glogger-${VERSION}-windows-setup.exe.sig" ] && \
-            WIN_SIG=$(cat "all-artifacts/glogger-${VERSION}-windows-setup.exe.sig")
-          [ -f "all-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig" ] && \
-            MAC_SIG=$(cat "all-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig")
-          [ -f "all-artifacts/glogger-${VERSION}-linux.AppImage.sig" ] && \
-            LINUX_APPIMAGE_SIG=$(cat "all-artifacts/glogger-${VERSION}-linux.AppImage.sig")
-
-          # Build the platforms object — only include platforms that have artifacts
-          PLATFORMS="{"
-          FIRST=true
-
-          if [ -n "$WIN_SIG" ]; then
-            PLATFORMS="$PLATFORMS\"windows-x86_64\":{\"url\":\"${BASE_URL}/glogger-${VERSION}-windows-setup.exe\",\"signature\":\"${WIN_SIG}\"}"
-            FIRST=false
-          fi
-
-          if [ -n "$MAC_SIG" ]; then
-            [ "$FIRST" = false ] && PLATFORMS="$PLATFORMS,"
-            PLATFORMS="$PLATFORMS\"darwin-aarch64\":{\"url\":\"${BASE_URL}/glogger-${VERSION}-macos.app.tar.gz\",\"signature\":\"${MAC_SIG}\"}"
-            FIRST=false
-          fi
-
-          if [ -n "$LINUX_APPIMAGE_SIG" ]; then
-            [ "$FIRST" = false ] && PLATFORMS="$PLATFORMS,"
-            PLATFORMS="$PLATFORMS\"linux-x86_64\":{\"url\":\"${BASE_URL}/glogger-${VERSION}-linux.AppImage\",\"signature\":\"${LINUX_APPIMAGE_SIG}\"}"
-          fi
-
-          PLATFORMS="$PLATFORMS}"
-
-          # Extract release notes for the body
-          NOTES=$(cat RELEASE_NOTES.md | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '""')
-
-          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          cat > all-artifacts/latest.json << ENDJSON
-          {
-            "version": "${VERSION}",
-            "notes": ${NOTES},
-            "pub_date": "${PUB_DATE}",
-            "platforms": ${PLATFORMS}
-          }
-          ENDJSON
-
-          echo "Generated latest.json:"
-          cat all-artifacts/latest.json
-
-      - name: Create release and upload artifacts
+      - name: Create release branch and open PR
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.prepare.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG="v${VERSION}"
-          BASE_URL="https://github.com/$RELEASE_REPO/releases/download/$TAG"
+          BRANCH="release/v${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Build a download table from the artifacts
-          DOWNLOADS="## Downloads\n\n| Platform | Installer |\n|----------|-----------|"
-          for file in all-artifacts/*; do
-            [ -f "$file" ] || continue
-            NAME="$(basename "$file")"
-            case "$NAME" in
-              *-windows-setup.exe) DOWNLOADS="$DOWNLOADS\n| **Windows** (recommended) | [$NAME]($BASE_URL/$NAME) |" ;;
-              *-macos.dmg)         DOWNLOADS="$DOWNLOADS\n| **macOS** | [$NAME]($BASE_URL/$NAME) |" ;;
-              *-linux.deb)         DOWNLOADS="$DOWNLOADS\n| **Linux** (Debian/Ubuntu) | [$NAME]($BASE_URL/$NAME) |" ;;
-              *-linux.AppImage)    DOWNLOADS="$DOWNLOADS\n| **Linux** (AppImage) | [$NAME]($BASE_URL/$NAME) |" ;;
-              latest.json|*.sig|*.tar.gz) ;; # skip updater files from download table
-              *) ;;
-            esac
-          done
+          # Recreate the branch from the current main so re-runs are idempotent.
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "release: v${VERSION}"
+          git push --force origin "$BRANCH"
 
-          # Build full release notes
-          {
-            echo -e "$DOWNLOADS"
-            echo ""
-            echo "---"
-            echo ""
-            cat RELEASE_NOTES.md
-          } > FULL_RELEASE_NOTES.md
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "PR already open for $BRANCH — branch updated."
+          else
+            BODY=$(printf 'Automated version bump to **v%s**.\n\nApprove and merge this PR to publish the release. Once it lands on `main`, the **Release Publish** workflow tags `v%s` and builds the Windows / macOS / Linux installers + GitHub Release automatically, then attaches the Flatpak.\n\n---\n\n%s\n' "$VERSION" "$VERSION" "$(cat RELEASE_NOTES.md)")
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "release: v${VERSION}" \
+              --body "$BODY"
+          fi
 
-          # Create the release
-          gh release create "$TAG" \
-            --repo "$RELEASE_REPO" \
-            --title "$TAG" \
-            --notes-file FULL_RELEASE_NOTES.md
-
-          # Upload all artifacts (installers, signatures, and latest.json)
-          for file in all-artifacts/*; do
-            [ -f "$file" ] || continue
-            echo "Uploading: $(basename "$file")"
-            gh release upload "$TAG" "$file" --repo "$RELEASE_REPO"
-          done
-
-          echo "Release published: https://github.com/$RELEASE_REPO/releases/tag/$TAG"
-
-  # ── Step 4: build the Linux Flatpak and attach it to the release ──
-  # The tag is pushed by the prepare job's GITHUB_TOKEN, so it cannot fire
-  # flatpak.yml's `push` trigger (GitHub anti-recursion). We call it directly
-  # instead; it builds from the tag and uploads to the release publish just made.
-  flatpak:
-    needs: [prepare, publish]
-    uses: ./.github/workflows/flatpak.yml
-    with:
-      tag: ${{ needs.prepare.outputs.tag }}
-    permissions:
-      contents: write
+          echo "Opened release PR for v${VERSION}. Approve + merge it to publish."
