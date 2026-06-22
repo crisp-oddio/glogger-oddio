@@ -1,7 +1,7 @@
 # Glogger
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Latest Release](https://img.shields.io/github/v/release/danielout/glogger)](https://github.com/danielout/glogger/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/danielout/glogger)](https://github.com/crisp-oddio/glogger-oddio/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
 
 A desktop companion app for **[Project: Gorgon](https://projectgorgon.com)**. glogger reads your game's log files in real time and gives you dashboards, analytics, and tools for tracking your gameplay.
