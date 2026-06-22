@@ -1,0 +1,332 @@
+name: Release Publish
+
+# Phase 2 of the release: build installers and publish the GitHub Release once
+# a version bump lands on `main` (via the bump PR opened by release.yml).
+#
+# "A new release" is detected by checking whether the version in
+# tauri.conf.json is not yet tagged, so this no-ops on ordinary pushes to main
+# (feature merges, docs, etc.) and only fires the one time a version bump lands.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_REPO: ${{ github.repository }}
+
+jobs:
+  # ── Step 0: is the current main version an un-published release? ──
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect untagged version bump
+        id: check
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/.*"version"\s*:\s*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
+          TAG="v$VERSION"
+          if [ -z "$VERSION" ]; then
+            echo "Could not read version from tauri.conf.json — skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — nothing to publish."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New release detected: $TAG"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Step 1: tag the release commit on main ──
+  tag:
+    needs: check
+    if: needs.check.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create and push tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ needs.check.outputs.tag }}"
+          git push origin "${{ needs.check.outputs.tag }}"
+
+  # ── Step 2: build on all platforms with tauri-action (build only, no release) ──
+  build:
+    needs: [check, tag]
+    if: needs.check.outputs.should_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            label: windows
+            args: ""
+          - platform: macos-latest
+            label: macos
+            args: "--target aarch64-apple-darwin"
+          - platform: ubuntu-latest
+            label: linux
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout (at release tag)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Build only — omit tagName/releaseName so tauri-action doesn't create a release
+      - name: Build with tauri-action
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: npx tauri
+          args: ${{ matrix.args }} --config '{"identifier":"glogger.Release","app":{"windows":[{"title":"glogger v${{ needs.check.outputs.version }}"}]}}'
+          updaterJsonPreferNsis: true
+
+      # Collect artifacts for the publish step
+      # macOS cross-compile puts artifacts in target/<triple>/release/bundle
+      # while native builds use target/release/bundle
+      - name: Collect artifacts
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          mkdir -p release-artifacts
+
+          # Find the bundle directory — handle both native and cross-compile paths
+          BUNDLE_DIR=$(find src-tauri/target -path "*/release/bundle" -type d 2>/dev/null | head -1)
+          if [ -z "$BUNDLE_DIR" ]; then
+            echo "ERROR: Could not find bundle directory"
+            find src-tauri/target -name "bundle" -type d
+            exit 1
+          fi
+          echo "Found bundle directory: $BUNDLE_DIR"
+          find "$BUNDLE_DIR" -type f 2>/dev/null | head -30 || true
+
+          # Windows: NSIS installer + signature
+          for f in "$BUNDLE_DIR"/nsis/*.exe; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-windows-setup.exe"
+          done
+          for f in "$BUNDLE_DIR"/nsis/*.exe.sig; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-windows-setup.exe.sig"
+          done
+
+          # macOS: DMG (for direct download) + .app.tar.gz updater artifact + signatures
+          for f in "$BUNDLE_DIR"/dmg/*.dmg; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-macos.dmg"
+          done
+          for f in "$BUNDLE_DIR"/macos/*.tar.gz; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-macos.app.tar.gz"
+          done
+          for f in "$BUNDLE_DIR"/macos/*.tar.gz.sig; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig"
+          done
+
+          # Linux: deb + AppImage + signatures
+          for f in "$BUNDLE_DIR"/deb/*.deb; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-linux.deb"
+          done
+          for f in "$BUNDLE_DIR"/appimage/*.AppImage; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-linux.AppImage"
+          done
+          for f in "$BUNDLE_DIR"/appimage/*.AppImage.sig; do
+            [ -f "$f" ] && cp "$f" "release-artifacts/glogger-${VERSION}-linux.AppImage.sig"
+          done
+
+          echo "Collected artifacts:"
+          ls -la release-artifacts/
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-${{ matrix.label }}
+          path: release-artifacts/*
+
+  # ── Step 3: create release and upload everything ──
+  publish:
+    needs: [check, build]
+    if: needs.check.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (at release tag, for RELEASE_NOTES.md)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: artifacts-*
+          path: all-artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la all-artifacts/
+
+      - name: Generate latest.json updater manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          BASE_URL="https://github.com/$RELEASE_REPO/releases/download/$TAG"
+
+          # Read signatures from .sig files
+          WIN_SIG=""
+          MAC_SIG=""
+          LINUX_APPIMAGE_SIG=""
+
+          [ -f "all-artifacts/glogger-${VERSION}-windows-setup.exe.sig" ] && \
+            WIN_SIG=$(cat "all-artifacts/glogger-${VERSION}-windows-setup.exe.sig")
+          [ -f "all-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig" ] && \
+            MAC_SIG=$(cat "all-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig")
+          [ -f "all-artifacts/glogger-${VERSION}-linux.AppImage.sig" ] && \
+            LINUX_APPIMAGE_SIG=$(cat "all-artifacts/glogger-${VERSION}-linux.AppImage.sig")
+
+          # Build the platforms object — only include platforms that have artifacts
+          PLATFORMS="{"
+          FIRST=true
+
+          if [ -n "$WIN_SIG" ]; then
+            PLATFORMS="$PLATFORMS\"windows-x86_64\":{\"url\":\"${BASE_URL}/glogger-${VERSION}-windows-setup.exe\",\"signature\":\"${WIN_SIG}\"}"
+            FIRST=false
+          fi
+
+          if [ -n "$MAC_SIG" ]; then
+            [ "$FIRST" = false ] && PLATFORMS="$PLATFORMS,"
+            PLATFORMS="$PLATFORMS\"darwin-aarch64\":{\"url\":\"${BASE_URL}/glogger-${VERSION}-macos.app.tar.gz\",\"signature\":\"${MAC_SIG}\"}"
+            FIRST=false
+          fi
+
+          if [ -n "$LINUX_APPIMAGE_SIG" ]; then
+            [ "$FIRST" = false ] && PLATFORMS="$PLATFORMS,"
+            PLATFORMS="$PLATFORMS\"linux-x86_64\":{\"url\":\"${BASE_URL}/glogger-${VERSION}-linux.AppImage\",\"signature\":\"${LINUX_APPIMAGE_SIG}\"}"
+          fi
+
+          PLATFORMS="$PLATFORMS}"
+
+          # Extract release notes for the body
+          NOTES=$(cat RELEASE_NOTES.md | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '""')
+
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat > all-artifacts/latest.json << ENDJSON
+          {
+            "version": "${VERSION}",
+            "notes": ${NOTES},
+            "pub_date": "${PUB_DATE}",
+            "platforms": ${PLATFORMS}
+          }
+          ENDJSON
+
+          echo "Generated latest.json:"
+          cat all-artifacts/latest.json
+
+      - name: Create release and upload artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          BASE_URL="https://github.com/$RELEASE_REPO/releases/download/$TAG"
+
+          # Build a download table from the artifacts
+          DOWNLOADS="## Downloads\n\n| Platform | Installer |\n|----------|-----------|"
+          for file in all-artifacts/*; do
+            [ -f "$file" ] || continue
+            NAME="$(basename "$file")"
+            case "$NAME" in
+              *-windows-setup.exe) DOWNLOADS="$DOWNLOADS\n| **Windows** (recommended) | [$NAME]($BASE_URL/$NAME) |" ;;
+              *-macos.dmg)         DOWNLOADS="$DOWNLOADS\n| **macOS** | [$NAME]($BASE_URL/$NAME) |" ;;
+              *-linux.deb)         DOWNLOADS="$DOWNLOADS\n| **Linux** (Debian/Ubuntu) | [$NAME]($BASE_URL/$NAME) |" ;;
+              *-linux.AppImage)    DOWNLOADS="$DOWNLOADS\n| **Linux** (AppImage) | [$NAME]($BASE_URL/$NAME) |" ;;
+              latest.json|*.sig|*.tar.gz) ;; # skip updater files from download table
+              *) ;;
+            esac
+          done
+
+          # Build full release notes
+          {
+            echo -e "$DOWNLOADS"
+            echo ""
+            echo "---"
+            echo ""
+            cat RELEASE_NOTES.md
+          } > FULL_RELEASE_NOTES.md
+
+          # Create the release
+          gh release create "$TAG" \
+            --repo "$RELEASE_REPO" \
+            --title "$TAG" \
+            --notes-file FULL_RELEASE_NOTES.md
+
+          # Upload all artifacts (installers, signatures, and latest.json)
+          for file in all-artifacts/*; do
+            [ -f "$file" ] || continue
+            echo "Uploading: $(basename "$file")"
+            gh release upload "$TAG" "$file" --repo "$RELEASE_REPO"
+          done
+
+          echo "Release published: https://github.com/$RELEASE_REPO/releases/tag/$TAG"
+
+  # ── Step 4: build the Linux Flatpak and attach it to the release ──
+  # The tag is pushed by the tag job's GITHUB_TOKEN, so it cannot fire
+  # flatpak.yml's `push` trigger (GitHub anti-recursion). We call it directly
+  # instead; it builds from the tag and uploads to the release just published.
+  flatpak:
+    needs: [check, publish]
+    if: needs.check.outputs.should_run == 'true'
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      tag: ${{ needs.check.outputs.tag }}
+    permissions:
+      contents: write
