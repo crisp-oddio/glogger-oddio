@@ -1,5 +1,8 @@
 <template>
-  <div class="card dashboard-card-bg flex flex-col h-100" ref="cardRef">
+  <div
+    class="card dashboard-card-bg flex flex-col h-100 relative"
+    ref="cardRef"
+    :style="effectiveWidth ? { width: effectiveWidth + 'px', maxWidth: '100%' } : undefined">
     <!-- Title bar — drag handle -->
     <div class="dashboard-card-handle flex items-center gap-2 px-3 py-1 border-b border-border-default cursor-grab active:cursor-grabbing bg-surface-base/30 select-none">
       <span class="text-xs font-bold text-text-secondary uppercase tracking-wide truncate">{{ title }}</span>
@@ -27,15 +30,30 @@
     <div class="p-4 flex-1 min-h-0 overflow-scroll">
       <slot />
     </div>
+
+    <!-- Right-edge resize handle — drags the X axis only -->
+    <div
+      class="dashboard-card-resize absolute top-0 right-0 h-full w-1.5 cursor-ew-resize select-none z-10 hover:bg-accent/40"
+      :class="{ 'bg-accent/40': dragWidth != null }"
+      title="Drag to resize width — double-click to reset"
+      @pointerdown="onResizeStart"
+      @dblclick="onResizeReset"></div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, useSlots } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   title: string
   cardId?: string
+  /** Persisted explicit width in px; undefined = stretch to grid cell. */
+  width?: number
+}>()
+
+const emit = defineEmits<{
+  /** Emitted on resize release; 0 means "reset to default width". */
+  (e: 'resize', width: number): void
 }>()
 
 const slots = useSlots()
@@ -44,6 +62,49 @@ const configOpen = ref(false)
 const cardRef = ref<HTMLElement | null>(null)
 const popoverRef = ref<HTMLElement | null>(null)
 const popoverAlignClass = ref('right-0')
+
+// --- Width resize (X axis only) -----------------------------------------
+const MIN_WIDTH = 200
+// While dragging, dragWidth holds the live width for instant feedback; the
+// persisted prop only updates once on release.
+const dragWidth = ref<number | null>(null)
+const effectiveWidth = computed(() => dragWidth.value ?? props.width)
+
+let startX = 0
+let startW = 0
+let maxW = 0
+
+function onResizeMove(e: PointerEvent) {
+  const w = Math.round(startW + (e.clientX - startX))
+  dragWidth.value = Math.max(MIN_WIDTH, Math.min(w, maxW))
+}
+
+function onResizeEnd() {
+  window.removeEventListener('pointermove', onResizeMove)
+  window.removeEventListener('pointerup', onResizeEnd)
+  if (dragWidth.value != null) emit('resize', dragWidth.value)
+  dragWidth.value = null
+}
+
+function onResizeStart(e: PointerEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (!cardRef.value) return
+  startX = e.clientX
+  startW = cardRef.value.offsetWidth
+  // Cap growth at the grid cell the card lives in.
+  maxW = cardRef.value.parentElement?.clientWidth ?? startW
+  dragWidth.value = startW
+  window.addEventListener('pointermove', onResizeMove)
+  window.addEventListener('pointerup', onResizeEnd)
+}
+
+function onResizeReset(e: MouseEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  dragWidth.value = null
+  emit('resize', 0)
+}
 
 // Position popover so it doesn't overflow the viewport
 watch(configOpen, async (open) => {
@@ -80,6 +141,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('pointermove', onResizeMove)
+  window.removeEventListener('pointerup', onResizeEnd)
 })
 </script>
 

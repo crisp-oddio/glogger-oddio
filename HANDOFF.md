@@ -1,5 +1,60 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-22 (Session 20 — README refresh + screenshots, dev-sync hook, resizable widgets)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (synced even with `main` at v0.9.24; widget-resize committed on top)
+**Status:** ✅ Working, verified live in `npm run tauri dev` (app interactive, auto-loaded oddio@Arisetsu,
+no migration/panic errors). `vue-tsc --noEmit` clean.
+
+## TL;DR — Session 20
+
+Three things this session, all small:
+
+### 1. README refresh + real screenshots (on `main`, `aab724f`)
+Folded the weekend's features (drop-rate DB CSV/zone/loadout, harvest stats, Combat Wisdom, Vendor
+Council earnings, Statehelm favor-falloff, Stall Tracker **Trends** tab, chat-authoritative survey
+loot) into [README.md](README.md)'s feature list, and replaced the "Screenshots coming soon"
+placeholder with a 5-shot table (Dashboard / Build Planner / Vaults / Crafting Projects / Farming
+Database) saved under [docs/screenshots/readme/](docs/screenshots/readme/) as `.webp`.
+- **Repo-state gotcha discovered:** by this session `origin/dev` and the old PR branch had been
+  **deleted** on the remote (the repo moved to a release-PR flow — there's now a `ci/release-pr-flow`
+  branch + `release/v0.9.24`). `main` had advanced 46 commits (all the weekend work merged via the
+  v0.9.24 release) and someone had hand-edited `README.md` on `main` (the new "community fork by
+  oddio" About block). So the README edits were **re-applied on top of current `main`** to preserve
+  that About block, then pushed straight to `main`. PR #16 turned out already-merged into the
+  (now-deleted) `dev`. Recreated local→`origin/dev` by fast-forwarding `dev` to `main` and pushing.
+
+### 2. Auto-sync hook: dev follows main on every push
+Added a **PostToolUse/Bash hook** (filtered `if: Bash(git push*)`) in
+[.claude/settings.local.json](.claude/settings.local.json) that, after any successful `git push`,
+fast-forwards local `dev` to `main` **without switching the checked-out branch**: if `dev` is
+checked out it runs `git merge --ff-only main`, else `git fetch . main:dev`. Only ever
+fast-forwards (no force), emits a "local dev synced to main" system message. Personal/machine-local
+(local settings file), not committed. NOTE: if it doesn't fire, open `/hooks` once to reload config.
+
+### 3. Resizable widgets — X-axis side drag (committed this session)
+The dashboard is a CSS grid (`repeat(auto-fill, minmax(280px, 1fr))`) where every card is `h-100`
+(fixed height — so Y was already locked). Added a **right-edge drag handle** to
+[DashboardCard.vue](src/components/Dashboard/DashboardCard.vue):
+- Thin `cursor-ew-resize` strip on the right edge (no corner handle), highlights on hover/drag.
+- Drags **width only**; `dragWidth` ref gives live feedback, persists once on pointerup (debounced).
+- Clamped **min 200px** → **max = parent grid-cell width** (`parentElement.clientWidth`).
+- **Double-click the handle = reset** (emits `resize` 0 → parent deletes the key → back to stretch).
+- Per-widget widths stored in new `cardWidths: Record<string,number>` under the `dashboard` view
+  prefs ([DashboardView.vue](src/components/Dashboard/DashboardView.vue) `setCardWidth`); survive reload.
+- **Design note / open choice:** because it's a uniform grid, shrinking a card narrower than its
+  cell leaves a **gap to the right** (no neighbor reflow) — the card just gets narrower in place.
+  Alternative not taken: snap between column spans (1→2→4) so neighbors reflow. User is happy with
+  the in-place shrink for now ("looks great").
+- **Verification caveat:** the browser-only preview (`npm run dev`) **can't run Tauri `invoke()`**
+  (documented limitation — `get_cache_status … reading 'invoke'`), so it stalls on the splash and the
+  dashboard never mounts. Verified instead via `vue-tsc` clean + the **native `npm run tauri dev`**
+  build, which the user click-tested live and approved.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-21 (Session 19 — Drop database: CSV, zones, combat-loadout segmentation)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (base v0.9.20; these commits are **unreleased** — opened a `dev → main` PR)
