@@ -87,7 +87,7 @@ Multi-zone route planner with teleport-aware pathfinding. Respects bind location
 
 Grab the latest release for your platform:
 
-**[Download Latest Release](https://github.com/danielout/glogger/releases/latest)**
+**[Download Latest Release](https://github.com/crisp-oddio/glogger-oddio/releases)**
 
 | Platform | Installer |
 |----------|-----------|
