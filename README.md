@@ -38,7 +38,7 @@ Instructions available in short (<2 minutes) video form here. Featuring Cheb! ht
 ## Features
 
 ### Dashboard
-Customizable widget grid with drag-to-reorder. Widgets include live skill tracking, item gain/loss feeds, currency changes, zone info with NPC favor, death tracker, watchword alerts, Words of Power capture, trip planner, Statehelm gifting progress, critical resource tracking, and personal notes.
+Customizable widget grid with drag-to-reorder. Widgets include live skill tracking, item gain/loss feeds, currency changes, zone info with NPC favor, death tracker, watchword alerts, Words of Power capture (with wiki-sourced category/level grouping and CSV export), trip planner, Statehelm gifting progress (favor-aware, so maxed NPCs fall off and the next-best backfills), Vendor Council tracking (Available + Earned tabs — current-period and lifetime councils earned per NPC), Combat Wisdom tracker (session totals plus per-monster reuse-cooldown countdowns learned from your own kill history), XP Rate / Prodigy Tracker, critical resource tracking, and personal notes.
 
 ### Character
 - **Skills** — Live XP tracking with session gains, progression charts, and CDN-enriched skill details
@@ -67,15 +67,16 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 
 ### Economics
 - **Market Prices** — Player-maintained price database
-- **Farming** — Session-based profitability tracking, as well as lasting database information with drop rates
-- **Surveying** — Full survey session tracker with analytics, session history, and loot attribution
-- **Stall Tracker** — Shop log parsing with sales, revenue, and inventory analytics
+- **Farming** — Session-based profitability tracking, with a per-item drop-rate hover (active session and history) and skinning/butchering harvest detail (skill level, equipment bonus, anatomy level at the time of harvest)
+- **Drop-Rate Database** — Community-sharable kill/loot dataset under the Farming tab. Tracks every lootable corpse search (not just chat kill messages), is zone-aware (the same monster drops differently in different areas) and combat-loadout-aware (drop tables filtered by your equipped combat-skill pair, with an "unattributed" baseline for legacy/imported data). CSV import/export (auto-detects aggregated or raw per-kill event sheets), permanent merged imports, and a searchable Monsters/Items/Harvested browser
+- **Surveying** — Full survey session tracker with analytics, session history, and loot attribution (chat-log-authoritative, so it works even when verbose Player.log item logging doesn't reach you)
+- **Stall Tracker** — Shop log parsing with sales, revenue, and inventory analytics, plus a **Trends** tab charting sales over time
 
 ### Chat Logs
 Full-text search across all chat channels. Browse by channel, tells, party, nearby, guild, or system. Watchword alerts let you set up keyword-based notifications for trade chat and more. Item references in chat are linked to the data browser.
 
 ### Data Browser
-Browse the full Project: Gorgon CDN dataset — items, skills, abilities, recipes, quests, NPCs, enemies, areas, effects, lorebooks, and titles. Hover tooltips, click-to-navigate, search, and favorites.
+Browse the full Project: Gorgon CDN dataset — items, skills, abilities, recipes, quests, NPCs, enemies, areas, effects, lorebooks, and titles. Hover tooltips, click-to-navigate, search, and favorites. Enemy detail pages show Kill Stats and Harvest Stats (what a monster skins/butchers into) pulled from your own logged data.
 
 ### Unified Search
 Scryfall-inspired structured query syntax across 14 searchable categories. Quick search overlay with `Ctrl+F`.
@@ -85,7 +86,14 @@ Multi-zone route planner with teleport-aware pathfinding. Respects bind location
 
 ## Screenshots
 
-*Screenshots coming soon — in the meantime, install the app and explore!*
+| | |
+|---|---|
+| ![Dashboard](docs/screenshots/readme/dashboard.webp) | ![Build Planner](docs/screenshots/readme/build-planner.webp) |
+| Dashboard — widget grid | Character → Build Planner |
+| ![Vaults](docs/screenshots/readme/vaults.webp) | ![Crafting Projects](docs/screenshots/readme/crafting-projects.webp) |
+| Inventory → Vaults | Crafting → Projects |
+| ![Farming Database](docs/screenshots/readme/farming-database.webp) | |
+| Economics → Farming → Database | |
 
 ## Download
 
