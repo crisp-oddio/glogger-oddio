@@ -82,18 +82,28 @@ function onResizeMove(e: PointerEvent) {
 function onResizeEnd() {
   window.removeEventListener('pointermove', onResizeMove)
   window.removeEventListener('pointerup', onResizeEnd)
-  if (dragWidth.value != null) emit('resize', dragWidth.value)
+  // Only persist if the width actually changed — a stray click (no drag) on
+  // the handle must not pin the widget at its current width.
+  if (dragWidth.value != null && dragWidth.value !== startW) {
+    emit('resize', dragWidth.value)
+  }
   dragWidth.value = null
 }
 
 function onResizeStart(e: PointerEvent) {
   e.preventDefault()
   e.stopPropagation()
-  if (!cardRef.value) return
+  const el = cardRef.value
+  if (!el) return
   startX = e.clientX
-  startW = cardRef.value.offsetWidth
-  // Cap growth at the grid cell the card lives in.
-  maxW = cardRef.value.parentElement?.clientWidth ?? startW
+  startW = el.offsetWidth
+  // Upper bound = the card's natural (stretched) width in its own grid cell.
+  // parentElement is the whole grid, not the cell, so measure directly by
+  // briefly clearing any explicit inline width, then restore it before paint.
+  const saved = el.style.width
+  el.style.width = ''
+  maxW = el.offsetWidth
+  el.style.width = saved
   dragWidth.value = startW
   window.addEventListener('pointermove', onResizeMove)
   window.addEventListener('pointerup', onResizeEnd)
