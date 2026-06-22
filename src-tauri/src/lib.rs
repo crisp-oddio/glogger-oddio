@@ -885,6 +885,7 @@ pub fn run() {
             db::stall_tracker_commands::get_stall_stats,
             db::stall_tracker_commands::get_stall_revenue,
             db::stall_tracker_commands::get_stall_inventory,
+            db::stall_tracker_commands::get_stall_sales_timeseries,
             db::stall_tracker_commands::get_stall_filter_options,
             db::stall_tracker_commands::toggle_stall_event_ignored,
             db::stall_tracker_commands::clear_stall_events,

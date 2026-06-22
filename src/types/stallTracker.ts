@@ -141,6 +141,37 @@ export interface StallInventoryParams {
   periodDays?: number | null;
 }
 
+// ── Sales time-series (Trends tab) ──────────────────────────────────────
+
+/** One drawable line. `gold` and `units` both align to `SalesTimeseriesResult.periods`. */
+export interface TimeseriesLine {
+  /** Item name, or the literal `"Total"` for the aggregate line. */
+  item: string;
+  gold: number[];
+  units: number[];
+  total_gold: number;
+  total_units: number;
+}
+
+export interface SalesTimeseriesResult {
+  /** X-axis buckets, oldest-first. Series indices align to this. */
+  periods: RevenuePeriod[];
+  lines: TimeseriesLine[];
+  /** Bucket granularity used: `"hour" | "day" | "week" | "month"`. */
+  bucket: string;
+}
+
+export type TrendsPeriod = '1d' | '3d' | '7d' | '1m' | 'all';
+
+export interface StallTimeseriesParams {
+  owner?: string | null;
+  period?: TrendsPeriod | null;
+  /** Set for single-item mode. Mutually exclusive with `topN`. */
+  item?: string | null;
+  /** 5 or 10 for top-grossing mode. Both `item`/`topN` unset → Total line. */
+  topN?: number | null;
+}
+
 // ── Import / Export ─────────────────────────────────────────────────────
 
 export interface ImportResult {
