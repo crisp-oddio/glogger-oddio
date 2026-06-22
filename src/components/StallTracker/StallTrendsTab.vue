@@ -87,20 +87,25 @@ import type {
 
 const store = useStallTrackerStore()
 
-// Ten light, matte/pastel hues — one per line. Top-10 mode draws all ten;
+// Ten muted, matte mid-tone hues — one per line. Top-10 mode draws all ten;
 // Top-5 uses the first five; single-item and Total use the first.
 // Index-based so each line on the chart is a distinct color.
+//
+// These sit a notch deeper/more saturated than true pastels on purpose: very
+// light pale colors wash out toward white on the dark background and — more so
+// — under Windows HDR SDR-tone-mapping. Mid-tone (≈55-65% lightness, moderate
+// chroma) keeps them matte/non-vivid while holding a readable hue.
 const PALETTE = [
-  '#8fb8de', // soft blue
-  '#e0a3a3', // soft rose
-  '#a8d5a2', // soft green
-  '#c9b3e6', // soft lavender
-  '#e6cf9c', // soft sand
-  '#9ed6cf', // soft teal
-  '#e6b89c', // soft apricot
-  '#d6a8cf', // soft mauve
-  '#b8c99c', // soft sage
-  '#a8b6d9', // soft periwinkle
+  '#5f9ad4', // blue
+  '#d18585', // dusty rose
+  '#82c07b', // sage green
+  '#a98fd6', // muted violet
+  '#d9bd6e', // ochre / gold
+  '#6dc0b6', // teal
+  '#dca06e', // clay / amber
+  '#c98cbf', // orchid
+  '#a4b86e', // olive
+  '#8395cc', // indigo / periwinkle
 ]
 
 type SummaryMode = 'top5' | 'top10' | 'total'
@@ -350,6 +355,10 @@ const config = computed<VueUiXyConfig>(() => {
       strokeWidth: 2,
       radius: 3,
       useArea: false,
+      // Default-true gradient lightens each line toward its center, which
+      // washes our light pastel strokes out to near-white. Force solid color.
+      useGradient: false,
+      area: { useGradient: false },
       dot: { useSerieColor: true, strokeWidth: 0 },
       labels: { show: false },
     },
