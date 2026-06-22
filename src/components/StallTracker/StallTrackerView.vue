@@ -62,6 +62,7 @@
         <StallSalesTab v-if="activeTab === 'sales'" />
         <StallRevenueTab v-else-if="activeTab === 'revenue'" />
         <StallInventoryTab v-else-if="activeTab === 'inventory'" />
+        <StallTrendsTab v-else-if="activeTab === 'trends'" />
       </template>
     </div>
 
@@ -111,6 +112,7 @@ import EmptyState from '../Shared/EmptyState.vue'
 import StallSalesTab from './StallSalesTab.vue'
 import StallRevenueTab from './StallRevenueTab.vue'
 import StallInventoryTab from './StallInventoryTab.vue'
+import StallTrendsTab from './StallTrendsTab.vue'
 import StallShopLogTab from './StallShopLogTab.vue'
 import { useStallTrackerStore } from '../../stores/stallTrackerStore'
 import { useViewPrefs } from '../../composables/useViewPrefs'
@@ -298,6 +300,7 @@ const tabs: Tab[] = [
   { id: 'sales', label: 'Sales' },
   { id: 'revenue', label: 'Revenue' },
   { id: 'inventory', label: 'Inventory' },
+  { id: 'trends', label: 'Trends' },
 ]
 const { prefs: stallPrefs, update: updateStallPrefs } = useViewPrefs('stallTracker', { activeTab: 'sales' })
 const activeTab = computed({

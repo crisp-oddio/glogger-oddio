@@ -1,8 +1,9 @@
 use super::DbPool;
 use crate::shop_log_parser::{parse_shop_log, ShopLog};
 use crate::stall_aggregations::{
-    aggregate_inventory, aggregate_revenue, Granularity, InventoryEvent, InventoryResult,
-    RevenueEvent, RevenueResult,
+    aggregate_inventory, aggregate_revenue, aggregate_sales_timeseries, Granularity,
+    InventoryEvent, InventoryResult, RevenueEvent, RevenueResult, SalesTimeseriesResult,
+    TimeseriesEvent, TimeseriesMode, TimeseriesPeriod,
 };
 use chrono::{Datelike, Local};
 use rusqlite::types::Value;
@@ -657,6 +658,97 @@ pub fn get_stall_inventory(
 
     let period_days = params.period_days.unwrap_or(7);
     Ok(aggregate_inventory(events, period_days))
+}
+
+/// Parameters for `get_stall_sales_timeseries` (Trends tab).
+///
+/// `item`, `top_n`, and "neither" are mutually exclusive on the frontend and
+/// select the line mode here:
+/// - `item = Some(name)` → single-item line.
+/// - `top_n = Some(5|10)` → that many top-grossing item lines.
+/// - both `None` → a single `Total` line.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StallTimeseriesParams {
+    pub owner: Option<String>,
+    /// `"1d" | "3d" | "7d" | "1m" | "all"`. Defaults to `"7d"`.
+    pub period: Option<String>,
+    pub item: Option<String>,
+    pub top_n: Option<i64>,
+}
+
+fn parse_timeseries_period(s: &str) -> TimeseriesPeriod {
+    match s {
+        "1d" => TimeseriesPeriod::Day1,
+        "3d" => TimeseriesPeriod::Day3,
+        "1m" => TimeseriesPeriod::Month1,
+        "all" => TimeseriesPeriod::AllTime,
+        _ => TimeseriesPeriod::Day7,
+    }
+}
+
+/// Sales-over-time series for the Trends tab. Always over `bought + non-ignored`
+/// for the owner. Returns both gold and units series per line so the frontend
+/// Gold/Units toggle never refetches. Returns an empty result on missing owner.
+///
+/// Unlike Revenue, this never filters by item in SQL: `TopGrossing` ranking and
+/// the `Total` line need every item, and `Item` mode filters in the aggregator
+/// so the window can anchor to that item's own latest sale.
+#[tauri::command]
+pub fn get_stall_sales_timeseries(
+    db: State<'_, DbPool>,
+    params: StallTimeseriesParams,
+) -> Result<SalesTimeseriesResult, String> {
+    let filters = StallEventsFilters {
+        owner: params.owner,
+        include_ignored: Some(false),
+        ..Default::default()
+    };
+    let Some((where_sql, bound)) = build_filter_where(&filters, Some("bought")) else {
+        return Ok(SalesTimeseriesResult {
+            periods: Vec::new(),
+            lines: Vec::new(),
+            bucket: "day".to_string(),
+        });
+    };
+
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+
+    let sql = format!(
+        "SELECT item, event_at, quantity, price_total FROM stall_events{where_sql} \
+         AND item IS NOT NULL AND event_at IS NOT NULL AND price_total IS NOT NULL"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to prepare timeseries query: {e}"))?;
+    let events = stmt
+        .query_map(rusqlite::params_from_iter(bound.iter()), |row| {
+            Ok(TimeseriesEvent {
+                item: row.get::<_, String>(0)?,
+                event_at: row.get::<_, String>(1)?,
+                quantity: row.get::<_, i64>(2)?,
+                price_total: row.get::<_, i64>(3)?,
+            })
+        })
+        .map_err(|e| format!("Timeseries query failed: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read timeseries results: {e}"))?;
+
+    let period = params
+        .period
+        .as_deref()
+        .map(parse_timeseries_period)
+        .unwrap_or(TimeseriesPeriod::Day7);
+
+    let mode = match (opt_nonempty(&params.item), params.top_n) {
+        (Some(item), _) => TimeseriesMode::Item(item.to_string()),
+        (None, Some(n)) if n > 0 => TimeseriesMode::TopGrossing(n as usize),
+        _ => TimeseriesMode::Total,
+    };
+
+    Ok(aggregate_sales_timeseries(events, period, mode))
 }
 
 /// Delete every stall event for a single character. Requires non-empty owner —

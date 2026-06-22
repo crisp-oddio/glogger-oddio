@@ -8,9 +8,9 @@
 ///    are bounded by the result shape (items × periods, not events).
 /// 2. **Testability** — every piece of the math is unit-testable without
 ///    fixtures or a SQLite handle.
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Weekday};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike, Weekday};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 // ============================================================
 // Revenue aggregation
@@ -540,6 +540,408 @@ pub fn aggregate_inventory(
 }
 
 // ============================================================
+// Sales time-series (Trends tab)
+// ============================================================
+
+/// A single `bought` event for the Trends chart. Like `RevenueEvent` but also
+/// carries `quantity`, so the chart can plot units-sold as well as gold.
+#[derive(Debug, Clone)]
+pub struct TimeseriesEvent {
+    pub item: String,
+    pub event_at: String,
+    pub quantity: i64,
+    pub price_total: i64,
+}
+
+/// Look-back window for the Trends chart.
+///
+/// The window is anchored to the **latest relevant sale in the data**, NOT to
+/// wall-clock now. This mirrors the Inventory tab's "most recent active dates"
+/// convention: a player who imported historical books but hasn't sold in a
+/// week still gets a populated "last 7 days" chart instead of an empty one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeseriesPeriod {
+    Day1,    // 24 hourly buckets ending at the anchor hour
+    Day3,    // 3 daily buckets
+    Day7,    // 7 daily buckets
+    Month1,  // 30 daily buckets
+    AllTime, // full span; daily / weekly / monthly chosen by length
+}
+
+/// Which lines the chart draws. The item picker and summary picker on the
+/// frontend are mutually exclusive, so exactly one of these is in play.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeseriesMode {
+    /// One line: the named item only. The window anchors to *this item's*
+    /// latest sale so the chart stays focused on when it was actually active.
+    Item(String),
+    /// N lines: the N highest-grossing (by gold) items within the window.
+    TopGrossing(usize),
+    /// One line: every item summed per bucket.
+    Total,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bucket {
+    Hour,
+    Day,
+    Week,
+    Month,
+}
+
+impl Bucket {
+    fn as_str(self) -> &'static str {
+        match self {
+            Bucket::Hour => "hour",
+            Bucket::Day => "day",
+            Bucket::Week => "week",
+            Bucket::Month => "month",
+        }
+    }
+}
+
+/// One drawable line. `gold` and `units` are both returned so the frontend's
+/// Gold/Units toggle never has to refetch — the payload is bounded by
+/// `lines × periods`, not by event count.
+#[derive(Debug, Clone, Serialize)]
+pub struct TimeseriesLine {
+    /// Item name, or the literal `"Total"` for the aggregate line.
+    pub item: String,
+    pub gold: Vec<i64>,
+    pub units: Vec<i64>,
+    pub total_gold: i64,
+    pub total_units: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SalesTimeseriesResult {
+    /// X-axis buckets, oldest-first. Series indices align to this vector.
+    pub periods: Vec<RevenuePeriod>,
+    pub lines: Vec<TimeseriesLine>,
+    /// Bucket granularity actually used: `"hour" | "day" | "week" | "month"`.
+    pub bucket: String,
+}
+
+const TS_ALL_DAILY_MAX_DAYS: i64 = 92;
+const TS_ALL_WEEKLY_MAX_DAYS: i64 = 730;
+
+fn empty_timeseries(bucket: Bucket) -> SalesTimeseriesResult {
+    SalesTimeseriesResult {
+        periods: Vec::new(),
+        lines: Vec::new(),
+        bucket: bucket.as_str().to_string(),
+    }
+}
+
+fn bucket_key(dt: &NaiveDateTime, bucket: Bucket) -> String {
+    match bucket {
+        Bucket::Hour => dt.format("%Y-%m-%d %H").to_string(),
+        Bucket::Day => dt.format("%Y-%m-%d").to_string(),
+        Bucket::Week => {
+            let iso = dt.date().iso_week();
+            format!("{}-W{:02}", iso.year(), iso.week())
+        }
+        Bucket::Month => dt.format("%Y-%m").to_string(),
+    }
+}
+
+fn ts_label(key: &str, bucket: Bucket, show_year: bool) -> String {
+    match bucket {
+        Bucket::Hour => {
+            // key = "YYYY-MM-DD HH" → "2PM"
+            if let Ok(dt) =
+                NaiveDateTime::parse_from_str(&format!("{key}:00:00"), "%Y-%m-%d %H:%M:%S")
+            {
+                dt.format("%-l%p").to_string()
+            } else {
+                key.to_string()
+            }
+        }
+        Bucket::Day => {
+            if let Ok(d) = NaiveDate::parse_from_str(key, "%Y-%m-%d") {
+                if show_year {
+                    d.format("%b %-d %Y").to_string()
+                } else {
+                    d.format("%b %-d").to_string()
+                }
+            } else {
+                key.to_string()
+            }
+        }
+        Bucket::Week => period_label(key, Granularity::Weekly, show_year),
+        Bucket::Month => period_label(key, Granularity::Monthly, false),
+    }
+}
+
+/// Advance a date by one calendar month, clamping the day (Jan 31 → Feb 28/29).
+fn add_one_month(d: NaiveDate) -> NaiveDate {
+    let (y, m) = if d.month() == 12 {
+        (d.year() + 1, 1)
+    } else {
+        (d.year(), d.month() + 1)
+    };
+    // Walk back from the target day until a valid date exists.
+    let mut day = d.day();
+    loop {
+        if let Some(nd) = NaiveDate::from_ymd_opt(y, m, day) {
+            return nd;
+        }
+        day -= 1;
+        if day == 0 {
+            // Unreachable for real calendars, but never loop forever.
+            return NaiveDate::from_ymd_opt(y, m, 1).unwrap();
+        }
+    }
+}
+
+/// Build the ordered list of bucket keys spanning `[start, anchor]` inclusive,
+/// including empty buckets (a no-sale day is a real 0, not a gap). Returns the
+/// keys oldest-first plus a `key → index` map for O(1) accumulation.
+fn enumerate_buckets(
+    start: NaiveDateTime,
+    anchor: NaiveDateTime,
+    bucket: Bucket,
+) -> (Vec<String>, HashMap<String, usize>) {
+    let mut keys: Vec<String> = Vec::new();
+    match bucket {
+        Bucket::Hour => {
+            let mut cur = start
+                .date()
+                .and_hms_opt(start.hour(), 0, 0)
+                .unwrap_or(start);
+            let end = anchor;
+            while cur <= end {
+                keys.push(bucket_key(&cur, bucket));
+                cur += Duration::hours(1);
+            }
+        }
+        Bucket::Day => {
+            let mut cur = start.date();
+            let end = anchor.date();
+            while cur <= end {
+                keys.push(bucket_key(&cur.and_hms_opt(0, 0, 0).unwrap(), bucket));
+                cur += Duration::days(1);
+            }
+        }
+        Bucket::Week => {
+            // Start at the Monday of the start week.
+            let iso = start.date().iso_week();
+            let mut cur = NaiveDate::from_isoywd_opt(iso.year(), iso.week(), Weekday::Mon)
+                .unwrap_or_else(|| start.date());
+            let end = anchor.date();
+            while cur <= end {
+                keys.push(bucket_key(&cur.and_hms_opt(0, 0, 0).unwrap(), bucket));
+                cur += Duration::days(7);
+            }
+        }
+        Bucket::Month => {
+            let mut cur = NaiveDate::from_ymd_opt(start.year(), start.month(), 1)
+                .unwrap_or_else(|| start.date());
+            let end = NaiveDate::from_ymd_opt(anchor.year(), anchor.month(), 1)
+                .unwrap_or_else(|| anchor.date());
+            while cur <= end {
+                keys.push(bucket_key(&cur.and_hms_opt(0, 0, 0).unwrap(), bucket));
+                cur = add_one_month(cur);
+            }
+        }
+    }
+
+    let index: HashMap<String, usize> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (k.clone(), i))
+        .collect();
+    (keys, index)
+}
+
+/// Resolve the `(start, anchor, bucket)` window for a given period, anchored to
+/// the supplied event datetimes (already filtered to the mode's relevant set).
+fn resolve_window(
+    min_dt: NaiveDateTime,
+    anchor: NaiveDateTime,
+    period: TimeseriesPeriod,
+) -> (NaiveDateTime, NaiveDateTime, Bucket) {
+    match period {
+        TimeseriesPeriod::Day1 => {
+            let anchor_hour = anchor
+                .date()
+                .and_hms_opt(anchor.hour(), 0, 0)
+                .unwrap_or(anchor);
+            (anchor_hour - Duration::hours(23), anchor_hour, Bucket::Hour)
+        }
+        TimeseriesPeriod::Day3 => day_window(anchor, 2),
+        TimeseriesPeriod::Day7 => day_window(anchor, 6),
+        TimeseriesPeriod::Month1 => day_window(anchor, 29),
+        TimeseriesPeriod::AllTime => {
+            let start = min_dt
+                .date()
+                .and_hms_opt(0, 0, 0)
+                .unwrap_or(min_dt);
+            let span_days = (anchor.date() - min_dt.date()).num_days();
+            let bucket = if span_days <= TS_ALL_DAILY_MAX_DAYS {
+                Bucket::Day
+            } else if span_days <= TS_ALL_WEEKLY_MAX_DAYS {
+                Bucket::Week
+            } else {
+                Bucket::Month
+            };
+            (start, anchor, bucket)
+        }
+    }
+}
+
+fn day_window(anchor: NaiveDateTime, days_back: i64) -> (NaiveDateTime, NaiveDateTime, Bucket) {
+    let anchor_day = anchor.date().and_hms_opt(0, 0, 0).unwrap_or(anchor);
+    (anchor_day - Duration::days(days_back), anchor, Bucket::Day)
+}
+
+/// Aggregate `bought` events into per-line, per-bucket gold/units series.
+///
+/// The caller passes **every** bought event for the owner (not pre-filtered by
+/// item) so `TopGrossing` ranking and the `Total` line see the full picture.
+/// `Item` mode filters internally and anchors the window to that item alone.
+pub fn aggregate_sales_timeseries(
+    events: impl IntoIterator<Item = TimeseriesEvent>,
+    period: TimeseriesPeriod,
+    mode: TimeseriesMode,
+) -> SalesTimeseriesResult {
+    // Parse once; drop rows with an unparseable event_at.
+    let parsed: Vec<(NaiveDateTime, TimeseriesEvent)> = events
+        .into_iter()
+        .filter_map(|e| parse_event_at(&e.event_at).map(|dt| (dt, e)))
+        .collect();
+
+    if parsed.is_empty() {
+        return empty_timeseries(Bucket::Day);
+    }
+
+    // Anchor to the mode's relevant events: Item mode centres on that item's
+    // own activity; Total / TopGrossing use the global span.
+    let relevant: Vec<&(NaiveDateTime, TimeseriesEvent)> = match &mode {
+        TimeseriesMode::Item(item) => parsed.iter().filter(|(_, e)| &e.item == item).collect(),
+        _ => parsed.iter().collect(),
+    };
+    if relevant.is_empty() {
+        return empty_timeseries(Bucket::Day);
+    }
+
+    let anchor = relevant.iter().map(|(dt, _)| *dt).max().unwrap();
+    let min_dt = relevant.iter().map(|(dt, _)| *dt).min().unwrap();
+
+    let (start, anchor, bucket) = resolve_window(min_dt, anchor, period);
+    let (keys, index) = enumerate_buckets(start, anchor, bucket);
+    let n = keys.len();
+    if n == 0 {
+        return empty_timeseries(bucket);
+    }
+
+    let show_year = keys.first().map(|k| &k[..4]) != keys.last().map(|k| &k[..4]);
+    let periods: Vec<RevenuePeriod> = keys
+        .iter()
+        .map(|k| RevenuePeriod {
+            key: k.clone(),
+            label: ts_label(k, bucket, show_year),
+        })
+        .collect();
+
+    // Accumulate gold/units per item across the in-window buckets.
+    struct Acc {
+        gold: Vec<i64>,
+        units: Vec<i64>,
+        total_gold: i64,
+        total_units: i64,
+    }
+    let mut by_item: BTreeMap<String, Acc> = BTreeMap::new();
+
+    for (dt, e) in &parsed {
+        if let TimeseriesMode::Item(item) = &mode {
+            if &e.item != item {
+                continue;
+            }
+        }
+        let key = bucket_key(dt, bucket);
+        let Some(&i) = index.get(&key) else {
+            continue; // outside the window
+        };
+        let acc = by_item.entry(e.item.clone()).or_insert_with(|| Acc {
+            gold: vec![0; n],
+            units: vec![0; n],
+            total_gold: 0,
+            total_units: 0,
+        });
+        acc.gold[i] += e.price_total;
+        acc.units[i] += e.quantity;
+        acc.total_gold += e.price_total;
+        acc.total_units += e.quantity;
+    }
+
+    let mut lines: Vec<TimeseriesLine> = Vec::new();
+
+    match mode {
+        TimeseriesMode::Item(item) => {
+            // Single line. Emit zeros if the item had no in-window sales.
+            let acc = by_item.remove(&item);
+            let (gold, units, tg, tu) = match acc {
+                Some(a) => (a.gold, a.units, a.total_gold, a.total_units),
+                None => (vec![0; n], vec![0; n], 0, 0),
+            };
+            lines.push(TimeseriesLine {
+                item,
+                gold,
+                units,
+                total_gold: tg,
+                total_units: tu,
+            });
+        }
+        TimeseriesMode::Total => {
+            let mut gold = vec![0i64; n];
+            let mut units = vec![0i64; n];
+            let mut tg = 0i64;
+            let mut tu = 0i64;
+            for acc in by_item.values() {
+                for i in 0..n {
+                    gold[i] += acc.gold[i];
+                    units[i] += acc.units[i];
+                }
+                tg += acc.total_gold;
+                tu += acc.total_units;
+            }
+            lines.push(TimeseriesLine {
+                item: "Total".to_string(),
+                gold,
+                units,
+                total_gold: tg,
+                total_units: tu,
+            });
+        }
+        TimeseriesMode::TopGrossing(count) => {
+            // Rank by in-window gold desc, item name asc as a stable tiebreak.
+            let mut ranked: Vec<(String, Acc)> = by_item.into_iter().collect();
+            ranked.sort_by(|(a_item, a), (b_item, b)| {
+                b.total_gold
+                    .cmp(&a.total_gold)
+                    .then_with(|| a_item.cmp(b_item))
+            });
+            for (item, acc) in ranked.into_iter().take(count) {
+                lines.push(TimeseriesLine {
+                    item,
+                    gold: acc.gold,
+                    units: acc.units,
+                    total_gold: acc.total_gold,
+                    total_units: acc.total_units,
+                });
+            }
+        }
+    }
+
+    SalesTimeseriesResult {
+        periods,
+        lines,
+        bucket: bucket.as_str().to_string(),
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -927,5 +1329,145 @@ mod tests {
         assert!(r.active_dates.is_empty());
         assert_eq!(r.estimated_value, 0);
         assert_eq!(r.total_sold, 0);
+    }
+
+    // ---------- Sales time-series ----------
+
+    fn ts(item: &str, event_at: &str, qty: i64, total: i64) -> TimeseriesEvent {
+        TimeseriesEvent {
+            item: item.into(),
+            event_at: event_at.into(),
+            quantity: qty,
+            price_total: total,
+        }
+    }
+
+    #[test]
+    fn timeseries_empty_input() {
+        let r = aggregate_sales_timeseries(
+            Vec::<TimeseriesEvent>::new(),
+            TimeseriesPeriod::Day7,
+            TimeseriesMode::Total,
+        );
+        assert!(r.periods.is_empty());
+        assert!(r.lines.is_empty());
+    }
+
+    #[test]
+    fn timeseries_daily_window_anchors_to_latest_event() {
+        // 7-day window ends on the latest sale (Apr 13), so buckets run
+        // Apr 7 .. Apr 13 inclusive = 7 daily buckets, oldest-first.
+        let events = vec![
+            ts("Quality Reins", "2026-04-10 09:00:00", 1, 4500),
+            ts("Quality Reins", "2026-04-13 10:00:00", 2, 9000),
+        ];
+        let r = aggregate_sales_timeseries(events, TimeseriesPeriod::Day7, TimeseriesMode::Total);
+        assert_eq!(r.bucket, "day");
+        assert_eq!(r.periods.len(), 7);
+        assert_eq!(r.periods.first().unwrap().key, "2026-04-07");
+        assert_eq!(r.periods.last().unwrap().key, "2026-04-13");
+        // One Total line; gold lands in the Apr 10 (index 3) and Apr 13 (6) slots.
+        assert_eq!(r.lines.len(), 1);
+        let line = &r.lines[0];
+        assert_eq!(line.item, "Total");
+        assert_eq!(line.gold[3], 4500);
+        assert_eq!(line.gold[6], 9000);
+        assert_eq!(line.units[3], 1);
+        assert_eq!(line.units[6], 2);
+        assert_eq!(line.total_gold, 13500);
+        assert_eq!(line.total_units, 3);
+        // No-sale days are real zeros, not gaps.
+        assert_eq!(line.gold[0], 0);
+    }
+
+    #[test]
+    fn timeseries_total_sums_across_items_per_bucket() {
+        let events = vec![
+            ts("Quality Reins", "2026-04-13 09:00:00", 1, 4500),
+            ts("Nice Saddle", "2026-04-13 10:00:00", 1, 4000),
+        ];
+        let r = aggregate_sales_timeseries(events, TimeseriesPeriod::Day7, TimeseriesMode::Total);
+        let line = &r.lines[0];
+        assert_eq!(*line.gold.last().unwrap(), 8500);
+        assert_eq!(*line.units.last().unwrap(), 2);
+    }
+
+    #[test]
+    fn timeseries_top_grossing_ranks_by_gold_and_limits_count() {
+        let events = vec![
+            ts("Cheap Thing", "2026-04-13 09:00:00", 10, 1000),
+            ts("Mid Thing", "2026-04-13 09:00:00", 1, 5000),
+            ts("Big Thing", "2026-04-13 09:00:00", 1, 40000),
+        ];
+        let r = aggregate_sales_timeseries(
+            events,
+            TimeseriesPeriod::Day7,
+            TimeseriesMode::TopGrossing(2),
+        );
+        // Top 2 by gold: Big Thing (40000) then Mid Thing (5000).
+        assert_eq!(r.lines.len(), 2);
+        assert_eq!(r.lines[0].item, "Big Thing");
+        assert_eq!(r.lines[1].item, "Mid Thing");
+    }
+
+    #[test]
+    fn timeseries_item_mode_anchors_to_that_item() {
+        // Other items sold more recently, but item mode anchors on Quality
+        // Reins' own latest sale (Apr 10) so its 7-day window is Apr 4..10.
+        let events = vec![
+            ts("Quality Reins", "2026-04-10 10:00:00", 1, 4500),
+            ts("Nice Saddle", "2026-04-20 10:00:00", 1, 4000),
+        ];
+        let r = aggregate_sales_timeseries(
+            events,
+            TimeseriesPeriod::Day7,
+            TimeseriesMode::Item("Quality Reins".to_string()),
+        );
+        assert_eq!(r.lines.len(), 1);
+        assert_eq!(r.lines[0].item, "Quality Reins");
+        assert_eq!(r.periods.last().unwrap().key, "2026-04-10");
+        assert_eq!(r.lines[0].total_gold, 4500);
+    }
+
+    #[test]
+    fn timeseries_day1_uses_hourly_buckets() {
+        let events = vec![
+            ts("Quality Reins", "2026-04-13 08:30:00", 1, 4500),
+            ts("Quality Reins", "2026-04-13 14:15:00", 1, 4500),
+        ];
+        let r = aggregate_sales_timeseries(events, TimeseriesPeriod::Day1, TimeseriesMode::Total);
+        assert_eq!(r.bucket, "hour");
+        // 24 hourly buckets ending at 14:00 → 15:00 of the prior day .. 14:00.
+        assert_eq!(r.periods.len(), 24);
+        assert_eq!(r.periods.last().unwrap().key, "2026-04-13 14");
+        let line = &r.lines[0];
+        assert_eq!(line.total_gold, 9000);
+        // 08:00 sale falls outside the 24h window ending 14:00 the same day?
+        // 14:00 - 23h = 15:00 previous day, so 08:30 IS inside.
+        assert_eq!(*line.gold.last().unwrap(), 4500); // the 14:15 sale
+    }
+
+    #[test]
+    fn timeseries_all_time_picks_weekly_for_medium_spans() {
+        // ~100-day span exceeds the 92-day daily cap → weekly buckets.
+        let events = vec![
+            ts("Quality Reins", "2026-01-01 09:00:00", 1, 100),
+            ts("Quality Reins", "2026-04-15 09:00:00", 1, 200),
+        ];
+        let r = aggregate_sales_timeseries(events, TimeseriesPeriod::AllTime, TimeseriesMode::Total);
+        assert_eq!(r.bucket, "week");
+        assert!(r.periods.len() > 12);
+    }
+
+    #[test]
+    fn timeseries_all_time_picks_monthly_for_long_spans() {
+        let events = vec![
+            ts("Quality Reins", "2022-01-01 09:00:00", 1, 100),
+            ts("Quality Reins", "2026-04-15 09:00:00", 1, 200),
+        ];
+        let r = aggregate_sales_timeseries(events, TimeseriesPeriod::AllTime, TimeseriesMode::Total);
+        assert_eq!(r.bucket, "month");
+        assert_eq!(r.periods.first().unwrap().key, "2022-01");
+        assert_eq!(r.periods.last().unwrap().key, "2026-04");
     }
 }
