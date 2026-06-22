@@ -1,7 +1,7 @@
-## What's Changed since v0.9.22
+## What's Changed since v0.9.23
 
-### Features
-- feat(stall-tracker): add Trends tab with sales time-series chart (`6ba059b`)
+### Fixes
+- fix(stall-tracker): deepen Trends chart palette for dark/HDR legibility (`445967b`)
 
 ---
-*2 commits since v0.9.22*
+*4 commits since v0.9.23*
