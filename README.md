@@ -1,12 +1,16 @@
 # Glogger
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![Latest Release](https://img.shields.io/github/v/crisp-oddio/glogger-oddio/releases)](https://github.com/crisp-oddio/glogger-oddio/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
+**[Download Latest Release](https://github.com/crisp-oddio/glogger-oddio/releases)**
 
 A desktop companion app for **[Project: Gorgon](https://projectgorgon.com)**. glogger reads your game's log files in real time and gives you dashboards, analytics, and tools for tracking your gameplay.
 
 ## About
+
+- Community fork managed by oddio of arisetsu. 
+- Huge shoutout to Super for helping figure out how to operate this stuff. Zenith/Danielout - for creating the base application. To Chompynibblers for the inspiration, sharing your database knowledge, and helping finding the necessary tags in the log files to properly implement it. To Derava, your friendship keeps me coming back to the game. May this app continue to serve the entire community on the shoulders of these giants.
+
+
+############ Original Owners Info ############
 
 - Thanks Reyetta, Wogan, Kaeus, Fidge, TwinkleofToes, DisasterGaymer, Cakedydidooda, Lucyfeir and Deradon! Feedback and early testing was super helpful in getting Glogger to where it is now. :D
 - Some things only will work with VIP! This is just a limitation of how and where I can access data. The DataBrowser works no matter what though, and it is a very handy. Nothing in here is intentionally broken because of non-vip. I just can only work with what I have.
@@ -63,7 +67,7 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 
 ### Economics
 - **Market Prices** — Player-maintained price database
-- **Farming** — Session-based profitability tracking
+- **Farming** — Session-based profitability tracking, as well as lasting database information with drop rates
 - **Surveying** — Full survey session tracker with analytics, session history, and loot attribution
 - **Stall Tracker** — Shop log parsing with sales, revenue, and inventory analytics
 
