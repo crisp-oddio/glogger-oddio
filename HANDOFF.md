@@ -3,13 +3,13 @@
 **Date:** 2026-06-23 (Session 21 — four-part feature batch; committing per step)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (base v0.10.0)
-**Status:** 🚧 In progress — a four-task batch, each committed + pushed on completion. `vue-tsc`
-+ `cargo check` run green after every step.
+**Status:** ✅ All four tasks done, each committed + pushed individually. `vue-tsc` + `cargo check`
+green after every step. UI changes (planner dropdowns, dashboard resize) need a `npm run tauri dev`
+click-test — browser preview can't mount the app (needs Tauri `invoke()`).
 
 ## TL;DR — Session 21 (in progress)
 
-A batch of four user-requested features. Each is committed & pushed individually; this entry is
-updated per step.
+A batch of four user-requested features. Each is committed & pushed individually. All four complete.
 
 ### 1. ✅ Periodic farming-session auto-save (crash protection)
 Previously an active farming session lived only in the frontend Pinia store
@@ -60,6 +60,26 @@ while still overriding per item.
 - **Store fix** ([buildPlannerStore.ts](src/stores/buildPlannerStore.ts)) — `updatePreset` used `??`
   for the nullable skill fields, which would have ignored an explicit `null` (the "None" clear).
   Switched to an `in`-operator check so clearing actually persists. `vue-tsc` clean.
+
+### 4. ✅ Dashboard widget resize now reflows neighbours (column-span, not px)
+**Problem (the Session-20 known limitation, now fixed):** the right-edge resize set an explicit
+**pixel width** on the card while it still occupied its full grid-column track(s), so shrinking a
+widget left an unusable gap — no neighbour could move into the freed space.
+**Fix:** resize now changes the card's **grid-column span**, snapping to whole columns, so the grid
+genuinely frees tracks and subsequent widgets reflow into them (live, during the drag).
+- [DashboardCard.vue](src/components/Dashboard/DashboardCard.vue) — `width` prop → `span` prop;
+  applies `style="grid-column: span N"` (overrides the Tailwind `col-span-*` class) when a span is
+  set. The handle measures the grid geometry (`gridTemplateColumns` track count + `columnGap`) from
+  the card's parent grid, derives the current span from rendered width, and snaps the drag to
+  `[1, columnCount]`. Stray-click guard + double-click-to-reset preserved (`resize` 0 = reset).
+- [DashboardView.vue](src/components/Dashboard/DashboardView.vue) — `cardWidths` pref →
+  **`cardSpans`** (`Record<string, number>`); `setCardSpan` stores the override (0 = delete → revert
+  to the widget's default size class). Default `col-span-*` size classes still apply when no override.
+- **Migration note:** old per-widget `cardWidths` (px) are no longer read; affected widgets revert
+  to their default size until resized again — acceptable, clean break from the px approach.
+- **Verification:** `vue-tsc` clean. Not click-tested in-app this step — the browser-only preview
+  can't mount the dashboard (startup needs Tauri `invoke()`), same limitation noted in Session 20;
+  needs a `npm run tauri dev` drag-test to confirm the reflow visually.
 
 ---
 
