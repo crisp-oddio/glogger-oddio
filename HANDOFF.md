@@ -2,10 +2,28 @@
 
 **Date:** 2026-06-23 (Session 21 — four-part feature batch; committing per step)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` (base v0.10.0)
+**Branch:** `dev` (reconciled to v0.10.1 base; **v0.11.0 release PR open**)
 **Status:** ✅ All four tasks done, each committed + pushed individually. `vue-tsc` + `cargo check`
-green after every step. UI changes (planner dropdowns, dashboard resize) need a `npm run tauri dev`
-click-test — browser preview can't mount the app (needs Tauri `invoke()`).
+green after every step; farming upsert covered by 2 passing unit tests; CI **validate** (build +
+`cargo test`) green. UI changes (planner dropdowns, dashboard resize) still need a `npm run tauri
+dev` click-test — computer-use couldn't drive the dev window (grant resolves to the *portable* exe
+path, masking the dev build), and the browser preview can't mount the app (needs Tauri `invoke()`).
+
+## Release — v0.11.0 (Session 21)
+
+Repo uses a **two-phase release flow** now (CLAUDE.md's old "push tag" note is stale):
+1. **Release** workflow (`release.yml`, workflow_dispatch) → validates, bumps version on a
+   `release/vX` branch, opens a **PR to `main`** (main is protected, no direct push).
+2. Merging that PR → **Release Publish** (`release-publish.yml`) tags + builds all installers +
+   GitHub Release, then Flatpak attaches.
+
+This session: `dev` had diverged from `main` — `main` was at **v0.10.1** (a version-only release,
+PR #19, *not* containing our features) while `dev` was at 0.10.0 + the 5 feature/test commits.
+Merged `origin/main` into `dev` (clean — our commits never touch version files, so no conflict;
+version baseline became 0.10.1), pushed `dev` (`e6b43d2`), then dispatched `release.yml --ref dev
+-f version=minor`. Validate + open-release-pr both green →
+**[release: v0.11.0 — PR #20](https://github.com/crisp-oddio/glogger-oddio/pull/20)** is OPEN.
+**Next action (user):** approve + merge PR #20 to publish v0.11.0.
 
 ## TL;DR — Session 21 (in progress)
 
