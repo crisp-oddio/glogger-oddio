@@ -45,6 +45,22 @@ Now suggests `<charname>-<NNNN>.csv` — e.g. `oddio-0001`, `oddio-0002`, … �
 - **Design note:** the counter is global (total exports), not per-character — matches "how many
   times we've exported." Frontend-only change; `vue-tsc` clean.
 
+### 3. ✅ Build Planner — default combat-skill dropdowns
+The build planner already had `skill_primary`/`skill_secondary` on the preset (used as the per-slot
+fallback — SlotDetailPanel shows "X (default)"), but they were only settable indirectly. Added two
+**Skill 1 / Skill 2** dropdowns to the **Set Defaults** section in
+[PaperDollLayout.vue](src/components/Character/BuildPlanner/PaperDollLayout.vue), directly under the
+existing Rarity + Level row, so you can blanket-apply the two combat skills for the whole build
+while still overriding per item.
+- Options are `store.combatSkills` (loaded on mount) keyed by display `name` (matches the per-slot
+  picker), plus a **None** entry to clear the default.
+- Handlers call `updatePreset({ skill_primary|skill_secondary })` then `onBuildParamsChanged()` to
+  refresh available powers for the selected slot. Also added the missing `onBuildParamsChanged()`
+  to the rarity handler for consistency.
+- **Store fix** ([buildPlannerStore.ts](src/stores/buildPlannerStore.ts)) — `updatePreset` used `??`
+  for the nullable skill fields, which would have ignored an explicit `null` (the "None" clear).
+  Switched to an `in`-operator check so clearing actually persists. `vue-tsc` clean.
+
 ---
 
 # glogger — Session Handoff
