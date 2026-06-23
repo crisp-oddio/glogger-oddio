@@ -192,6 +192,16 @@ pub struct AppSettings {
     /// live data, so no double-counting.
     #[serde(default = "default_true")]
     pub auto_ingest_player_prev: bool,
+
+    /// How often (in minutes) an active farming session is auto-saved to the
+    /// database so its data survives a crash or power loss before the session is
+    /// ended manually. 0 = disabled; otherwise one of 5, 10, or 30.
+    #[serde(default = "default_farming_autosave_minutes")]
+    pub farming_autosave_minutes: u32,
+}
+
+fn default_farming_autosave_minutes() -> u32 {
+    5
 }
 
 fn default_dashboard_widget_opacity() -> u32 {
@@ -356,6 +366,7 @@ impl Default for AppSettings {
             ui_scale: default_ui_scale(),
             auto_detect_paths_on_startup: false,
             auto_ingest_player_prev: true,
+            farming_autosave_minutes: default_farming_autosave_minutes(),
         }
     }
 }

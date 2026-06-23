@@ -290,8 +290,10 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
     const input = {
       id: activePreset.value.id,
       name: updates.name ?? activePreset.value.name,
-      skill_primary: updates.skill_primary ?? activePreset.value.skill_primary,
-      skill_secondary: updates.skill_secondary ?? activePreset.value.skill_secondary,
+      // Skills are nullable: use the `in` check so an explicit null (clearing the
+      // default skill via the "None" option) is honored rather than coalesced back.
+      skill_primary: 'skill_primary' in updates ? updates.skill_primary ?? null : activePreset.value.skill_primary,
+      skill_secondary: 'skill_secondary' in updates ? updates.skill_secondary ?? null : activePreset.value.skill_secondary,
       target_level: updates.target_level ?? activePreset.value.target_level,
       target_rarity: updates.target_rarity ?? activePreset.value.target_rarity,
       notes: updates.notes ?? activePreset.value.notes,

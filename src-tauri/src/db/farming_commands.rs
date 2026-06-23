@@ -34,6 +34,11 @@ pub struct FarmingKillInput {
 
 #[derive(Deserialize)]
 pub struct SaveFarmingSessionInput {
+    /// When set, update this existing session row (and replace its child rows)
+    /// instead of inserting a new one. Used by the periodic auto-save so an
+    /// in-progress session keeps a single row that is refreshed in place.
+    #[serde(default)]
+    pub session_id: Option<i64>,
     pub name: String,
     pub notes: String,
     pub start_time: String,
@@ -103,23 +108,73 @@ pub fn save_farming_session(
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
+    save_farming_session_impl(&conn, &input)
+}
 
-    // Insert session row
-    conn.execute(
-        "INSERT INTO farming_sessions (name, notes, start_time, end_time, elapsed_seconds, total_paused_seconds, vendor_gold)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![
-            input.name,
-            input.notes,
-            input.start_time,
-            input.end_time,
-            input.elapsed_seconds,
-            input.total_paused_seconds,
-            input.vendor_gold,
-        ],
-    ).map_err(|e| format!("Failed to save farming session: {e}"))?;
+/// Core save/upsert logic, separated from Tauri managed state so it can be
+/// unit-tested against an in-memory connection.
+fn save_farming_session_impl(
+    conn: &rusqlite::Connection,
+    input: &SaveFarmingSessionInput,
+) -> Result<i64, String> {
+    // Upsert the session row. When updating an existing row (periodic auto-save
+    // of an active session) we refresh its columns and clear the child rows so
+    // they can be rewritten from the current snapshot — no double-counting.
+    let session_id = if let Some(existing_id) = input.session_id {
+        let affected = conn
+            .execute(
+                "UPDATE farming_sessions
+                 SET name = ?1, notes = ?2, start_time = ?3, end_time = ?4,
+                     elapsed_seconds = ?5, total_paused_seconds = ?6, vendor_gold = ?7
+                 WHERE id = ?8",
+                rusqlite::params![
+                    input.name,
+                    input.notes,
+                    input.start_time,
+                    input.end_time,
+                    input.elapsed_seconds,
+                    input.total_paused_seconds,
+                    input.vendor_gold,
+                    existing_id,
+                ],
+            )
+            .map_err(|e| format!("Failed to update farming session: {e}"))?;
 
-    let session_id = conn.last_insert_rowid();
+        if affected == 0 {
+            return Err(format!("Farming session {existing_id} not found"));
+        }
+
+        for table in [
+            "farming_session_skills",
+            "farming_session_items",
+            "farming_session_favors",
+            "farming_session_kills",
+        ] {
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                rusqlite::params![existing_id],
+            )
+            .map_err(|e| format!("Failed to clear {table}: {e}"))?;
+        }
+
+        existing_id
+    } else {
+        conn.execute(
+            "INSERT INTO farming_sessions (name, notes, start_time, end_time, elapsed_seconds, total_paused_seconds, vendor_gold)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                input.name,
+                input.notes,
+                input.start_time,
+                input.end_time,
+                input.elapsed_seconds,
+                input.total_paused_seconds,
+                input.vendor_gold,
+            ],
+        ).map_err(|e| format!("Failed to save farming session: {e}"))?;
+
+        conn.last_insert_rowid()
+    };
 
     // Insert skill records
     for skill in &input.skills {
@@ -332,4 +387,118 @@ pub fn delete_farming_session(db: State<'_, DbPool>, session_id: i64) -> Result<
         .map_err(|e| format!("Failed to delete farming session: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use rusqlite::Connection;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn, None).unwrap();
+        conn
+    }
+
+    fn input_with(
+        session_id: Option<i64>,
+        kills: Vec<(&str, i32)>,
+        items: Vec<(&str, i32)>,
+    ) -> SaveFarmingSessionInput {
+        SaveFarmingSessionInput {
+            session_id,
+            name: "Test Session".into(),
+            notes: String::new(),
+            start_time: "12:00:00".into(),
+            end_time: None,
+            elapsed_seconds: 600,
+            total_paused_seconds: 0,
+            vendor_gold: 0,
+            skills: Vec::new(),
+            items: items
+                .into_iter()
+                .map(|(item_name, net_quantity)| FarmingItemInput {
+                    item_name: item_name.into(),
+                    net_quantity,
+                })
+                .collect(),
+            favors: Vec::new(),
+            kills: kills
+                .into_iter()
+                .map(|(enemy_name, kill_count)| FarmingKillInput {
+                    enemy_name: enemy_name.into(),
+                    kill_count,
+                })
+                .collect(),
+        }
+    }
+
+    fn session_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM farming_sessions", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn kill_count(conn: &Connection, id: i64, enemy: &str) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE(SUM(kill_count), 0) FROM farming_session_kills WHERE session_id = ?1 AND enemy_name = ?2",
+            rusqlite::params![id, enemy],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn item_row_count(conn: &Connection, id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM farming_session_items WHERE session_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The periodic auto-save must update the same row in place and *replace*
+    /// child rows from the fresh snapshot — never insert a duplicate session and
+    /// never double-count progressively growing tallies.
+    #[test]
+    fn upsert_updates_in_place_and_replaces_children() {
+        let conn = setup();
+
+        // First auto-save (no id) inserts a new row.
+        let id = save_farming_session_impl(
+            &conn,
+            &input_with(None, vec![("Goblin", 5)], vec![("Gold Coin", 10)]),
+        )
+        .unwrap();
+        assert_eq!(session_count(&conn), 1);
+        assert_eq!(kill_count(&conn, id, "Goblin"), 5);
+        assert_eq!(item_row_count(&conn, id), 1);
+
+        // Second auto-save (same id) with grown tallies updates the SAME row.
+        let id2 = save_farming_session_impl(
+            &conn,
+            &input_with(Some(id), vec![("Goblin", 8)], vec![("Gold Coin", 10), ("Bone", 3)]),
+        )
+        .unwrap();
+
+        assert_eq!(id2, id, "upsert must return the same row id");
+        assert_eq!(session_count(&conn), 1, "no duplicate session row created");
+        assert_eq!(
+            kill_count(&conn, id, "Goblin"),
+            8,
+            "kills replaced with the fresh snapshot, not summed (no double-count)"
+        );
+        assert_eq!(item_row_count(&conn, id), 2, "items replaced with the fresh snapshot");
+    }
+
+    /// Auto-saving against an id that no longer exists (e.g. the row was deleted)
+    /// must error rather than silently create a mismatched row.
+    #[test]
+    fn upsert_with_unknown_id_errors() {
+        let conn = setup();
+        let result =
+            save_farming_session_impl(&conn, &input_with(Some(99999), vec![("Goblin", 1)], vec![]));
+        assert!(result.is_err(), "updating a non-existent session should error");
+    }
 }

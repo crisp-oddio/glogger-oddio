@@ -1,5 +1,90 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-23 (Session 21 — four-part feature batch; committing per step)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (base v0.10.0)
+**Status:** ✅ All four tasks done, each committed + pushed individually. `vue-tsc` + `cargo check`
+green after every step. UI changes (planner dropdowns, dashboard resize) need a `npm run tauri dev`
+click-test — browser preview can't mount the app (needs Tauri `invoke()`).
+
+## TL;DR — Session 21 (in progress)
+
+A batch of four user-requested features. Each is committed & pushed individually. All four complete.
+
+### 1. ✅ Periodic farming-session auto-save (crash protection)
+Previously an active farming session lived only in the frontend Pinia store
+([farmingStore.ts](src/stores/farmingStore.ts)) and was persisted **only** when the user clicked
+"End Session" (`save_farming_session` INSERT). A crash/power-loss mid-session lost everything.
+- **Backend** ([farming_commands.rs](src-tauri/src/db/farming_commands.rs)) — `SaveFarmingSessionInput`
+  gained an optional `session_id`. `save_farming_session` is now an **upsert**: with `session_id`
+  set it UPDATEs that row and **replaces** its child rows (skills/items/favors/kills) from the
+  fresh snapshot (no double-count); without it, INSERTs as before. Returns the row id either way.
+- **Frontend** ([farmingStore.ts](src/stores/farmingStore.ts)) — extracted the snapshot builder into
+  `buildSessionInput(end)` shared by auto-save and `endSession`. New `currentSessionId` ref tracks
+  the in-progress row. A 60s ticker (`maybeAutoSave`) checks `settings.farmingAutosaveMinutes`
+  (so changing the setting takes effect live) and persists every N minutes; empty sessions are
+  skipped until they have data. `endSession` now updates the same row in place (no duplicate);
+  `startSession`/`reset` clear the id.
+- **Setting** — `farming_autosave_minutes: u32` (default **5**; 0 = off) in
+  [settings.rs](src-tauri/src/settings.rs) + [settingsStore.ts](src/stores/settingsStore.ts).
+  New **Farming** section in [AppSettingsTab.vue](src/components/Settings/AppSettingsTab.vue) with an
+  Off / 5 / 10 / 30 min dropdown.
+- **Recovery behaviour:** after a crash the partial session is already a row in the DB (end_time
+  NULL) and shows in Session History. The store does not auto-resume the session on next launch —
+  the *data* is preserved, which was the requirement. Verified via `vue-tsc` + `cargo check` clean.
+
+### 2. ✅ Serialized export filenames (`charname-NNNN.csv`)
+The Farming → Database **Export** previously defaulted to `glogger-drop-rates-<YYYY-MM-DD>.csv`.
+Now suggests `<charname>-<NNNN>.csv` — e.g. `oddio-0001`, `oddio-0002`, … — in
+[DatabaseTab.vue](src/components/Farming/DatabaseTab.vue).
+- Char name = `settings.activeCharacterName` (sanitized to `[a-z0-9_-]`, lowercased), falling back to
+  `glogger` when no character is loaded.
+- `NNNN` is a **global** 4-digit zero-padded serial persisted via `useViewPrefs("database",
+  { exportSerial })`. The next serial is offered as the default filename and only **advances after a
+  successful export** (cancelling the dialog or a failed export does not consume a number).
+- **Design note:** the counter is global (total exports), not per-character — matches "how many
+  times we've exported." Frontend-only change; `vue-tsc` clean.
+
+### 3. ✅ Build Planner — default combat-skill dropdowns
+The build planner already had `skill_primary`/`skill_secondary` on the preset (used as the per-slot
+fallback — SlotDetailPanel shows "X (default)"), but they were only settable indirectly. Added two
+**Skill 1 / Skill 2** dropdowns to the **Set Defaults** section in
+[PaperDollLayout.vue](src/components/Character/BuildPlanner/PaperDollLayout.vue), directly under the
+existing Rarity + Level row, so you can blanket-apply the two combat skills for the whole build
+while still overriding per item.
+- Options are `store.combatSkills` (loaded on mount) keyed by display `name` (matches the per-slot
+  picker), plus a **None** entry to clear the default.
+- Handlers call `updatePreset({ skill_primary|skill_secondary })` then `onBuildParamsChanged()` to
+  refresh available powers for the selected slot. Also added the missing `onBuildParamsChanged()`
+  to the rarity handler for consistency.
+- **Store fix** ([buildPlannerStore.ts](src/stores/buildPlannerStore.ts)) — `updatePreset` used `??`
+  for the nullable skill fields, which would have ignored an explicit `null` (the "None" clear).
+  Switched to an `in`-operator check so clearing actually persists. `vue-tsc` clean.
+
+### 4. ✅ Dashboard widget resize now reflows neighbours (column-span, not px)
+**Problem (the Session-20 known limitation, now fixed):** the right-edge resize set an explicit
+**pixel width** on the card while it still occupied its full grid-column track(s), so shrinking a
+widget left an unusable gap — no neighbour could move into the freed space.
+**Fix:** resize now changes the card's **grid-column span**, snapping to whole columns, so the grid
+genuinely frees tracks and subsequent widgets reflow into them (live, during the drag).
+- [DashboardCard.vue](src/components/Dashboard/DashboardCard.vue) — `width` prop → `span` prop;
+  applies `style="grid-column: span N"` (overrides the Tailwind `col-span-*` class) when a span is
+  set. The handle measures the grid geometry (`gridTemplateColumns` track count + `columnGap`) from
+  the card's parent grid, derives the current span from rendered width, and snaps the drag to
+  `[1, columnCount]`. Stray-click guard + double-click-to-reset preserved (`resize` 0 = reset).
+- [DashboardView.vue](src/components/Dashboard/DashboardView.vue) — `cardWidths` pref →
+  **`cardSpans`** (`Record<string, number>`); `setCardSpan` stores the override (0 = delete → revert
+  to the widget's default size class). Default `col-span-*` size classes still apply when no override.
+- **Migration note:** old per-widget `cardWidths` (px) are no longer read; affected widgets revert
+  to their default size until resized again — acceptable, clean break from the px approach.
+- **Verification:** `vue-tsc` clean. Not click-tested in-app this step — the browser-only preview
+  can't mount the dashboard (startup needs Tauri `invoke()`), same limitation noted in Session 20;
+  needs a `npm run tauri dev` drag-test to confirm the reflow visually.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-22 (Session 20 — README refresh + screenshots, dev-sync hook, resizable widgets)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (synced even with `main` at v0.9.24; widget-resize committed on top)

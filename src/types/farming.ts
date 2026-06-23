@@ -197,6 +197,9 @@ export interface FarmingLogEntry {
 // === Persistence (save to DB) ===
 
 export interface SaveFarmingSessionInput {
+  /** When set, update this existing session row instead of inserting a new one
+   *  (used by the periodic auto-save of an in-progress session). */
+  session_id?: number | null
   name: string
   notes: string
   start_time: string

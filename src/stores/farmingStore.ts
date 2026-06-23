@@ -10,12 +10,18 @@ import type {
 } from "../types/farming";
 import type { PlayerEvent, ItemProvenance } from "../types/playerEvents";
 import { useGameDataStore } from "./gameDataStore";
+import { useSettingsStore } from "./settingsStore";
 import { formatTimeFull, formatDuration } from "../composables/useTimestamp";
 
 export const useFarmingStore = defineStore("farming", () => {
   const sessionActive = ref(false);
   const session = ref<FarmingSession | null>(null);
   const log = ref<FarmingLogEntry[]>([]);
+
+  // DB row id of the in-progress session once it has been auto-saved at least
+  // once. Lets the periodic auto-save and the final endSession write update the
+  // same row instead of creating duplicates.
+  const currentSessionId = ref<number | null>(null);
 
   // All-time per-enemy loot stats, fetched lazily from the DB on hover and
   // cached by enemy name (shared across items that drop from the same enemy).
@@ -35,6 +41,111 @@ export const useFarmingStore = defineStore("farming", () => {
       clearInterval(timerInterval);
       timerInterval = null;
     }
+  }
+
+  // ── Auto-save ──────────────────────────────────────────────────────────────
+  // Periodically persists the active session to the DB so its data survives a
+  // crash/power loss before the session is ended. A 60s ticker checks the
+  // configured interval (settings.farmingAutosaveMinutes; 0 = disabled) so a
+  // changed setting takes effect without restarting the ticker.
+  let autosaveTicker: ReturnType<typeof setInterval> | null = null;
+  let lastAutoSaveMs = 0;
+
+  function startAutosaveTicker() {
+    stopAutosaveTicker();
+    lastAutoSaveMs = Date.now();
+    autosaveTicker = setInterval(() => { void maybeAutoSave(); }, 60_000);
+  }
+
+  function stopAutosaveTicker() {
+    if (autosaveTicker) {
+      clearInterval(autosaveTicker);
+      autosaveTicker = null;
+    }
+  }
+
+  async function maybeAutoSave() {
+    if (!sessionActive.value || !session.value) return;
+    const minutes = useSettingsStore().settings.farmingAutosaveMinutes;
+    if (!minutes || minutes <= 0) return;
+    if (Date.now() - lastAutoSaveMs < minutes * 60_000) return;
+    await autoSaveSession();
+  }
+
+  // Persist the current session snapshot, updating the existing row when one
+  // already exists. Skips writing an empty session so we don't create blank
+  // rows before anything has been collected.
+  async function autoSaveSession() {
+    if (!session.value) return;
+    const input = await buildSessionInput(false);
+    if (currentSessionId.value == null && isEmptyInput(input)) return;
+    try {
+      const id = await invoke<number>("save_farming_session", {
+        input: { ...input, session_id: currentSessionId.value },
+      });
+      currentSessionId.value = id;
+      lastAutoSaveMs = Date.now();
+      console.log("[farming] Session auto-saved (id", id, ")");
+    } catch (e) {
+      console.error("[farming] Auto-save failed:", e);
+    }
+  }
+
+  function isEmptyInput(input: SaveFarmingSessionInput): boolean {
+    return (
+      input.skills.length === 0 &&
+      input.items.length === 0 &&
+      input.favors.length === 0 &&
+      input.kills.length === 0 &&
+      input.vendor_gold === 0
+    );
+  }
+
+  // Build the persistable snapshot from the live session. Shared by the
+  // periodic auto-save (end = false) and the final endSession write (end = true).
+  async function buildSessionInput(end: boolean): Promise<SaveFarmingSessionInput> {
+    const s = session.value!;
+    const gameData = useGameDataStore();
+    return {
+      name: s.name,
+      notes: s.notes,
+      start_time: s.startTime,
+      end_time: end ? s.endTime : null,
+      elapsed_seconds: getActiveSeconds(),
+      total_paused_seconds: s.totalPausedSeconds,
+      vendor_gold: s.vendorGold,
+      skills: await Promise.all(
+        Object.entries(s.skillXp)
+          .filter(([, v]) => v.gained > 0 || v.levelsGained > 0)
+          .map(async ([skillType, v]) => {
+            const resolved = await gameData.resolveSkill(skillType);
+            return {
+              skill_id: resolved?.id ?? 0,
+              skill_name: resolved?.name ?? skillType,
+              xp_gained: v.gained,
+              levels_gained: v.levelsGained,
+            };
+          })
+      ),
+      items: Object.entries(s.itemDeltas)
+        .filter(([name, qty]) => qty !== 0 && !s.ignoredItems.has(name))
+        .map(([item_name, net_quantity]) => ({ item_name, net_quantity })),
+      favors: await Promise.all(
+        Object.entries(s.favorDeltas)
+          .filter(([, v]) => v.delta !== 0)
+          .map(async ([npcName, v]) => {
+            const resolved = await gameData.resolveNpc(npcName);
+            return {
+              npc_key: resolved?.key ?? npcName,
+              npc_name: resolved?.name ?? npcName,
+              delta: v.delta,
+            };
+          })
+      ),
+      kills: Object.entries(s.kills)
+        .filter(([, v]) => v.count > 0)
+        .map(([enemy_name, v]) => ({ enemy_name, kill_count: v.count })),
+    };
   }
 
   // ── Event Handlers ──────────────────────────────────────────────────────
@@ -237,6 +348,7 @@ export const useFarmingStore = defineStore("farming", () => {
 
     const ts = getCurrentTimestamp();
     sessionActive.value = true;
+    currentSessionId.value = null;
     session.value = {
       name: name ?? "Farming Session",
       notes: "",
@@ -258,6 +370,7 @@ export const useFarmingStore = defineStore("farming", () => {
 
     pushLog("session-start", ts, "Farming session started");
     startTimer();
+    startAutosaveTicker();
   }
 
   async function endSession() {
@@ -267,54 +380,16 @@ export const useFarmingStore = defineStore("farming", () => {
     session.value.endTime = ts;
     pushLog("session-end", ts, "Farming session ended");
     stopTimer();
+    stopAutosaveTicker();
 
-    // Persist to database
+    // Persist to database — update the auto-saved row in place when one exists
+    // so the finished session doesn't duplicate an in-progress auto-save.
     try {
-      const s = session.value;
-      const input: SaveFarmingSessionInput = {
-        name: s.name,
-        notes: s.notes,
-        start_time: s.startTime,
-        end_time: s.endTime,
-        elapsed_seconds: getActiveSeconds(),
-        total_paused_seconds: s.totalPausedSeconds,
-        vendor_gold: s.vendorGold,
-        skills: await Promise.all(
-          Object.entries(s.skillXp)
-            .filter(([, v]) => v.gained > 0 || v.levelsGained > 0)
-            .map(async ([skillType, v]) => {
-              const gameData = useGameDataStore();
-              const resolved = await gameData.resolveSkill(skillType);
-              return {
-                skill_id: resolved?.id ?? 0,
-                skill_name: resolved?.name ?? skillType,
-                xp_gained: v.gained,
-                levels_gained: v.levelsGained,
-              };
-            })
-        ),
-        items: Object.entries(s.itemDeltas)
-          .filter(([name, qty]) => qty !== 0 && !s.ignoredItems.has(name))
-          .map(([item_name, net_quantity]) => ({ item_name, net_quantity })),
-        favors: await Promise.all(
-          Object.entries(s.favorDeltas)
-            .filter(([, v]) => v.delta !== 0)
-            .map(async ([npcName, v]) => {
-              const gameData = useGameDataStore();
-              const resolved = await gameData.resolveNpc(npcName);
-              return {
-                npc_key: resolved?.key ?? npcName,
-                npc_name: resolved?.name ?? npcName,
-                delta: v.delta,
-              };
-            })
-        ),
-        kills: Object.entries(s.kills)
-          .filter(([, v]) => v.count > 0)
-          .map(([enemy_name, v]) => ({ enemy_name, kill_count: v.count })),
-      };
-
-      await invoke("save_farming_session", { input });
+      const input = await buildSessionInput(true);
+      const id = await invoke<number>("save_farming_session", {
+        input: { ...input, session_id: currentSessionId.value },
+      });
+      currentSessionId.value = id;
       console.log("[farming] Session saved to database");
     } catch (e) {
       console.error("[farming] Failed to save session:", e);
@@ -352,8 +427,10 @@ export const useFarmingStore = defineStore("farming", () => {
   function reset() {
     sessionActive.value = false;
     session.value = null;
+    currentSessionId.value = null;
     log.value = [];
     stopTimer();
+    stopAutosaveTicker();
   }
 
   // ── Computed ────────────────────────────────────────────────────────────

@@ -79,6 +79,25 @@
             class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary w-12 text-center"
             @change="onLevelChange" />
         </div>
+        <!-- Default combat skills — applied to every slot unless overridden per-item -->
+        <div class="flex items-center gap-2">
+          <label class="text-[10px] text-text-muted">Skill 1</label>
+          <StyledSelect
+            :model-value="store.activePreset.skill_primary ?? ''"
+            :options="combatSkillOptions"
+            size="xs"
+            class="flex-1"
+            @update:model-value="onPrimarySkillChange" />
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-[10px] text-text-muted">Skill 2</label>
+          <StyledSelect
+            :model-value="store.activePreset.skill_secondary ?? ''"
+            :options="combatSkillOptions"
+            size="xs"
+            class="flex-1"
+            @update:model-value="onSecondarySkillChange" />
+        </div>
       </div>
     </div>
 
@@ -180,6 +199,13 @@ const presetOptions = computed(() =>
 
 const rarityOptions = RARITY_DEFS.map(r => ({ value: r.id, label: r.label }))
 
+// Default combat skills for the whole build. "None" clears the default; each
+// equipment slot still falls back to these unless it sets its own skill.
+const combatSkillOptions = computed(() => [
+  { value: '', label: 'None' },
+  ...store.combatSkills.map(s => ({ value: s.name, label: s.name })),
+])
+
 const showDefaults = ref(false)
 const showCreate = ref(false)
 const showRename = ref(false)
@@ -241,6 +267,17 @@ async function handleDelete() {
 
 async function onRarityChange(val: string) {
   await store.updatePreset({ target_rarity: val })
+  await store.onBuildParamsChanged()
+}
+
+async function onPrimarySkillChange(val: string) {
+  await store.updatePreset({ skill_primary: val || null })
+  await store.onBuildParamsChanged()
+}
+
+async function onSecondarySkillChange(val: string) {
+  await store.updatePreset({ skill_secondary: val || null })
+  await store.onBuildParamsChanged()
 }
 
 async function onLevelChange(e: Event) {

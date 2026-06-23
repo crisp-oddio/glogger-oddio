@@ -16,9 +16,9 @@
         <DashboardCard
           :title="widget.name"
           :card-id="widget.id"
-          :width="prefs.cardWidths?.[widget.id]"
+          :span="prefs.cardSpans?.[widget.id]"
           :class="sizeClass(widget)"
-          @resize="(w: number) => setCardWidth(widget.id, w)">
+          @resize="(s: number) => setCardSpan(widget.id, s)">
           <component :is="widget.component" />
           <template v-if="widget.configComponent" #config>
             <component :is="widget.configComponent" />
@@ -46,18 +46,18 @@ import { useViewPrefs } from '../../composables/useViewPrefs'
 const { prefs, update } = useViewPrefs('dashboard', {
   cardOrder: DEFAULT_CARD_ORDER,
   hiddenCards: [] as string[],
-  cardWidths: {} as Record<string, number>,
+  cardSpans: {} as Record<string, number>,
 })
 
-function setCardWidth(id: string, width: number) {
-  const widths = { ...(prefs.value.cardWidths ?? {}) }
-  if (width > 0) {
-    widths[id] = width
+function setCardSpan(id: string, span: number) {
+  const spans = { ...(prefs.value.cardSpans ?? {}) }
+  if (span > 0) {
+    spans[id] = span
   } else {
-    // 0 = reset to default (stretch to grid cell)
-    delete widths[id]
+    // 0 = reset to default (use the widget's default size class)
+    delete spans[id]
   }
-  update({ cardWidths: widths })
+  update({ cardSpans: spans })
 }
 
 function getVisibleWidgets(): DashboardWidget[] {

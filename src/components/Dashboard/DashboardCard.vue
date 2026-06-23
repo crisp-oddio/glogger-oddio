@@ -2,7 +2,7 @@
   <div
     class="card dashboard-card-bg flex flex-col h-100 relative"
     ref="cardRef"
-    :style="effectiveWidth ? { width: effectiveWidth + 'px', maxWidth: '100%' } : undefined">
+    :style="effectiveSpan ? { gridColumn: `span ${effectiveSpan}` } : undefined">
     <!-- Title bar — drag handle -->
     <div class="dashboard-card-handle flex items-center gap-2 px-3 py-1 border-b border-border-default cursor-grab active:cursor-grabbing bg-surface-base/30 select-none">
       <span class="text-xs font-bold text-text-secondary uppercase tracking-wide truncate">{{ title }}</span>
@@ -31,10 +31,10 @@
       <slot />
     </div>
 
-    <!-- Right-edge resize handle — drags the X axis only -->
+    <!-- Right-edge resize handle — drags the X axis (snaps to grid columns) -->
     <div
       class="dashboard-card-resize absolute top-0 right-0 h-full w-1.5 cursor-ew-resize select-none z-10 hover:bg-accent/40"
-      :class="{ 'bg-accent/40': dragWidth != null }"
+      :class="{ 'bg-accent/40': dragSpan != null }"
       title="Drag to resize width — double-click to reset"
       @pointerdown="onResizeStart"
       @dblclick="onResizeReset"></div>
@@ -47,13 +47,13 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, useSlots } 
 const props = defineProps<{
   title: string
   cardId?: string
-  /** Persisted explicit width in px; undefined = stretch to grid cell. */
-  width?: number
+  /** Persisted explicit grid-column span; undefined = use the default size class. */
+  span?: number
 }>()
 
 const emit = defineEmits<{
-  /** Emitted on resize release; 0 means "reset to default width". */
-  (e: 'resize', width: number): void
+  /** Emitted on resize release; the new column span. 0 means "reset to default". */
+  (e: 'resize', span: number): void
 }>()
 
 const slots = useSlots()
@@ -63,31 +63,58 @@ const cardRef = ref<HTMLElement | null>(null)
 const popoverRef = ref<HTMLElement | null>(null)
 const popoverAlignClass = ref('right-0')
 
-// --- Width resize (X axis only) -----------------------------------------
-const MIN_WIDTH = 200
-// While dragging, dragWidth holds the live width for instant feedback; the
+// --- Width resize (X axis, snapped to grid columns) ----------------------
+// Dragging the right edge changes how many grid columns the card spans, rather
+// than setting a free pixel width. Snapping to columns is what lets the grid
+// free up tracks so neighbouring widgets reflow into the space — a pixel width
+// left the card's track full-size, stranding an unusable gap.
+//
+// While dragging, dragSpan holds the live span for instant feedback; the
 // persisted prop only updates once on release.
-const dragWidth = ref<number | null>(null)
-const effectiveWidth = computed(() => dragWidth.value ?? props.width)
+const dragSpan = ref<number | null>(null)
+const effectiveSpan = computed(() => dragSpan.value ?? props.span)
 
 let startX = 0
-let startW = 0
-let maxW = 0
+let startSpan = 1
+let trackPlusGap = 1
+let gridGap = 0
+let maxSpan = 1
+
+// Measure the grid's column geometry from the card's parent (the grid element).
+function measureGrid(el: HTMLElement) {
+  const grid = el.parentElement
+  if (!grid) return { trackPlusGap: el.offsetWidth, gap: 0, cols: 1 }
+  const cs = getComputedStyle(grid)
+  const tracks = cs.gridTemplateColumns.split(' ').filter(Boolean)
+  const cols = Math.max(1, tracks.length)
+  const trackW = parseFloat(tracks[0]) || el.offsetWidth
+  const gap = parseFloat(cs.columnGap || cs.gap || '0') || 0
+  return { trackPlusGap: trackW + gap, gap, cols }
+}
+
+// width of N spans = N*track + (N-1)*gap = N*(track+gap) - gap
+function spanForWidth(width: number): number {
+  return Math.round((width + gridGap) / trackPlusGap)
+}
+
+function widthForSpan(span: number): number {
+  return span * trackPlusGap - gridGap
+}
 
 function onResizeMove(e: PointerEvent) {
-  const w = Math.round(startW + (e.clientX - startX))
-  dragWidth.value = Math.max(MIN_WIDTH, Math.min(w, maxW))
+  const newW = widthForSpan(startSpan) + (e.clientX - startX)
+  dragSpan.value = Math.max(1, Math.min(spanForWidth(newW), maxSpan))
 }
 
 function onResizeEnd() {
   window.removeEventListener('pointermove', onResizeMove)
   window.removeEventListener('pointerup', onResizeEnd)
-  // Only persist if the width actually changed — a stray click (no drag) on
-  // the handle must not pin the widget at its current width.
-  if (dragWidth.value != null && dragWidth.value !== startW) {
-    emit('resize', dragWidth.value)
+  // Only persist if the span actually changed — a stray click (no drag) on the
+  // handle must not pin the widget at its current span.
+  if (dragSpan.value != null && dragSpan.value !== startSpan) {
+    emit('resize', dragSpan.value)
   }
-  dragWidth.value = null
+  dragSpan.value = null
 }
 
 function onResizeStart(e: PointerEvent) {
@@ -95,16 +122,15 @@ function onResizeStart(e: PointerEvent) {
   e.stopPropagation()
   const el = cardRef.value
   if (!el) return
+  const geom = measureGrid(el)
+  trackPlusGap = geom.trackPlusGap
+  gridGap = geom.gap
+  maxSpan = geom.cols
   startX = e.clientX
-  startW = el.offsetWidth
-  // Upper bound = the card's natural (stretched) width in its own grid cell.
-  // parentElement is the whole grid, not the cell, so measure directly by
-  // briefly clearing any explicit inline width, then restore it before paint.
-  const saved = el.style.width
-  el.style.width = ''
-  maxW = el.offsetWidth
-  el.style.width = saved
-  dragWidth.value = startW
+  // Derive the current span from the rendered width so it works whether the
+  // span comes from the default size class or a saved override.
+  startSpan = Math.max(1, Math.min(spanForWidth(el.offsetWidth), maxSpan))
+  dragSpan.value = startSpan
   window.addEventListener('pointermove', onResizeMove)
   window.addEventListener('pointerup', onResizeEnd)
 }
@@ -112,7 +138,7 @@ function onResizeStart(e: PointerEvent) {
 function onResizeReset(e: MouseEvent) {
   e.preventDefault()
   e.stopPropagation()
-  dragWidth.value = null
+  dragSpan.value = null
   emit('resize', 0)
 }
 
