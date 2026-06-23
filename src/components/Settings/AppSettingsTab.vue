@@ -128,6 +128,32 @@
         </p>
       </div>
     </div>
+
+    <div class="settings-section">
+      <h3>Farming</h3>
+
+      <div class="mb-2">
+        <label for="farming-autosave" class="block text-text-secondary mb-2 text-sm">
+          Auto-save active session
+        </label>
+        <select
+          id="farming-autosave"
+          v-model.number="farmingAutosaveMinutes"
+          @change="handleFarmingAutosaveChange"
+          class="input">
+          <option :value="0">Off</option>
+          <option :value="5">Every 5 minutes</option>
+          <option :value="10">Every 10 minutes</option>
+          <option :value="30">Every 30 minutes</option>
+        </select>
+        <p class="mt-2 text-text-muted text-xs leading-relaxed">
+          Periodically saves an in-progress farming session to the database so its
+          data survives a crash or power loss before you end the session. The same
+          session row is refreshed each time, so nothing is double-counted. When off,
+          a session is only saved when you end it manually.
+        </p>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -155,6 +181,7 @@ const uiFontFamily = ref(settingsStore.settings.uiFontFamily);
 const uiFontSize = ref(settingsStore.settings.uiFontSize);
 const dashboardWidgetOpacity = ref(settingsStore.settings.dashboardWidgetOpacity);
 const uiScale = ref(settingsStore.settings.uiScale);
+const farmingAutosaveMinutes = ref(settingsStore.settings.farmingAutosaveMinutes);
 
 watch(
   () => settingsStore.settings.uiFontFamily,
@@ -174,6 +201,11 @@ watch(
 watch(
   () => settingsStore.settings.uiScale,
   (val) => { uiScale.value = val; }
+);
+
+watch(
+  () => settingsStore.settings.farmingAutosaveMinutes,
+  (val) => { farmingAutosaveMinutes.value = val; }
 );
 
 function handleFontChange() {
@@ -196,6 +228,10 @@ function handleWidgetOpacityChange() {
 function resetWidgetOpacity() {
   dashboardWidgetOpacity.value = DEFAULT_WIDGET_OPACITY;
   settingsStore.updateSettings({ dashboardWidgetOpacity: DEFAULT_WIDGET_OPACITY });
+}
+
+function handleFarmingAutosaveChange() {
+  settingsStore.updateSettings({ farmingAutosaveMinutes: farmingAutosaveMinutes.value });
 }
 
 // Live-apply the zoom as the slider drags (visual only), then persist on release

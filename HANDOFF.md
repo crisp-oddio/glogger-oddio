@@ -1,5 +1,42 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-23 (Session 21 — four-part feature batch; committing per step)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (base v0.10.0)
+**Status:** 🚧 In progress — a four-task batch, each committed + pushed on completion. `vue-tsc`
++ `cargo check` run green after every step.
+
+## TL;DR — Session 21 (in progress)
+
+A batch of four user-requested features. Each is committed & pushed individually; this entry is
+updated per step.
+
+### 1. ✅ Periodic farming-session auto-save (crash protection)
+Previously an active farming session lived only in the frontend Pinia store
+([farmingStore.ts](src/stores/farmingStore.ts)) and was persisted **only** when the user clicked
+"End Session" (`save_farming_session` INSERT). A crash/power-loss mid-session lost everything.
+- **Backend** ([farming_commands.rs](src-tauri/src/db/farming_commands.rs)) — `SaveFarmingSessionInput`
+  gained an optional `session_id`. `save_farming_session` is now an **upsert**: with `session_id`
+  set it UPDATEs that row and **replaces** its child rows (skills/items/favors/kills) from the
+  fresh snapshot (no double-count); without it, INSERTs as before. Returns the row id either way.
+- **Frontend** ([farmingStore.ts](src/stores/farmingStore.ts)) — extracted the snapshot builder into
+  `buildSessionInput(end)` shared by auto-save and `endSession`. New `currentSessionId` ref tracks
+  the in-progress row. A 60s ticker (`maybeAutoSave`) checks `settings.farmingAutosaveMinutes`
+  (so changing the setting takes effect live) and persists every N minutes; empty sessions are
+  skipped until they have data. `endSession` now updates the same row in place (no duplicate);
+  `startSession`/`reset` clear the id.
+- **Setting** — `farming_autosave_minutes: u32` (default **5**; 0 = off) in
+  [settings.rs](src-tauri/src/settings.rs) + [settingsStore.ts](src/stores/settingsStore.ts).
+  New **Farming** section in [AppSettingsTab.vue](src/components/Settings/AppSettingsTab.vue) with an
+  Off / 5 / 10 / 30 min dropdown.
+- **Recovery behaviour:** after a crash the partial session is already a row in the DB (end_time
+  NULL) and shows in Session History. The store does not auto-resume the session on next launch —
+  the *data* is preserved, which was the requirement. Verified via `vue-tsc` + `cargo check` clean.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-22 (Session 20 — README refresh + screenshots, dev-sync hook, resizable widgets)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (synced even with `main` at v0.9.24; widget-resize committed on top)

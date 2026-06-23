@@ -34,6 +34,11 @@ pub struct FarmingKillInput {
 
 #[derive(Deserialize)]
 pub struct SaveFarmingSessionInput {
+    /// When set, update this existing session row (and replace its child rows)
+    /// instead of inserting a new one. Used by the periodic auto-save so an
+    /// in-progress session keeps a single row that is refreshed in place.
+    #[serde(default)]
+    pub session_id: Option<i64>,
     pub name: String,
     pub notes: String,
     pub start_time: String,
@@ -104,22 +109,64 @@ pub fn save_farming_session(
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
-    // Insert session row
-    conn.execute(
-        "INSERT INTO farming_sessions (name, notes, start_time, end_time, elapsed_seconds, total_paused_seconds, vendor_gold)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![
-            input.name,
-            input.notes,
-            input.start_time,
-            input.end_time,
-            input.elapsed_seconds,
-            input.total_paused_seconds,
-            input.vendor_gold,
-        ],
-    ).map_err(|e| format!("Failed to save farming session: {e}"))?;
+    // Upsert the session row. When updating an existing row (periodic auto-save
+    // of an active session) we refresh its columns and clear the child rows so
+    // they can be rewritten from the current snapshot — no double-counting.
+    let session_id = if let Some(existing_id) = input.session_id {
+        let affected = conn
+            .execute(
+                "UPDATE farming_sessions
+                 SET name = ?1, notes = ?2, start_time = ?3, end_time = ?4,
+                     elapsed_seconds = ?5, total_paused_seconds = ?6, vendor_gold = ?7
+                 WHERE id = ?8",
+                rusqlite::params![
+                    input.name,
+                    input.notes,
+                    input.start_time,
+                    input.end_time,
+                    input.elapsed_seconds,
+                    input.total_paused_seconds,
+                    input.vendor_gold,
+                    existing_id,
+                ],
+            )
+            .map_err(|e| format!("Failed to update farming session: {e}"))?;
 
-    let session_id = conn.last_insert_rowid();
+        if affected == 0 {
+            return Err(format!("Farming session {existing_id} not found"));
+        }
+
+        for table in [
+            "farming_session_skills",
+            "farming_session_items",
+            "farming_session_favors",
+            "farming_session_kills",
+        ] {
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                rusqlite::params![existing_id],
+            )
+            .map_err(|e| format!("Failed to clear {table}: {e}"))?;
+        }
+
+        existing_id
+    } else {
+        conn.execute(
+            "INSERT INTO farming_sessions (name, notes, start_time, end_time, elapsed_seconds, total_paused_seconds, vendor_gold)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                input.name,
+                input.notes,
+                input.start_time,
+                input.end_time,
+                input.elapsed_seconds,
+                input.total_paused_seconds,
+                input.vendor_gold,
+            ],
+        ).map_err(|e| format!("Failed to save farming session: {e}"))?;
+
+        conn.last_insert_rowid()
+    };
 
     // Insert skill records
     for skill in &input.skills {
