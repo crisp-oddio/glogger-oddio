@@ -1,10 +1,7 @@
-## What's Changed since v0.9.23
-
-### Features
-- feat(dashboard): resizable widgets via right-edge X-axis drag (`0eb03a5`)
+## What's Changed since v0.10.0
 
 ### Fixes
-- fix(stall-tracker): deepen Trends chart palette for dark/HDR legibility (`445967b`)
+- fix(dashboard): correct widget resize max-width clamp and stray-click pin (`31fd90b`)
 
 ---
-*10 commits since v0.9.23*
+*1 commits since v0.10.0*
