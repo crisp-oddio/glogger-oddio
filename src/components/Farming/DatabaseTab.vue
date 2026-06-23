@@ -267,6 +267,8 @@ import ExtractDetailTable from "./ExtractDetailTable.vue";
 import { formatDateTimeShort } from "../../composables/useTimestamp";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useGameStateStore } from "../../stores/gameStateStore";
+import { useSettingsStore } from "../../stores/settingsStore";
+import { useViewPrefs } from "../../composables/useViewPrefs";
 import type { SkillInfo } from "../../types/gameData/skills";
 
 const scope = ref<DatabaseScope>("combined");
@@ -369,6 +371,12 @@ function toggleHarvestedExpanded(name: string) {
 // ── Equipped Skills (combat loadout) filter ─────────────────────────────
 const gameDataStore = useGameDataStore();
 const gameStateStore = useGameStateStore();
+const settingsStore = useSettingsStore();
+
+// Persisted export serial counter (drives the suggested export filename).
+const { prefs: exportPrefs, update: updateExportPrefs } = useViewPrefs("database", {
+  exportSerial: 0,
+});
 
 const combatSkillOptions = ref<SkillInfo[]>([]);
 const selectedSkill1 = ref("");
@@ -490,17 +498,30 @@ async function loadImportedSources() {
   }
 }
 
+// Suggested export filename: "<charname>-<NNNN>.csv", where NNNN is a 4-digit
+// serial that increments each successful export (e.g. oddio-0001, oddio-0002).
+// The counter persists per-install in view prefs; the character name is the
+// active character (sanitized, lowercased) or "glogger" when none is loaded.
+function exportFileName(serial: number): string {
+  const raw = settingsStore.settings.activeCharacterName || "glogger";
+  const name = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, "") || "glogger";
+  return `${name}-${String(serial).padStart(4, "0")}.csv`;
+}
+
 async function doExport() {
   errorMessage.value = "";
   importMessage.value = "";
   exporting.value = true;
   try {
+    const nextSerial = (exportPrefs.value.exportSerial ?? 0) + 1;
     const filePath = await save({
       filters: [{ name: "CSV", extensions: ["csv"] }],
-      defaultPath: `glogger-drop-rates-${new Date().toISOString().slice(0, 10)}.csv`,
+      defaultPath: exportFileName(nextSerial),
     });
     if (!filePath) return;
     const count = await invoke<number>("export_kill_loot_database", { path: filePath });
+    // Only advance the serial once the export actually succeeds.
+    updateExportPrefs({ exportSerial: nextSerial });
     importMessage.value = `Exported ${count} enemies' drop data to ${filePath}.`;
   } catch (e) {
     errorMessage.value = `Export failed: ${e}`;

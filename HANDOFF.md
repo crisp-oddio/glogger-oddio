@@ -33,6 +33,18 @@ Previously an active farming session lived only in the frontend Pinia store
   NULL) and shows in Session History. The store does not auto-resume the session on next launch —
   the *data* is preserved, which was the requirement. Verified via `vue-tsc` + `cargo check` clean.
 
+### 2. ✅ Serialized export filenames (`charname-NNNN.csv`)
+The Farming → Database **Export** previously defaulted to `glogger-drop-rates-<YYYY-MM-DD>.csv`.
+Now suggests `<charname>-<NNNN>.csv` — e.g. `oddio-0001`, `oddio-0002`, … — in
+[DatabaseTab.vue](src/components/Farming/DatabaseTab.vue).
+- Char name = `settings.activeCharacterName` (sanitized to `[a-z0-9_-]`, lowercased), falling back to
+  `glogger` when no character is loaded.
+- `NNNN` is a **global** 4-digit zero-padded serial persisted via `useViewPrefs("database",
+  { exportSerial })`. The next serial is offered as the default filename and only **advances after a
+  successful export** (cancelling the dialog or a failed export does not consume a number).
+- **Design note:** the counter is global (total exports), not per-character — matches "how many
+  times we've exported." Frontend-only change; `vue-tsc` clean.
+
 ---
 
 # glogger — Session Handoff
