@@ -95,13 +95,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { ref, computed } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
-import { useGameDataStore } from '../../../stores/gameDataStore'
-import { EQUIPMENT_SLOTS } from '../../../types/buildPlanner'
 import type { BuildPresetMod } from '../../../types/buildPlanner'
 import { formatStatValue } from '../../../composables/useBuildStats'
+import { useBuildModEffects, modKey, slotLabel } from '../../../composables/useBuildModEffects'
 import EffectLine from './EffectLine.vue'
 import AbilityDamageCard from './AbilityDamageCard.vue'
 
@@ -114,31 +112,18 @@ const VIEW_TABS = [
 type ViewTab = typeof VIEW_TABS[number]['id']
 
 const store = useBuildPlannerStore()
-const gameData = useGameDataStore()
-const loadingEffects = ref(false)
 const activeTab = ref<ViewTab>('skill')
-const resolvedEffects = ref<Record<string, string[]>>({})
-const resolvedNames = ref<Record<string, string>>({})
-/** Tracks which mods belong to which skill (from resolved power info) */
-const modSkills = ref<Record<string, string | null>>({})
 
-/** Structured effect data per mod key */
-interface StructuredEffect {
-  label: string
-  value: string
-  displayType: string
-  formatted: string
-  iconId: number | null
-}
-const structuredEffects = ref<Record<string, StructuredEffect[]>>({})
-
-function slotLabel(slotId: string): string {
-  return EQUIPMENT_SLOTS.find(s => s.id === slotId)?.label ?? slotId
-}
-
-function modKey(mod: BuildPresetMod): string {
-  return `${mod.power_name}:${mod.tier ?? 0}`
-}
+// Resolved mod-effect data + the mod→ability cross-reference are shared with the
+// ability-bar tooltips via this composable (single resolution, kept in sync).
+const {
+  loading: loadingEffects,
+  resolvedEffects,
+  resolvedNames,
+  modSkills,
+  structuredEffects,
+  effectsForAbility,
+} = useBuildModEffects()
 
 interface EffectGroup {
   label: string
@@ -255,140 +240,26 @@ interface AbilityEffectGroup {
 }
 
 /**
- * Ability effect groups built using the precomputed TSys↔Ability index.
- * Uses a single batch call to the backend, then groups effects client-side.
+ * Ability effect groups derived from the shared mod→ability cross-reference.
+ * Recomputes automatically as the composable resolves effects / the build changes.
  */
-const abilityEffectGroups = ref<AbilityEffectGroup[]>([])
+const abilityEffectGroups = computed((): AbilityEffectGroup[] => {
+  if (store.presetAbilities.length === 0 || store.presetMods.length === 0) return []
 
-async function refreshAbilityEffectGroups() {
-  if (store.presetAbilities.length === 0 || store.presetMods.length === 0) {
-    abilityEffectGroups.value = []
-    return
-  }
-
-  const assignedAbilityIds = new Set(store.presetAbilities.map(a => a.ability_id))
+  // Unique assigned abilities (keep the first display name seen per id).
   const abilityNames = new Map<number, string>()
   for (const a of store.presetAbilities) {
-    if (a.ability_name) abilityNames.set(a.ability_id, a.ability_name)
-  }
-
-  // Collect unique power names from all assigned mods
-  // power_name is the internal_name — backend resolves to CDN key via index
-  const powerNames = [...new Set(store.presetMods.map(m => m.power_name))]
-
-  // Single batch call — backend accepts internal names or CDN keys, O(1) per key
-  let tsysAbilityMap: Record<string, number[]> = {}
-  if (powerNames.length > 0) {
-    try {
-      tsysAbilityMap = await gameData.getTsysAbilityMap(powerNames)
-    } catch { /* ignore */ }
-  }
-
-  // Group effects by ability
-  const groups = new Map<number, AbilityEffectEntry[]>()
-
-  for (const mod of store.presetMods) {
-    const key = modKey(mod)
-
-    const abilityIds = tsysAbilityMap[mod.power_name]
-    if (!abilityIds) continue
-
-    const matchedIds = abilityIds.filter(id => assignedAbilityIds.has(id))
-    if (matchedIds.length === 0) continue
-
-    const modEffects = structuredEffects.value[key]
-    if (!modEffects) continue
-
-    for (const abilityId of matchedIds) {
-      if (!groups.has(abilityId)) groups.set(abilityId, [])
-      for (const effect of modEffects) {
-        groups.get(abilityId)!.push({
-          label: effect.label,
-          numericValue: parseFloat(effect.value) || 0,
-          formattedValue: formatStatValue(parseFloat(effect.value) || 0, effect.displayType),
-          iconId: effect.iconId,
-          source: `${resolvedNames.value[key] ?? mod.power_name} (${slotLabel(mod.equip_slot)})`,
-        })
-      }
+    if (!abilityNames.has(a.ability_id)) {
+      abilityNames.set(a.ability_id, a.ability_name ?? `Ability #${a.ability_id}`)
     }
   }
 
   const result: AbilityEffectGroup[] = []
-  for (const [abilityId, effects] of groups) {
-    const name = abilityNames.get(abilityId) ?? `Ability #${abilityId}`
-    result.push({ abilityName: name, effects })
+  for (const [abilityId, name] of abilityNames) {
+    const effects = effectsForAbility(abilityId)
+    if (effects.length > 0) result.push({ abilityName: name, effects })
   }
   result.sort((a, b) => b.effects.length - a.effects.length)
-  abilityEffectGroups.value = result
-}
-
-// ── Data loading ─────────────────────────────────────────────────────────────
-
-async function resolveAllEffects() {
-  loadingEffects.value = true
-  const effects: Record<string, string[]> = {}
-  const skills: Record<string, string | null> = {}
-  const names: Record<string, string> = {}
-  const structured: Record<string, StructuredEffect[]> = {}
-  try {
-    for (const mod of store.presetMods) {
-      if (mod.tier == null) continue
-      const key = modKey(mod)
-      if (effects[key]) continue
-      try {
-        const info = await invoke<{
-          internal_name: string
-          skill: string | null
-          prefix: string | null
-          suffix: string | null
-          tier_effects: string[]
-          tier_effects_structured: Array<{
-            label: string
-            value: string
-            display_type: string
-            formatted: string
-            icon_id: number | null
-          }>
-        } | null>('get_tsys_power_info', {
-          powerName: mod.power_name,
-          tier: mod.tier,
-        })
-        if (info) {
-          if (info.tier_effects) effects[key] = info.tier_effects
-          skills[key] = info.skill
-          const displayName = info.prefix ?? info.suffix ?? mod.power_name
-          if (displayName !== mod.power_name) names[key] = displayName
-          if (info.tier_effects_structured) {
-            structured[key] = info.tier_effects_structured.map(e => ({
-              label: e.label,
-              value: e.value,
-              displayType: e.display_type,
-              formatted: e.formatted,
-              iconId: e.icon_id,
-            }))
-          }
-        }
-      } catch {
-        // Power might not resolve
-      }
-    }
-  } finally {
-    resolvedEffects.value = effects
-    modSkills.value = skills
-    resolvedNames.value = names
-    structuredEffects.value = structured
-    loadingEffects.value = false
-    // Refresh ability cross-reference after effects are resolved
-    refreshAbilityEffectGroups()
-  }
-}
-
-// Load effects when mods change (array reference changes on preset load)
-onMounted(() => {
-  if (store.presetMods.length > 0) resolveAllEffects()
-})
-
-watch(() => store.presetMods, () => {
-  resolveAllEffects()
+  return result
 })
 </script>

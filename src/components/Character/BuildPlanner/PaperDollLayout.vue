@@ -101,9 +101,15 @@
       </div>
     </div>
 
-    <!-- Paper Doll Grid -->
+    <!-- Paper Doll Grid (collapsible) -->
     <div v-if="store.activePreset" class="shrink-0">
-      <div class="grid grid-cols-[auto_1fr_auto] gap-x-2 gap-y-1.5 items-start">
+      <button
+        class="flex items-center gap-1 text-[10px] font-semibold text-text-muted uppercase tracking-wider cursor-pointer hover:text-text-secondary w-full"
+        @click="showEquipment = !showEquipment">
+        <span class="transition-transform" :class="showEquipment ? 'rotate-90' : ''">&#9654;</span>
+        Equipment
+      </button>
+      <div v-if="showEquipment" class="grid grid-cols-[auto_1fr_auto] gap-x-2 gap-y-1.5 items-start mt-1">
         <!-- Left column: Armor slots -->
         <div class="flex flex-col gap-1.5 items-center">
           <PaperDollSlot v-for="slot in leftSlots" :key="slot.id" :slot="slot" />
@@ -119,9 +125,20 @@
       </div>
     </div>
 
-    <!-- Ability bars (always visible below equipment) -->
-    <div v-if="store.activePreset" class="flex-1 min-h-0 overflow-y-auto border-t border-border-default pt-2">
-      <AbilityBarSummary />
+    <!-- Ability bars (collapsible) -->
+    <div
+      v-if="store.activePreset"
+      class="flex flex-col border-t border-border-default pt-2"
+      :class="showAbilities ? 'flex-1 min-h-0' : 'shrink-0'">
+      <button
+        class="flex items-center gap-1 text-[10px] font-semibold text-text-muted uppercase tracking-wider cursor-pointer hover:text-text-secondary w-full"
+        @click="showAbilities = !showAbilities">
+        <span class="transition-transform" :class="showAbilities ? 'rotate-90' : ''">&#9654;</span>
+        Abilities
+      </button>
+      <div v-if="showAbilities" class="flex-1 min-h-0 overflow-y-auto mt-1">
+        <AbilityBarSummary />
+      </div>
     </div>
 
     <!-- Dialogs -->
@@ -172,9 +189,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { EQUIPMENT_SLOTS, RARITY_DEFS } from '../../../types/buildPlanner'
+import { useViewPrefs } from '../../../composables/useViewPrefs'
 import StyledSelect from '../../Shared/StyledSelect.vue'
 import ModalDialog from '../../Shared/ModalDialog.vue'
 import PaperDollSlot from './PaperDollSlot.vue'
@@ -206,7 +224,19 @@ const combatSkillOptions = computed(() => [
   ...store.combatSkills.map(s => ({ value: s.name, label: s.name })),
 ])
 
-const showDefaults = ref(false)
+// Collapsible section states, persisted per-install via view prefs so the
+// planner reopens with the same sections shown/hidden.
+const { prefs: sectionPrefs, update: updateSectionPrefs } = useViewPrefs('build-planner', {
+  showDefaults: false,
+  showEquipment: true,
+  showAbilities: true,
+})
+const showDefaults = ref(sectionPrefs.value.showDefaults)
+const showEquipment = ref(sectionPrefs.value.showEquipment)
+const showAbilities = ref(sectionPrefs.value.showAbilities)
+watch([showDefaults, showEquipment, showAbilities], ([d, e, a]) => {
+  updateSectionPrefs({ showDefaults: d, showEquipment: e, showAbilities: a })
+})
 const showCreate = ref(false)
 const showRename = ref(false)
 const showClone = ref(false)
