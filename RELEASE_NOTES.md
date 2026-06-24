@@ -1,12 +1,7 @@
-## What's Changed since v0.10.1
+## What's Changed since v0.11.0
 
 ### Features
-- feat(build-planner): default combat-skill dropdowns in Set Defaults (`5ce1191`)
-- feat(farming): serialized export filenames (charname-NNNN.csv) (`675af66`)
-- feat(farming): periodic auto-save of active session for crash recovery (`368a312`)
-
-### Fixes
-- fix(dashboard): widget resize reflows neighbors via grid-column span (`6268972`)
+- feat(build-planner): ability mod tooltips, collapsible sections, global mod search + apply (`01a3701`)
 
 ---
-*6 commits since v0.10.1*
+*3 commits since v0.11.0*

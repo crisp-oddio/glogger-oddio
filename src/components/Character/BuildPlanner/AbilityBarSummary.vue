@@ -52,6 +52,8 @@
                   :ability="resolvedAbilities[getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id]!"
                   :icon-src="null"
                   v-if="resolvedAbilities[getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id]" />
+                <AbilityModBreakdown
+                  :mods="modsForAbility(getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id)" />
               </template>
             </EntityTooltipWrapper>
 
@@ -105,12 +107,15 @@ import GameIcon from '../../Shared/GameIcon.vue'
 import StyledSelect from '../../Shared/StyledSelect.vue'
 import EntityTooltipWrapper from '../../Shared/EntityTooltipWrapper.vue'
 import AbilityTooltip from '../../Shared/Ability/AbilityTooltip.vue'
+import AbilityModBreakdown from './AbilityModBreakdown.vue'
 import AbilityPickerDialog from './AbilityPickerDialog.vue'
+import { useBuildModEffects } from '../../../composables/useBuildModEffects'
 
 type BarId = 'primary' | 'secondary' | 'sidebar'
 
 const store = useBuildPlannerStore()
 const gameData = useGameDataStore()
+const { modsForAbility } = useBuildModEffects()
 const bars = ABILITY_BARS
 
 const resolvedAbilities = ref<Record<number, AbilityInfo>>({})

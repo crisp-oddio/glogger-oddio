@@ -1,11 +1,81 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-23 (Session 22 — Build Planner UX batch → v0.11.1)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (reconciled onto v0.11.0; releasing **v0.11.1**)
+**Status:** ✅ Build-planner enhancements, verified live in `npm run tauri dev` (HMR through the whole
+session) + `vue-tsc` clean. Committed, pushed, release dispatched.
+
+## TL;DR — Session 22 (Build Planner UX)
+
+All in the Character → Build Planner. v0.11.0 (PR #20) merged first; this batch ships as v0.11.1.
+
+### 1. Ability hover tooltip — applied mods + effects
+Hovering an ability in the bars beneath the equipment now shows, below the base ability info, an
+**"Applied mods (N)"** section listing each mod that targets that ability and its effects.
+- **New** [useBuildModEffects.ts](src/composables/useBuildModEffects.ts) — module-level singleton
+  (detached `effectScope` + watch on `presetMods`) that resolves each mod's structured effects and
+  the TSys↔Ability map **once**, exposing `effectsForAbility(id)` / `modsForAbility(id)`.
+- **New** [AbilityModBreakdown.vue](src/components/Character/BuildPlanner/AbilityModBreakdown.vue) —
+  the tooltip section. Added into the existing `EntityTooltipWrapper` in
+  [AbilityBarSummary.vue](src/components/Character/BuildPlanner/AbilityBarSummary.vue).
+- [BuildSummary.vue](src/components/Character/BuildPlanner/BuildSummary.vue) refactored to consume the
+  composable (its "By Ability" view is now a reactive computed off the same source — no dup logic).
+
+### 2. Collapsible left-pane sections (persisted)
+[PaperDollLayout.vue](src/components/Character/BuildPlanner/PaperDollLayout.vue) — **Equipment** and
+**Abilities** got chevron show/hide headers matching the existing **Set Defaults** one. All three
+states persist via `useViewPrefs('build-planner', { showDefaults, showEquipment, showAbilities })`
+(distinct from `SidePane`'s `build-planner.pane.*` keys). Also added Skill 1 / Skill 2 default
+dropdowns to Set Defaults earlier in the day (v0.11.0).
+
+### 3. "Search All Mods" → full catalog search + apply
+[GlobalModSearch.vue](src/components/Character/BuildPlanner/GlobalModSearch.vue) — was only filtering
+mods already in the build; now searches the **entire mod catalog**:
+- Backed by the existing `search_tsys` command; shown whenever **no slot is selected**
+  ([BuildPlannerScreen.vue](src/components/Character/BuildPlanner/BuildPlannerScreen.vue) dropped the
+  `presetMods.length > 0` gate). Grouped by skill (Generic last), debounced, capped 300.
+- **Inline effects:** each result shows its highest-tier effect text, batch-resolved in one
+  `get_tsys_power_info_batch` call per search.
+- **Click-to-apply:** each result's slots are clickable `+ Slot` buttons. Clicking applies the mod to
+  that slot via new store action
+  **`addCatalogModToSlot(slotId, internalName)`** ([buildPlannerStore.ts](src/stores/buildPlannerStore.ts))
+  — loads that slot's level-appropriate powers, enforces capacity/dup/skill-rarity constraints
+  (`computeSlotConstraints`), picks the tier, and adds **without** switching away from the search.
+  Transient success/failure message shown.
+
+### Verification / release
+`vue-tsc` clean throughout; exercised live via the running dev build (HMR). Released via the two-phase
+flow: reconciled `dev` onto `main` (v0.11.0), dispatched `release.yml --ref dev -f version=0.11.1`.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-23 (Session 21 — four-part feature batch; committing per step)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` (base v0.10.0)
+**Branch:** `dev` (reconciled to v0.10.1 base; **v0.11.0 release PR open**)
 **Status:** ✅ All four tasks done, each committed + pushed individually. `vue-tsc` + `cargo check`
-green after every step. UI changes (planner dropdowns, dashboard resize) need a `npm run tauri dev`
-click-test — browser preview can't mount the app (needs Tauri `invoke()`).
+green after every step; farming upsert covered by 2 passing unit tests; CI **validate** (build +
+`cargo test`) green. UI changes (planner dropdowns, dashboard resize) still need a `npm run tauri
+dev` click-test — computer-use couldn't drive the dev window (grant resolves to the *portable* exe
+path, masking the dev build), and the browser preview can't mount the app (needs Tauri `invoke()`).
+
+## Release — v0.11.0 (Session 21)
+
+Repo uses a **two-phase release flow** now (CLAUDE.md's old "push tag" note is stale):
+1. **Release** workflow (`release.yml`, workflow_dispatch) → validates, bumps version on a
+   `release/vX` branch, opens a **PR to `main`** (main is protected, no direct push).
+2. Merging that PR → **Release Publish** (`release-publish.yml`) tags + builds all installers +
+   GitHub Release, then Flatpak attaches.
+
+This session: `dev` had diverged from `main` — `main` was at **v0.10.1** (a version-only release,
+PR #19, *not* containing our features) while `dev` was at 0.10.0 + the 5 feature/test commits.
+Merged `origin/main` into `dev` (clean — our commits never touch version files, so no conflict;
+version baseline became 0.10.1), pushed `dev` (`e6b43d2`), then dispatched `release.yml --ref dev
+-f version=minor`. Validate + open-release-pr both green →
+**[release: v0.11.0 — PR #20](https://github.com/crisp-oddio/glogger-oddio/pull/20)** is OPEN.
+**Next action (user):** approve + merge PR #20 to publish v0.11.0.
 
 ## TL;DR — Session 21 (in progress)
 

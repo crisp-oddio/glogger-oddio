@@ -27,13 +27,10 @@
         <PaperDollLayout />
       </template>
 
-      <!-- Center: mod browser or global mod search -->
+      <!-- Center: mod browser (slot selected) or global catalog search -->
       <div class="flex flex-col h-full min-h-0">
         <SlotDetailPanel v-if="store.selectedSlot" />
-        <GlobalModSearch v-else-if="store.presetMods.length > 0" />
-        <div v-else class="flex items-center justify-center h-full text-text-muted text-sm">
-          Select an equipment slot to start planning
-        </div>
+        <GlobalModSearch v-else />
       </div>
 
       <template #right>

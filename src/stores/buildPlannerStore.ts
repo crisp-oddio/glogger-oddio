@@ -19,6 +19,7 @@ import {
   AUGMENT_CP_COST,
   getRarityDef,
   getArmorTypeFromKeywords,
+  computeSlotConstraints,
 } from "../types/buildPlanner"
 import type { ArmorType } from "../types/buildPlanner"
 import type { SkillInfo } from "../types/gameData/skills"
@@ -398,6 +399,78 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
     await saveMods()
   }
 
+  /**
+   * Apply a mod (by internal name) to an explicit slot from the global catalog
+   * search — without selecting the slot or disturbing the slot-detail view.
+   * Loads that slot's eligible powers for its level, then enforces the same
+   * capacity/duplicate/skill-rarity constraints the slot mod browser uses.
+   * Returns { ok } plus a reason code when it can't be applied.
+   */
+  async function addCatalogModToSlot(
+    slotId: string,
+    internalName: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (!activePreset.value) return { ok: false, reason: 'no-preset' }
+
+    let powers: SlotTsysPower[]
+    try {
+      powers = await invoke<SlotTsysPower[]>("get_tsys_powers_for_slot", {
+        skillPrimary: getSlotSkillPrimary(slotId),
+        skillSecondary: getSlotSkillSecondary(slotId),
+        equipSlot: slotId,
+        targetLevel: getSlotLevel(slotId),
+      })
+    } catch {
+      return { ok: false, reason: 'load-failed' }
+    }
+
+    const power = powers.find(p => (p.internal_name ?? p.key) === internalName)
+    if (!power) return { ok: false, reason: 'not-eligible' }
+
+    const powerName = power.internal_name ?? power.key
+    if (presetMods.value.some(m => m.equip_slot === slotId && m.power_name === powerName)) {
+      return { ok: false, reason: 'duplicate' }
+    }
+
+    const regularMods = presetMods.value.filter(m => m.equip_slot === slotId && !m.is_augment)
+    if (regularMods.length >= getMaxModsForSlot(slotId)) return { ok: false, reason: 'full' }
+
+    // Skill/rarity constraint check (mirrors the slot mod browser).
+    const skillCounts = new Map<string, number>()
+    let genCount = 0
+    for (const m of regularMods) {
+      const p = powers.find(sp => (sp.internal_name ?? sp.key) === m.power_name)
+      const s = p?.skill
+      if (!s || s === 'AnySkill' || s === 'Endurance') genCount++
+      else skillCounts.set(s, (skillCounts.get(s) ?? 0) + 1)
+    }
+    const isGeneric = !power.skill || power.skill === 'AnySkill' || power.skill === 'Endurance'
+    const constraints = computeSlotConstraints(getSlotRarity(slotId), skillCounts, genCount)
+    if (isGeneric) {
+      if (!constraints.canAddGeneric) return { ok: false, reason: 'no-room' }
+    } else if (skillCounts.has(power.skill!)) {
+      if (!constraints.canAddSkillMod) return { ok: false, reason: 'no-room' }
+    } else if (!constraints.canAddNewSkill) {
+      return { ok: false, reason: 'no-room' }
+    }
+
+    const nextOrder = Math.max(0, ...presetMods.value
+      .filter(m => m.equip_slot === slotId)
+      .map(m => m.sort_order)) + 1
+
+    presetMods.value.push({
+      id: -Date.now(),
+      preset_id: activePreset.value.id,
+      equip_slot: slotId,
+      power_name: powerName,
+      tier: power.tier_id ? parseInt(power.tier_id.replace("id_", "")) : null,
+      is_augment: false,
+      sort_order: nextOrder,
+    })
+    await saveMods()
+    return { ok: true }
+  }
+
   /** Persist all mods to the database */
   async function saveMods() {
     if (!activePreset.value) return
@@ -749,6 +822,7 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
     loadSlotPowers,
     addMod,
     removeMod,
+    addCatalogModToSlot,
     changeModTier,
     saveMods,
     onBuildParamsChanged,
