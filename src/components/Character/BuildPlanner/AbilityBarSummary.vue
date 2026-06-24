@@ -52,8 +52,8 @@
                   :ability="resolvedAbilities[getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id]!"
                   :icon-src="null"
                   v-if="resolvedAbilities[getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id]" />
-                <AbilityModBreakdown
-                  :mods="modsForAbility(getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id)" />
+                <AbilityEffectiveStats
+                  :stats="statsForAbility(getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id)" />
               </template>
             </EntityTooltipWrapper>
 
@@ -107,15 +107,15 @@ import GameIcon from '../../Shared/GameIcon.vue'
 import StyledSelect from '../../Shared/StyledSelect.vue'
 import EntityTooltipWrapper from '../../Shared/EntityTooltipWrapper.vue'
 import AbilityTooltip from '../../Shared/Ability/AbilityTooltip.vue'
-import AbilityModBreakdown from './AbilityModBreakdown.vue'
+import AbilityEffectiveStats from './AbilityEffectiveStats.vue'
 import AbilityPickerDialog from './AbilityPickerDialog.vue'
-import { useBuildModEffects } from '../../../composables/useBuildModEffects'
+import { useAbilityBuildStats } from '../../../composables/useAbilityBuildStats'
 
 type BarId = 'primary' | 'secondary' | 'sidebar'
 
 const store = useBuildPlannerStore()
 const gameData = useGameDataStore()
-const { modsForAbility } = useBuildModEffects()
+const { statsForAbility, prefetch } = useAbilityBuildStats()
 const bars = ABILITY_BARS
 
 const resolvedAbilities = ref<Record<number, AbilityInfo>>({})
@@ -226,6 +226,9 @@ async function resolveAbilityIcons() {
     }
   }
   resolvedAbilities.value = map
+
+  // Warm the effective-stats cache so hovers render with build data immediately.
+  prefetch(abilityIds)
 }
 
 // Re-resolve when abilities change or build switches

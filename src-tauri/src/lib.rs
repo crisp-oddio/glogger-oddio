@@ -83,6 +83,7 @@ use cdn_commands::{
     get_all_tsys,
     get_tsys_power_info,
     get_tsys_power_info_batch,
+    compute_ability_build_stats,
     get_tsys_powers_for_slot,
     get_tsys_profiles,
     get_tsys_for_ability,
@@ -184,6 +185,7 @@ use db::kill_tracking_commands::{
     list_imported_sources, search_database_enemies, search_database_harvested, search_database_items,
 };
 use db::game_state_commands::{
+    get_currency_estimate,
     get_game_state_active_skills, get_game_state_attributes, get_game_state_currencies,
     get_game_state_effects, get_game_state_equipment, get_game_state_favor,
     get_game_state_inventory, get_game_state_recipes, get_game_state_skills,
@@ -647,6 +649,7 @@ pub fn run() {
             resolve_effect_descs,
             get_tsys_power_info,
             get_tsys_power_info_batch,
+            compute_ability_build_stats,
             // TSys browser queries
             get_all_tsys,
             search_tsys,
@@ -855,6 +858,7 @@ pub fn run() {
             add_manual_gift,
             remove_last_gift,
             get_game_state_currencies,
+            get_currency_estimate,
             get_game_state_effects,
             get_game_state_storage,
             get_game_state_vendor,

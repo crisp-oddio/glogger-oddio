@@ -67,6 +67,19 @@ export type ChatStatusEvent =
       zone: string | null
     }
 
+// ── Currency Estimate ─────────────────────────────────────────────────────
+// Matches Rust CurrencyEstimate (db/game_state_commands.rs). Running estimate
+// of the council wallet (GOLD): last export's balance + live chat deltas.
+
+export interface CurrencyEstimate {
+  currency_name: string
+  anchor_amount: number
+  anchor_at: string | null
+  delta_since: number
+  estimated: number
+  has_anchor: boolean
+}
+
 // ── Combat Wisdom Types ──────────────────────────────────────────────────
 // Matches Rust CombatWisdomMonster (db/combat_wisdom_commands.rs).
 
@@ -170,6 +183,9 @@ export const useGameStateStore = defineStore('gameState', () => {
 
   /** Persisted per-monster Combat Wisdom cooldown data (from the DB). */
   const combatWisdomMonsters = ref<CombatWisdomMonster[]>([])
+
+  // ── Council-wallet estimate (anchored on last export + live deltas) ───
+  const currencyEstimate = ref<CurrencyEstimate | null>(null)
 
   /** Display names of combat skills (from CDN). Used to filter the
    *  non-prodigy combat XP line. Loaded lazily on first loadAll. */
@@ -542,6 +558,32 @@ export const useGameStateStore = defineStore('gameState', () => {
     }
   }
 
+  /** Reconcile the council-wallet estimate from the DB (anchor + delta_since).
+   *  Call on load/login and after a fresh export re-anchors it. */
+  async function fetchCurrencyEstimate() {
+    const characterName = getCharacterName()
+    const serverName = getServerName()
+    if (!characterName || !serverName) return
+    try {
+      currencyEstimate.value = await invoke<CurrencyEstimate | null>(
+        'get_currency_estimate', { characterName, serverName },
+      )
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load currency estimate:', e)
+    }
+  }
+
+  /** Optimistically apply a live wallet delta so the council figure ticks
+   *  without a round-trip. The backend applies the same delta to delta_since;
+   *  fetchCurrencyEstimate() reconciles on the next load. No-op until anchored
+   *  (mirrors the backend guard) and only while live (post-catch-up). */
+  function applyWalletDelta(amount: number) {
+    const e = currencyEstimate.value
+    if (!e || !e.has_anchor || amount === 0) return
+    e.delta_since += amount
+    e.estimated += amount
+  }
+
   /** Lazily load the set of combat-skill display names from the CDN. */
   async function loadCombatSkillNames() {
     if (combatSkillNames.value.size > 0) return
@@ -830,6 +872,7 @@ export const useGameStateStore = defineStore('gameState', () => {
           label: event.amount > 0 ? 'Received' : 'Spent',
           amount: event.amount,
         })
+        applyWalletDelta(event.amount)
         break
 
       case 'CoinsLooted':
@@ -838,6 +881,7 @@ export const useGameStateStore = defineStore('gameState', () => {
           label: 'Looted from corpse',
           amount: event.amount,
         })
+        applyWalletDelta(event.amount)
         break
 
       case 'XpGained':
@@ -918,6 +962,8 @@ export const useGameStateStore = defineStore('gameState', () => {
       loadTrackedSkills()
       // Load combat-skill names for the XP-rate widget (non-blocking)
       loadCombatSkillNames()
+      // Load the council-wallet estimate (anchor + live deltas) (non-blocking)
+      fetchCurrencyEstimate()
     } catch (e) {
       console.error('[gameStateStore] Failed to load game state:', e)
     } finally {
@@ -1091,6 +1137,10 @@ export const useGameStateStore = defineStore('gameState', () => {
     combatWisdomSession,
     combatWisdomMonsters,
     fetchCombatWisdomMonsters,
+
+    // Council-wallet estimate
+    currencyEstimate,
+    fetchCurrencyEstimate,
 
     // Tracked skills
     trackedSkillNames,

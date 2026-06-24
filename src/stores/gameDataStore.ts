@@ -23,6 +23,7 @@ import type {
   AbilityTsysXref,
   GardeningProductChain,
 } from "../types/gameData";
+import type { AbilityBuildStats, AbilityModRef } from "../types/abilityStats";
 import { extractNpcKeyFromFavorPath } from "../utils/questDisplay";
 
 export type DataStatus = "loading" | "ready" | "error" | "empty";
@@ -465,6 +466,15 @@ export const useGameDataStore = defineStore("gameData", () => {
     return invoke<Record<string, number[]>>("get_tsys_ability_map", { tsysKeys });
   }
 
+  /** Fold a build's assigned gear mods into an ability's combat stats (effective damage/heal/cost). */
+  async function computeAbilityBuildStats(
+    abilityId: number,
+    mods: AbilityModRef[],
+    pvp = false,
+  ): Promise<AbilityBuildStats | null> {
+    return invoke<AbilityBuildStats | null>("compute_ability_build_stats", { abilityId, mods, pvp });
+  }
+
   // ── Storage vault queries ──────────────────────────────────────────────────
 
   interface StorageVaultZoneInfo {
@@ -582,5 +592,6 @@ export const useGameDataStore = defineStore("gameData", () => {
     getTsysForAbility,
     getAbilitiesForTsys,
     getTsysAbilityMap,
+    computeAbilityBuildStats,
   };
 });

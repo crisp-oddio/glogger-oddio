@@ -17,6 +17,7 @@ macro_rules! startup_log {
 
 // ── Module declarations ──────────────────────────────────────────────────────
 mod abilities;
+pub mod ability_stats;
 mod ability_dynamic;
 mod ability_keywords;
 mod advancement_tables;

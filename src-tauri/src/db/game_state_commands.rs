@@ -112,6 +112,21 @@ pub struct GameStateCurrency {
     pub source: String,
 }
 
+/// Running council-wallet (`GOLD`) estimate (migration v56): the last export's
+/// balance (`anchor_amount` at `anchor_at`) plus live deltas (`delta_since`)
+/// parsed from chat. `estimated = anchor_amount + delta_since`. `has_anchor` is
+/// false until a character export seeds the anchor — until then the estimate is
+/// not meaningful and the UI should prompt for an export.
+#[derive(Serialize)]
+pub struct CurrencyEstimate {
+    pub currency_name: String,
+    pub anchor_amount: i64,
+    pub anchor_at: Option<String>,
+    pub delta_since: i64,
+    pub estimated: i64,
+    pub has_anchor: bool,
+}
+
 #[derive(Serialize)]
 pub struct GameStateEffect {
     pub effect_instance_id: i64,
@@ -441,6 +456,41 @@ pub fn get_game_state_currencies(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))
+}
+
+/// Council-wallet estimate for the active character+server (migration v56).
+/// Returns `None` when no row exists yet (no export imported for this
+/// character). The frontend reconciles its optimistic live counter against this.
+#[tauri::command]
+pub fn get_currency_estimate(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+) -> Result<Option<CurrencyEstimate>, String> {
+    use rusqlite::OptionalExtension;
+    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    conn.query_row(
+        "SELECT currency_name, anchor_amount, anchor_at, delta_since
+         FROM currency_estimate
+         WHERE character_name = ?1 AND server_name = ?2 AND currency_name = 'GOLD'",
+        rusqlite::params![character_name, server_name],
+        |row| {
+            let currency_name: String = row.get(0)?;
+            let anchor_amount: i64 = row.get(1)?;
+            let anchor_at: Option<String> = row.get(2)?;
+            let delta_since: i64 = row.get(3)?;
+            Ok(CurrencyEstimate {
+                has_anchor: anchor_at.is_some(),
+                estimated: anchor_amount + delta_since,
+                currency_name,
+                anchor_amount,
+                anchor_at,
+                delta_since,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| format!("Query error: {e}"))
 }
 
 #[tauri::command]

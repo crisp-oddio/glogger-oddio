@@ -302,6 +302,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 55)?;
     }
 
+    if current_version < 56 {
+        migration_v56_currency_estimate(conn)?;
+        super::record_migration(conn, 56)?;
+    }
+
     Ok(())
 }
 
@@ -335,6 +340,29 @@ fn migration_v55_loadout_aware_drops(conn: &Connection) -> Result<()> {
              ON enemy_kills(enemy_name, zone, combat_skills);
          ALTER TABLE imported_enemy_kills_agg ADD COLUMN combat_skills TEXT;
          ALTER TABLE imported_enemy_kill_loot_agg ADD COLUMN combat_skills TEXT;",
+    )?;
+    Ok(())
+}
+
+/// Migration v56: running estimate of the council wallet (internal `GOLD`),
+/// per character+server. Anchored on the last character export
+/// (`anchor_amount` at `anchor_at`); `delta_since` accumulates live wallet
+/// gains/losses parsed from chat *after* the anchor. Estimate =
+/// `anchor_amount + delta_since`. A fresh export re-anchors (resets
+/// `delta_since` to 0). Income is captured well from the logs; most spends are
+/// invisible, so the estimate drifts high until the next export re-anchors it.
+fn migration_v56_currency_estimate(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS currency_estimate (
+            character_name TEXT NOT NULL,
+            server_name    TEXT NOT NULL,
+            currency_name  TEXT NOT NULL DEFAULT 'GOLD',
+            anchor_amount  INTEGER NOT NULL DEFAULT 0,
+            anchor_at      TEXT,
+            delta_since    INTEGER NOT NULL DEFAULT 0,
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (character_name, server_name, currency_name)
+        );",
     )?;
     Ok(())
 }

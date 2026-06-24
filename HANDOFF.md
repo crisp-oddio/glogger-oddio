@@ -1,5 +1,70 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-24 (Session 23 — Council-wallet estimator, Tier 1)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` (unreleased — committed + pushed, no release dispatched)
+**Status:** ✅ Backend `cargo test --lib` **437 pass** (5 new parser tests), `vue-tsc` clean. Migration
+v56 is `CREATE TABLE IF NOT EXISTS` (idempotent). **Not yet click-tested in the live app** — needs a
+`npm run tauri dev` run + a character export to see the council figure populate (browser preview can't
+mount Tauri `invoke()`, the usual limitation).
+
+## TL;DR — Session 23 (live council-balance estimate)
+
+**Problem the user raised:** the dashboard only shows "relevant" data right after a manual character +
+storage export; live tailing doesn't keep currency current. **Audit finding (the crux):** Player.log
+contains **no** absolute currency value anywhere (`ProcessVendorUpdateAvailableGold` is the *vendor's*
+budget; the login `ProcessSetAttributes` dump has no gold field; NPC dialog "costs N councils" is a
+quoted price, not a debit). The wallet is one currency — internal **`GOLD`**, shown as "councils" =
+"coins". **Gains are well-visible in chat; spends are almost entirely invisible** (vendor buys,
+training, vault slots, hiring, trades produce no log line). So the only viable model is **anchor on the
+last export + accumulate visible chat deltas**, which **drifts high** until the next export re-anchors.
+
+### What shipped (Tier 1)
+1. **Parser** ([chat_status_parser.rs](src-tauri/src/chat_status_parser.rs)) — new `try_councils_misc`
+   adds 5 previously-dropped wallet lines, all → signed `CouncilsChanged`: `You receive N coins.` (+,
+   ~776 in the user's 61 logs — the big gap), `You recovered N Councils stolen by <mob>.` (+),
+   `You retrieve N stolen coins.` (+), `You were given N coins by <player>!` (+),
+   `<mob> stole N Councils!` (−). 5 unit tests. Existing `CoinsLooted` (corpse, 6851 events) +
+   `CouncilsChanged` (received/used) already covered the rest.
+2. **Migration v56** ([migrations.rs](src-tauri/src/db/migrations.rs)) — `currency_estimate` table
+   (PK char/server/currency): `anchor_amount`, `anchor_at`, `delta_since`. Estimate = anchor + delta.
+3. **Anchor seeding** ([character_commands.rs](src-tauri/src/db/character_commands.rs)
+   `seed_game_state_from_snapshot`) — on export import, upsert anchor from `report.currencies["GOLD"]`
+   at the export `Timestamp` (Z-stripped to "%Y-%m-%d %H:%M:%S" UTC), **resetting `delta_since=0`**.
+   Guarded so an older re-imported export can't clobber a fresher anchor.
+4. **Live accrual** ([coordinator.rs](src-tauri/src/coordinator.rs)) — new match arms for `CoinsLooted`
+   / `CouncilsChanged` call `accrue_currency_delta(amount, event_ts)`, which adds the signed delta to
+   `delta_since` for the active char **only when an anchor exists AND `event_ts > anchor_at`** (so
+   replaying pre-export chat during catch-up can't double-count).
+5. **Command + store** — `get_currency_estimate` ([game_state_commands.rs](src-tauri/src/db/game_state_commands.rs),
+   registered in [lib.rs](src-tauri/src/lib.rs)) returns `{anchor_amount, anchor_at, delta_since,
+   estimated, has_anchor}`. [gameStateStore.ts](src/stores/gameStateStore.ts) gains `currencyEstimate`
+   + `fetchCurrencyEstimate()` (called in `loadAll`), with **optimistic** `applyWalletDelta()` on live
+   `CoinsLooted`/`CouncilsChanged` so the figure ticks without a round-trip.
+   [characterStore.ts](src/stores/characterStore.ts) re-fetches the estimate after a fresh export
+   re-anchors it.
+6. **UI** ([CouncilsWidget.vue](src/components/Dashboard/widgets/CouncilsWidget.vue)) — header shows
+   `estimated.toLocaleString()` councils + "≈ est. · anchored Nh ago" (or "no export yet — import to
+   anchor"), with a tooltip stating income is tracked but spends drift it high. Activity feed unchanged.
+
+### Validated on real data
+Ran the 5 patterns over a busy real log (`Chat-26-04-08.log`): net **+27,436** councils for the day
+(29,273 gains across 220 events, −1,837 from 5 mugger thefts). The 12 `receive coins` that day were
+previously dropped.
+
+### Known limitation / Tier 2 (deferred, by design)
+Spends are invisible in both logs, so the estimate **overestimates** between exports — fine for a
+farmer (gains ≫ spends), drifts fast for a merchant/crafter. Re-anchoring on each export bounds the
+error. **Tier 2** (not built): infer purchases by correlating `ProcessVendorScreen` item prices with
+the matching `ProcessAddItem(…, True)` — fragile, separate follow-up. Also: the optimistic client
+counter isn't idempotent against a chat re-scan (same caveat as `item_transactions`); a re-export fixes
+it. **Next:** click-test in `npm run tauri dev` — export a character, confirm the figure anchors and
+ticks on coin loot.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-23 (Session 22 — Build Planner UX batch → v0.11.1)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (reconciled onto v0.11.0; releasing **v0.11.1**)
