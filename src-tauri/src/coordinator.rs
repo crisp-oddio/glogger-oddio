@@ -1141,6 +1141,16 @@ impl DataIngestCoordinator {
                                     .ok();
                                 }
                             }
+                            ChatStatusEvent::CoinsLooted { amount, timestamp } => {
+                                // Corpse coins — a wallet gain. Feeds the council
+                                // estimate (migration v56).
+                                self.accrue_currency_delta(*amount as i64, timestamp);
+                            }
+                            ChatStatusEvent::CouncilsChanged { amount, timestamp } => {
+                                // Signed wallet delta (received/used/recovered/
+                                // stolen) — feeds the council estimate.
+                                self.accrue_currency_delta(*amount, timestamp);
+                            }
                             _ => {}
                         }
 
@@ -1337,6 +1347,41 @@ impl DataIngestCoordinator {
         self.app_handle
             .emit("coordinator-status", status)
             .map_err(|e| format!("Failed to emit event: {}", e))
+    }
+
+    /// Add a signed wallet delta (parsed from a chat `[Status]` line) to the
+    /// council-estimate's running `delta_since` for the active character+server.
+    ///
+    /// Guards (see migration v56 / `seed_game_state_from_snapshot` anchoring):
+    /// - no-op until a character export has seeded an anchor (`anchor_at` set),
+    ///   since without an absolute the estimate is meaningless;
+    /// - only counts events that post-date the anchor (`event_ts > anchor_at`),
+    ///   so replaying pre-export chat during catch-up can't double-count.
+    ///
+    /// `event_ts` is the event's UTC `"%Y-%m-%d %H:%M:%S"` timestamp, which
+    /// string-compares cleanly against the stored `anchor_at` (Z-stripped).
+    fn accrue_currency_delta(&self, amount: i64, event_ts: &str) {
+        if amount == 0 {
+            return;
+        }
+        let (Some(character), Some(server)) = (
+            self.game_state.get_active_character(),
+            self.game_state.get_active_server(),
+        ) else {
+            return;
+        };
+        if let Ok(conn) = self.db_pool.get() {
+            conn.execute(
+                "UPDATE currency_estimate
+                    SET delta_since = delta_since + ?1, updated_at = datetime('now')
+                  WHERE character_name = ?2 AND server_name = ?3
+                    AND currency_name = 'GOLD'
+                    AND anchor_at IS NOT NULL
+                    AND ?4 > anchor_at",
+                rusqlite::params![amount, character, server, event_ts],
+            )
+            .ok();
+        }
     }
 
     /// Persist a player death event to the character_deaths table,

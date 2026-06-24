@@ -817,6 +817,31 @@ fn seed_game_state_from_snapshot(
             .ok();
     }
 
+    // Re-anchor the council-wallet estimate (migration v56) on this export's
+    // GOLD balance, resetting the running `delta_since` to 0 — live chat deltas
+    // accrue from here (see coordinator::accrue_currency_delta). Only re-anchors
+    // when this snapshot post-dates the stored anchor, so importing an older
+    // export can't clobber a fresher anchor. `anchor_at` drops the trailing 'Z'
+    // so it string-compares cleanly against the UTC "%Y-%m-%d %H:%M:%S" event
+    // timestamps used by the accrual guard.
+    if let Some(gold) = report.currencies.get("GOLD") {
+        let anchor_at = ts.trim_end_matches('Z');
+        conn.execute(
+            "INSERT INTO currency_estimate
+                (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since, updated_at)
+             VALUES (?1, ?2, 'GOLD', ?3, ?4, 0, datetime('now'))
+             ON CONFLICT(character_name, server_name, currency_name) DO UPDATE SET
+                anchor_amount = excluded.anchor_amount,
+                anchor_at = excluded.anchor_at,
+                delta_since = 0,
+                updated_at = excluded.updated_at
+             WHERE currency_estimate.anchor_at IS NULL
+                OR excluded.anchor_at > currency_estimate.anchor_at",
+            rusqlite::params![character, server, *gold, anchor_at],
+        )
+        .ok();
+    }
+
     // Seed storage vault contents from the latest item snapshot
     // Full replacement — snapshot is authoritative for storage state
     conn.execute(

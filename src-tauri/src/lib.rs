@@ -184,6 +184,7 @@ use db::kill_tracking_commands::{
     list_imported_sources, search_database_enemies, search_database_harvested, search_database_items,
 };
 use db::game_state_commands::{
+    get_currency_estimate,
     get_game_state_active_skills, get_game_state_attributes, get_game_state_currencies,
     get_game_state_effects, get_game_state_equipment, get_game_state_favor,
     get_game_state_inventory, get_game_state_recipes, get_game_state_skills,
@@ -855,6 +856,7 @@ pub fn run() {
             add_manual_gift,
             remove_last_gift,
             get_game_state_currencies,
+            get_currency_estimate,
             get_game_state_effects,
             get_game_state_storage,
             get_game_state_vendor,
