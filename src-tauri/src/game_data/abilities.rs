@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
 /// Typed PvE or PvP combat stats for an ability.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Default)]
 pub struct CombatStats {
     pub damage: Option<f32>,
     pub power_cost: Option<f32>,
@@ -22,8 +22,44 @@ pub struct CombatStats {
     pub attributes_that_mod_rage: Vec<String>,
     pub attributes_that_delta_taunt: Vec<String>,
     pub attributes_that_mod_taunt: Vec<String>,
+    /// Damage-over-time components (each with its own per-tick damage and mod arrays).
+    pub dots: Vec<DotEffect>,
+    /// Labeled non-damage values (heals, restores, etc.) with their own mod arrays.
+    pub special_values: Vec<SpecialValue>,
     /// Any fields not explicitly typed above.
     pub extra: Value,
+}
+
+/// A single damage-over-time component of an ability.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct DotEffect {
+    pub damage_per_tick: f32,
+    pub num_ticks: f32,
+    pub duration: Option<f32>,
+    pub damage_type: Option<String>,
+    pub preface: Option<String>,
+    /// Flat additions to per-tick damage.
+    pub attributes_that_delta: Vec<String>,
+    /// Percentage multipliers on per-tick damage.
+    pub attributes_that_mod: Vec<String>,
+}
+
+/// A labeled numeric effect of an ability (heal, restore, buff amount, etc.).
+/// Shares the same base-value + delta/mod-attribute shape as damage.
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct SpecialValue {
+    pub label: Option<String>,
+    pub suffix: Option<String>,
+    pub value: f32,
+    pub display_type: Option<String>,
+    /// When true and the resolved value is zero, the game hides this line.
+    pub skip_if_zero: bool,
+    /// Flat additions to the base value.
+    pub attributes_that_delta_base: Vec<String>,
+    /// Flat additions applied after the base.
+    pub attributes_that_delta: Vec<String>,
+    /// Percentage multipliers.
+    pub attributes_that_mod: Vec<String>,
 }
 
 /// A single ability definition.
@@ -167,6 +203,8 @@ const COMBAT_STATS_KNOWN_KEYS: &[&str] = &[
     "AttributesThatModRage",
     "AttributesThatDeltaTaunt",
     "AttributesThatModTaunt",
+    "DoTs",
+    "SpecialValues",
 ];
 
 fn parse_combat_stats(value: &Value) -> CombatStats {
@@ -198,8 +236,51 @@ fn parse_combat_stats(value: &Value) -> CombatStats {
         attributes_that_mod_rage: str_array_field(value, "AttributesThatModRage"),
         attributes_that_delta_taunt: str_array_field(value, "AttributesThatDeltaTaunt"),
         attributes_that_mod_taunt: str_array_field(value, "AttributesThatModTaunt"),
+        dots: parse_dots(value),
+        special_values: parse_special_values(value),
         extra,
     }
+}
+
+fn parse_dots(value: &Value) -> Vec<DotEffect> {
+    value
+        .get("DoTs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|d| DotEffect {
+                    damage_per_tick: f32_field(d, "DamagePerTick").unwrap_or(0.0),
+                    num_ticks: f32_field(d, "NumTicks").unwrap_or(0.0),
+                    duration: f32_field(d, "Duration"),
+                    damage_type: str_field(d, "DamageType"),
+                    preface: str_field(d, "Preface"),
+                    attributes_that_delta: str_array_field(d, "AttributesThatDelta"),
+                    attributes_that_mod: str_array_field(d, "AttributesThatMod"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_special_values(value: &Value) -> Vec<SpecialValue> {
+    value
+        .get("SpecialValues")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|s| SpecialValue {
+                    label: str_field(s, "Label"),
+                    suffix: str_field(s, "Suffix"),
+                    value: f32_field(s, "Value").unwrap_or(0.0),
+                    display_type: str_field(s, "DisplayType"),
+                    skip_if_zero: bool_field(s, "SkipIfZero").unwrap_or(false),
+                    attributes_that_delta_base: str_array_field(s, "AttributesThatDeltaBase"),
+                    attributes_that_delta: str_array_field(s, "AttributesThatDelta"),
+                    attributes_that_mod: str_array_field(s, "AttributesThatMod"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ── Field extraction helpers ─────────────────────────────────────────────────

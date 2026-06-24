@@ -83,6 +83,7 @@ use cdn_commands::{
     get_all_tsys,
     get_tsys_power_info,
     get_tsys_power_info_batch,
+    compute_ability_build_stats,
     get_tsys_powers_for_slot,
     get_tsys_profiles,
     get_tsys_for_ability,
@@ -648,6 +649,7 @@ pub fn run() {
             resolve_effect_descs,
             get_tsys_power_info,
             get_tsys_power_info_batch,
+            compute_ability_build_stats,
             // TSys browser queries
             get_all_tsys,
             search_tsys,

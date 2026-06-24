@@ -1,4 +1,4 @@
-import { defineStore } from "pinia"
+import { defineStore, acceptHMRUpdate } from "pinia"
 import { ref, computed } from "vue"
 import { invoke } from "@tauri-apps/api/core"
 import { useSettingsStore } from "./settingsStore"
@@ -320,6 +320,14 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
   }
 
   async function selectSlot(slotId: string) {
+    // Clicking the already-selected slot deselects it, collapsing the slot detail
+    // panel and revealing the global "Search All Mods" catalog in the center pane.
+    if (selectedSlot.value === slotId) {
+      selectedSlot.value = null
+      activeBar.value = null
+      modFilter.value = ""
+      return
+    }
     selectedSlot.value = slotId
     activeBar.value = null
     modFilter.value = ""
@@ -847,3 +855,9 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
     removeCpRecipe,
   }
 })
+
+// Enable proper Pinia hot-module replacement: without this, editing a store action
+// during `tauri dev` leaves the already-instantiated singleton running the old code.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useBuildPlannerStore, import.meta.hot))
+}

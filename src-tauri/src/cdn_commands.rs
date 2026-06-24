@@ -2085,6 +2085,107 @@ pub async fn get_tsys_power_info_batch(
     Ok(result)
 }
 
+// ── Effective ability stats (build planner) ─────────────────────────────────
+
+/// Parse the `{TOKEN}{VALUE}` head of an effect desc into (raw token, numeric value).
+/// Mirrors `resolve_single_effect`'s parsing but keeps the token the resolver discards.
+fn parse_token_value(desc: &str) -> Option<(String, f64)> {
+    let parts: Vec<&str> = desc.split('{').filter(|s| !s.is_empty()).collect();
+    if parts.len() >= 2 {
+        let token = parts[0].trim_end_matches('}').to_string();
+        let value: f64 = parts[1].trim_end_matches('}').parse().ok()?;
+        if !token.is_empty() {
+            return Some((token, value));
+        }
+    }
+    None
+}
+
+/// One assigned build mod, as the frontend knows it (preset mods + slot label).
+#[derive(serde::Deserialize)]
+pub struct AbilityModRef {
+    pub power_name: String,
+    pub tier: i64,
+    /// Pre-formatted equipment slot label (e.g. "Hands") for source attribution.
+    pub slot_label: String,
+}
+
+/// Compute an ability's effective combat stats under a build's assigned gear mods.
+///
+/// Resolves each mod tier's `{TOKEN}{VALUE}` effects to raw tokens, then defers all
+/// game-formula math to `game_data::ability_stats` (which classifies each token by exact
+/// membership in the ability's attribute buckets). Returns `None` only if the ability id
+/// is unknown.
+#[tauri::command]
+pub async fn compute_ability_build_stats(
+    ability_id: u32,
+    mods: Vec<AbilityModRef>,
+    pvp: bool,
+    state: State<'_, GameDataState>,
+) -> Result<Option<crate::game_data::ability_stats::AbilityBuildStats>, String> {
+    use crate::game_data::ability_stats::{compute, AbilityBuildStats, ModEffect};
+
+    let data = state.read().await;
+    let Some(ability) = data.abilities.get(&ability_id) else {
+        return Ok(None);
+    };
+    let stats = if pvp { ability.pvp.as_ref() } else { ability.pve.as_ref() };
+    let Some(stats) = stats else {
+        // No combat stats for this side — nothing to compute, but the ability exists.
+        return Ok(Some(AbilityBuildStats::default()));
+    };
+
+    let mut effects: Vec<ModEffect> = Vec::new();
+    for mref in &mods {
+        // O(1) internal-name → CDN key → client_info lookup.
+        let info = data
+            .tsys_internal_name_index
+            .get(&mref.power_name)
+            .and_then(|cdn_key| data.tsys.client_info.get(cdn_key));
+        let Some(info) = info else { continue };
+
+        let display_name = info
+            .prefix
+            .clone()
+            .or_else(|| info.suffix.clone())
+            .unwrap_or_else(|| mref.power_name.clone());
+        let source = format!("{} ({})", display_name, mref.slot_label);
+
+        let tier_key = format!("id_{}", mref.tier);
+        let Some(tier_info) = info.tiers.get(&tier_key) else { continue };
+        for desc in &tier_info.effect_descs {
+            let Some((token, value)) = parse_token_value(desc) else { continue };
+            let (label, display_type) = data
+                .attributes
+                .get(&token)
+                .map(|attr| {
+                    (
+                        attr.raw
+                            .get("Label")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&token)
+                            .to_string(),
+                        attr.raw
+                            .get("DisplayType")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("AsInt")
+                            .to_string(),
+                    )
+                })
+                .unwrap_or_else(|| (token.clone(), String::new()));
+            effects.push(ModEffect {
+                token,
+                value,
+                source: source.clone(),
+                label,
+                display_type,
+            });
+        }
+    }
+
+    Ok(Some(compute(stats, ability.damage_type.clone(), &effects)))
+}
+
 // ── Storage Vault query commands ─────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
