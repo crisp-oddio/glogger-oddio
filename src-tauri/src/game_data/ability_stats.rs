@@ -204,15 +204,61 @@ fn indirect_tokens(prefix: &str, damage_type: Option<&str>) -> Vec<String> {
     v
 }
 
+/// Damage-type names whose uppercase form matches the `*_<TYPE>_INDIRECT` attribute tokens.
+const DAMAGE_TYPES: &[&str] = &[
+    "Acid", "Cold", "Crushing", "Darkness", "Demonic", "Divine", "Electricity", "Fire",
+    "Fungus", "Nature", "Piercing", "Poison", "Psychic", "Seafood", "Slashing", "Sonic",
+    "Trauma",
+];
+
+/// True when a special value represents indirect (damage-over-time) damage — detected by a
+/// DoT/indirect attribute token in its own arrays (`*ABILITYDOT*`, `*_INDIRECT`). This keeps
+/// heals/armor-over-time (which use `*HEAL*`/`*ARMOR*` tokens) from picking up damage mods.
+fn sv_is_indirect_damage(sv: &SpecialValue) -> bool {
+    sv.attributes_that_delta_base
+        .iter()
+        .chain(&sv.attributes_that_delta)
+        .chain(&sv.attributes_that_mod)
+        .any(|t| t.contains("ABILITYDOT") || t.contains("_INDIRECT"))
+}
+
+/// Find the damage type named in a special value's label/suffix (e.g. "Trauma damage" →
+/// "Trauma") so the matching generic indirect tokens can be selected. Falls back to `None`
+/// (universal-only) when no type is named.
+fn parse_damage_type(sv: &SpecialValue) -> Option<String> {
+    let text = format!(
+        "{} {}",
+        sv.label.as_deref().unwrap_or(""),
+        sv.suffix.as_deref().unwrap_or("")
+    )
+    .to_lowercase();
+    DAMAGE_TYPES
+        .iter()
+        .find(|t| text.contains(&t.to_lowercase()))
+        .map(|t| t.to_string())
+}
+
 fn special_value_breakdown(sv: &SpecialValue, mods: &[ModEffect]) -> SpecialValueBreakdown {
     let base = sv.value as f64;
     let mut contributions = Vec::new();
+
+    // A special value that carries a DoT/indirect token (e.g. reflect-style "they suffer X
+    // Trauma damage over time") is indirect damage, so the generic per-damage-type and
+    // universal indirect modifiers apply on top of its own tokens — same rule as DoTs.
+    let mut delta_tokens = sv.attributes_that_delta.clone();
+    let mut mod_tokens = sv.attributes_that_mod.clone();
+    if sv_is_indirect_damage(sv) {
+        let dtype = parse_damage_type(sv);
+        delta_tokens.extend(indirect_tokens("BOOST", dtype.as_deref()));
+        mod_tokens.extend(indirect_tokens("MOD", dtype.as_deref()));
+    }
+
     // DeltaBase adds to the base before the multiplier; Delta adds afterward. Both end up
     // multiplied by (1 + mod%), so they fold into `added` for the arithmetic but keep
     // distinct bucket labels for the breakdown display.
     let delta_base = collect_bucket(mods, &sv.attributes_that_delta_base, "delta_base", &mut contributions);
-    let delta = collect_bucket(mods, &sv.attributes_that_delta, "delta", &mut contributions);
-    let mod_pct = collect_bucket(mods, &sv.attributes_that_mod, "mod", &mut contributions);
+    let delta = collect_bucket(mods, &delta_tokens, "delta", &mut contributions);
+    let mod_pct = collect_bucket(mods, &mod_tokens, "mod", &mut contributions);
     let effective = apply_formula(base + delta_base, delta, 0.0, mod_pct);
     SpecialValueBreakdown {
         label: sv.label.clone(),
@@ -370,6 +416,31 @@ mod tests {
         assert!((sv.value.base - 25.0).abs() < 1e-6);
         assert!((sv.value.effective - 30.0).abs() < 1e-6);
         assert_eq!(sv.label.as_deref(), Some("Restore"));
+    }
+
+    /// A DoT expressed as a SpecialValue (reflect-style, e.g. Tough Hoof's "X Trauma damage")
+    /// gets generic indirect modifiers too, but not base-skill-damage.
+    #[test]
+    fn special_value_dot_gets_generic_indirect() {
+        let stats = CombatStats {
+            special_values: vec![SpecialValue {
+                label: Some("For 8 seconds, each time target attacks you, they suffer".into()),
+                suffix: Some("Trauma damage".into()),
+                value: 50.0,
+                attributes_that_delta: vec!["BOOST_ABILITYDOT_TOUGHHOOF".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mods = vec![
+            m("BOOST_ABILITYDOT_TOUGHHOOF", 30.0), // ability-specific DoT flat
+            m("MOD_TRAUMA_INDIRECT", 0.25),        // generic % indirect (Trauma)
+            m("MOD_SKILL_UNARMED", 1.00),          // base-skill: must NOT apply
+        ];
+        let out = compute(&stats, None, &mods);
+        let sv = &out.special_values[0];
+        // (50 + 30) × (1 + 0.25) = 100
+        assert!((sv.value.effective - 100.0).abs() < 1e-6, "got {}", sv.value.effective);
     }
 
     /// A dormant SpecialValue (base 0, SkipIfZero) lights up when a mod feeds its token.
