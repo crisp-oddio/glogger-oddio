@@ -1,8 +1,9 @@
-## What's Changed since v0.11.1
+## What's Changed since v0.11.2
 
-### Features
-- feat(build-planner): effective ability stats on hover + slot deselect toggle (`2cd8bfa`)
-- feat(dashboard): live council-balance estimate anchored on last export (`4a72ac1`)
+### Fixes
+- fix(build-planner): register direct-hit damage from HealthSpecificDamage (`0b1b7f9`)
+- fix(build-planner): apply indirect-damage rule to every DoT component (`69a3f34`)
+- fix(build-planner): DoT damage uses indirect modifiers only (`df944df`)
 
 ---
-*3 commits since v0.11.1*
+*5 commits since v0.11.2*
