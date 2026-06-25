@@ -8,6 +8,13 @@ use std::collections::HashMap;
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct CombatStats {
     pub damage: Option<f32>,
+    /// Armor-bypassing "health-specific" up-front hit (e.g. Mindworm, Mamba Strike). Shares the
+    /// ability's standard direct-damage modifier arrays — there is no HSD-specific mod array in
+    /// the data — so it is computed with the same buckets as `damage`.
+    pub health_specific_damage: Option<f32>,
+    /// "Armor-specific" up-front hit (e.g. Acid Opener, Acid Spew's armor component). Also driven
+    /// by the standard direct-damage modifier arrays.
+    pub armor_specific_damage: Option<f32>,
     pub power_cost: Option<f32>,
     pub range: Option<f32>,
     pub rage_cost: Option<f32>,
@@ -190,6 +197,7 @@ pub fn parse(json: &str) -> Result<HashMap<u32, AbilityInfo>, String> {
 const COMBAT_STATS_KNOWN_KEYS: &[&str] = &[
     "Damage",
     "HealthSpecificDamage",
+    "ArmorSpecificDamage",
     "PowerCost",
     "Range",
     "RageCost",
@@ -222,13 +230,18 @@ fn parse_combat_stats(value: &Value) -> CombatStats {
     };
 
     CombatStats {
-        // Many abilities (Mentalism/Psychology/Vampirism, ~235 in the dataset) express their
-        // direct hit as `HealthSpecificDamage` (armor-bypassing health damage) with no plain
-        // `Damage` field, yet still carry the standard direct-damage modifier arrays
-        // (AttributesThatDelta/ModDamage). Treat it as the direct-hit base so the up-front hit
-        // shows alongside the DoT (e.g. Mindworm: 369 Psychic + 84/tick × 4). When both exist
-        // (a rare execute-bonus shape, e.g. Finishing Blow), the primary `Damage` wins.
-        damage: f32_field(value, "Damage").or_else(|| f32_field(value, "HealthSpecificDamage")),
+        // Three distinct up-front damage shapes exist in the data and are kept separate so each
+        // can be shown on its own line in the effective-stats tooltip:
+        //   • `Damage`               — normal hit (armor first, then health).
+        //   • `HealthSpecificDamage` — armor-bypassing hit (Mentalism/Psychology/Vampirism, ~235).
+        //   • `ArmorSpecificDamage`  — armor-only hit (Acid* etc., ~188).
+        // Some abilities carry two or three at once (e.g. Acid Spew = Damage + Armor, Rage Acid
+        // Toss = Health + Armor). All three share the ability's single set of direct-damage
+        // modifier arrays (there is no per-shape mod array), so the formula engine folds the same
+        // mods into each component.
+        damage: f32_field(value, "Damage"),
+        health_specific_damage: f32_field(value, "HealthSpecificDamage"),
+        armor_specific_damage: f32_field(value, "ArmorSpecificDamage"),
         power_cost: f32_field(value, "PowerCost"),
         range: f32_field(value, "Range"),
         rage_cost: f32_field(value, "RageCost"),
@@ -325,25 +338,34 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// HealthSpecificDamage (Mindworm-style armor-bypassing hit) is read as the direct-damage
-    /// base when no plain `Damage` field is present, and doesn't leak into `extra`.
+    /// HealthSpecificDamage / ArmorSpecificDamage parse into their own typed fields (the plain
+    /// `Damage` field stays empty when absent) and don't leak into `extra`.
     #[test]
-    fn health_specific_damage_becomes_direct_damage() {
+    fn specific_damage_fields_are_typed() {
         let pve = json!({
             "HealthSpecificDamage": 369,
+            "ArmorSpecificDamage": 45,
             "AttributesThatDeltaDamage": ["BOOST_ABILITY_MINDWORM"],
             "DoTs": [{ "DamagePerTick": 84, "NumTicks": 4, "DamageType": "Psychic" }],
         });
         let stats = parse_combat_stats(&pve);
-        assert_eq!(stats.damage, Some(369.0));
+        assert_eq!(stats.damage, None);
+        assert_eq!(stats.health_specific_damage, Some(369.0));
+        assert_eq!(stats.armor_specific_damage, Some(45.0));
         assert_eq!(stats.dots.len(), 1);
         assert!(stats.extra.get("HealthSpecificDamage").is_none(), "HSD should be typed, not in extra");
+        assert!(stats.extra.get("ArmorSpecificDamage").is_none(), "ASD should be typed, not in extra");
     }
 
-    /// When both exist (rare execute-bonus shape, e.g. Finishing Blow), the primary `Damage` wins.
+    /// When plain `Damage` and a specific-damage component coexist (e.g. Finishing Blow =
+    /// Damage + Health, Acid Spew = Damage + Armor), each is preserved as its own field so both
+    /// hits can be displayed.
     #[test]
-    fn plain_damage_wins_over_health_specific() {
-        let pve = json!({ "Damage": 10, "HealthSpecificDamage": 50 });
-        assert_eq!(parse_combat_stats(&pve).damage, Some(10.0));
+    fn plain_and_specific_damage_coexist() {
+        let pve = json!({ "Damage": 10, "HealthSpecificDamage": 50, "ArmorSpecificDamage": 10 });
+        let stats = parse_combat_stats(&pve);
+        assert_eq!(stats.damage, Some(10.0));
+        assert_eq!(stats.health_specific_damage, Some(50.0));
+        assert_eq!(stats.armor_specific_damage, Some(10.0));
     }
 }

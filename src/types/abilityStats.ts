@@ -39,9 +39,16 @@ export interface SpecialValueBreakdown {
   value: ValueBreakdown
 }
 
+/** One up-front damage component: normal `Damage`, armor-bypassing health damage, or armor damage. */
+export interface DirectDamageBreakdown {
+  /** 'normal' | 'health' | 'armor' */
+  kind: string
+  value: ValueBreakdown
+}
+
 export interface AbilityBuildStats {
   damage_type: string | null
-  direct_damage: ValueBreakdown | null
+  direct_damages: DirectDamageBreakdown[]
   dots: DotBreakdown[]
   special_values: SpecialValueBreakdown[]
   power_cost: ValueBreakdown | null

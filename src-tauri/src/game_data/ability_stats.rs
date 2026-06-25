@@ -66,6 +66,18 @@ impl ValueBreakdown {
     }
 }
 
+/// One direct (up-front) damage component of an ability. Project: Gorgon abilities can carry up
+/// to three: normal `Damage`, armor-bypassing `HealthSpecificDamage`, and `ArmorSpecificDamage`.
+/// All three are governed by the same direct-damage modifier arrays (there are no per-shape mod
+/// arrays in the data), so each is folded with the same buckets — only the base differs.
+#[derive(Debug, Serialize, Clone)]
+pub struct DirectDamageBreakdown {
+    /// Which component this is: `normal` | `health` | `armor`. The frontend maps this to a label
+    /// ("Damage" / "Damage to Health" / "Damage to Armor").
+    pub kind: String,
+    pub value: ValueBreakdown,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct DotBreakdown {
     pub damage_type: Option<String>,
@@ -88,7 +100,9 @@ pub struct SpecialValueBreakdown {
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct AbilityBuildStats {
     pub damage_type: Option<String>,
-    pub direct_damage: Option<ValueBreakdown>,
+    /// Every up-front damage component the ability has (normal / health-specific / armor-specific),
+    /// in that order. Empty when the ability deals no direct damage (pure DoT / utility).
+    pub direct_damages: Vec<DirectDamageBreakdown>,
     pub dots: Vec<DotBreakdown>,
     pub special_values: Vec<SpecialValueBreakdown>,
     pub power_cost: Option<ValueBreakdown>,
@@ -131,11 +145,11 @@ fn collect_bucket(
     total
 }
 
-/// Compute the direct-damage breakdown for an ability + mods, using the full PG formula
-/// (added / base-mult / damage-mult buckets). Crit-damage mods are surfaced as
-/// informational contribution lines but excluded from the non-crit `effective`.
-fn direct_damage(stats: &CombatStats, mods: &[ModEffect]) -> Option<ValueBreakdown> {
-    let base = stats.damage? as f64;
+/// Compute one direct-damage component's breakdown from a base value, using the full PG formula
+/// (added / base-mult / damage-mult buckets) and the ability's shared direct-damage modifier
+/// arrays. Crit-damage mods are surfaced as informational contribution lines but excluded from
+/// the non-crit `effective`.
+fn direct_damage_value(base: f64, stats: &CombatStats, mods: &[ModEffect]) -> ValueBreakdown {
     let mut contributions = Vec::new();
     let added = collect_bucket(mods, &stats.attributes_that_delta_damage, "added", &mut contributions);
     let base_pct = collect_bucket(mods, &stats.attributes_that_mod_base_damage, "base_mod", &mut contributions);
@@ -144,7 +158,7 @@ fn direct_damage(stats: &CombatStats, mods: &[ModEffect]) -> Option<ValueBreakdo
     collect_bucket(mods, &stats.attributes_that_mod_crit_damage, "crit_mod", &mut contributions);
 
     let effective = apply_formula(base, added, base_pct, all_pct);
-    Some(ValueBreakdown {
+    ValueBreakdown {
         base,
         effective,
         added,
@@ -152,7 +166,27 @@ fn direct_damage(stats: &CombatStats, mods: &[ModEffect]) -> Option<ValueBreakdo
         all_pct,
         dormant_activated: base == 0.0 && effective != 0.0,
         contributions,
-    })
+    }
+}
+
+/// Build the ordered list of direct-damage components present on the ability — normal `Damage`,
+/// armor-bypassing `HealthSpecificDamage`, and `ArmorSpecificDamage` — each folded with the
+/// build's direct-damage mods. Components the ability doesn't have are omitted.
+fn direct_damages(stats: &CombatStats, mods: &[ModEffect]) -> Vec<DirectDamageBreakdown> {
+    let mut out = Vec::new();
+    for (kind, base) in [
+        ("normal", stats.damage),
+        ("health", stats.health_specific_damage),
+        ("armor", stats.armor_specific_damage),
+    ] {
+        if let Some(base) = base {
+            out.push(DirectDamageBreakdown {
+                kind: kind.to_string(),
+                value: direct_damage_value(base as f64, stats, mods),
+            });
+        }
+    }
+    out
 }
 
 /// DoT damage is *indirect* damage, governed only by indirect-damage modifiers — the DoT's
@@ -305,7 +339,7 @@ pub fn compute(
     damage_type: Option<String>,
     mods: &[ModEffect],
 ) -> AbilityBuildStats {
-    let direct = direct_damage(stats, mods);
+    let direct = direct_damages(stats, mods);
     let dots: Vec<DotBreakdown> = stats.dots.iter().map(|d| dot_breakdown(d, mods)).collect();
     let special_values: Vec<SpecialValueBreakdown> = stats
         .special_values
@@ -325,7 +359,7 @@ pub fn compute(
         mods,
     );
 
-    let any_modified = direct.as_ref().is_some_and(|d| d.is_modified())
+    let any_modified = direct.iter().any(|d| d.value.is_modified())
         || dots.iter().any(|d| d.per_tick.is_modified())
         || special_values.iter().any(|s| s.value.is_modified())
         || power_cost.as_ref().is_some_and(|c| c.is_modified())
@@ -333,7 +367,7 @@ pub fn compute(
 
     AbilityBuildStats {
         damage_type,
-        direct_damage: direct,
+        direct_damages: direct,
         dots,
         special_values,
         power_cost,
@@ -373,7 +407,9 @@ mod tests {
             m("MOD_ABILITY_PUNCH", 0.50),
         ];
         let out = compute(&stats, Some("Crushing".into()), &mods);
-        let dd = out.direct_damage.unwrap();
+        assert_eq!(out.direct_damages.len(), 1);
+        assert_eq!(out.direct_damages[0].kind, "normal");
+        let dd = &out.direct_damages[0].value;
         assert!((dd.base - 6.0).abs() < 1e-6);
         assert!((dd.effective - 26.7).abs() < 1e-6, "got {}", dd.effective);
         assert!((dd.added - 10.0).abs() < 1e-6);
@@ -392,7 +428,7 @@ mod tests {
             ..Default::default()
         };
         let out = compute(&stats, None, &[m("MOD_SKILL_UNARMED", 0.99)]);
-        let dd = out.direct_damage.unwrap();
+        let dd = &out.direct_damages[0].value;
         assert!((dd.effective - 20.0).abs() < 1e-6);
         assert!(!dd.is_modified());
         assert!(!out.any_modified);
@@ -491,8 +527,9 @@ mod tests {
     #[test]
     fn mindworm_direct_hit_and_dot_modify_independently() {
         let stats = CombatStats {
-            // From HealthSpecificDamage 369 (no plain `Damage` field on Mindworm).
-            damage: Some(369.0),
+            // Mindworm's up-front hit is HealthSpecificDamage 369 (no plain `Damage` field), which
+            // the engine surfaces as a "health" direct-damage component.
+            health_specific_damage: Some(369.0),
             attributes_that_delta_damage: vec!["BOOST_ABILITY_MINDWORM".into()],
             attributes_that_mod_base_damage: vec!["MOD_SKILL_MENTALISM".into()],
             attributes_that_mod_damage: vec!["MOD_ABILITY_MINDWORM".into()],
@@ -515,7 +552,12 @@ mod tests {
             m("MOD_ABILITY_MINDWORM", 1.30),
         ];
         let out = compute(&stats, Some("Psychic".into()), &direct_only);
-        let dd = out.direct_damage.as_ref().expect("Mindworm has a direct hit (from HSD)");
+        let dd = out
+            .direct_damages
+            .iter()
+            .find(|d| d.kind == "health")
+            .map(|d| &d.value)
+            .expect("Mindworm has a health-specific direct hit (from HSD)");
         assert!((dd.base - 369.0).abs() < 1e-6);
         assert!((dd.effective - 1700.75).abs() < 1e-6, "got {}", dd.effective);
         let dot = &out.dots[0];
@@ -530,12 +572,40 @@ mod tests {
             m("MOD_UNIVERSAL_INDIRECT", 0.10),
         ];
         let out2 = compute(&stats, Some("Psychic".into()), &indirect);
-        let dd2 = out2.direct_damage.as_ref().unwrap();
+        let dd2 = out2
+            .direct_damages
+            .iter()
+            .find(|d| d.kind == "health")
+            .map(|d| &d.value)
+            .unwrap();
         assert!((dd2.effective - 369.0).abs() < 1e-6, "indirect mods must not move the direct hit, got {}", dd2.effective);
         let dot2 = &out2.dots[0];
         assert!((dot2.per_tick.effective - 218.4).abs() < 1e-6, "got {}", dot2.per_tick.effective);
         assert!((dot2.total_effective - 873.6).abs() < 1e-6, "got {}", dot2.total_effective);
         assert!(out2.any_modified);
+    }
+
+    /// Acid Spew shape: a normal `Damage` hit plus an `ArmorSpecificDamage` hit. Both surface as
+    /// separate direct-damage components and both move with the shared direct-damage mods.
+    #[test]
+    fn normal_and_armor_specific_are_separate_components() {
+        let stats = CombatStats {
+            damage: Some(10.0),
+            armor_specific_damage: Some(20.0),
+            attributes_that_mod_base_damage: vec!["MOD_SKILL_FIRE".into()],
+            ..Default::default()
+        };
+        let out = compute(&stats, Some("Acid".into()), &[m("MOD_SKILL_FIRE", 0.50)]);
+        assert_eq!(out.direct_damages.len(), 2);
+
+        let normal = out.direct_damages.iter().find(|d| d.kind == "normal").unwrap();
+        assert!((normal.value.base - 10.0).abs() < 1e-6);
+        assert!((normal.value.effective - 15.0).abs() < 1e-6, "got {}", normal.value.effective);
+
+        let armor = out.direct_damages.iter().find(|d| d.kind == "armor").unwrap();
+        assert!((armor.value.base - 20.0).abs() < 1e-6);
+        assert!((armor.value.effective - 30.0).abs() < 1e-6, "got {}", armor.value.effective);
+        assert!(out.any_modified);
     }
 
     /// Power cost reduction: base 16, -4 delta → 12.
