@@ -198,6 +198,12 @@ pub struct AppSettings {
     /// ended manually. 0 = disabled; otherwise one of 5, 10, or 30.
     #[serde(default = "default_farming_autosave_minutes")]
     pub farming_autosave_minutes: u32,
+
+    /// When true, a farming session is automatically started on app launch (after the initial
+    /// log catch-up) so farming is logged to the database without having to start one manually.
+    /// Toggling it off ends and saves any active session. Off by default (opt-in).
+    #[serde(default)]
+    pub auto_start_farming_sessions: bool,
 }
 
 fn default_farming_autosave_minutes() -> u32 {
@@ -367,6 +373,7 @@ impl Default for AppSettings {
             auto_detect_paths_on_startup: false,
             auto_ingest_player_prev: true,
             farming_autosave_minutes: default_farming_autosave_minutes(),
+            auto_start_farming_sessions: false,
         }
     }
 }

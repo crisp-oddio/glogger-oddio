@@ -393,6 +393,15 @@ export const useStartupStore = defineStore("startup", () => {
     // ── All critical tasks complete — app is ready ──────────────────────
     // Enable live character-login handling now that startup is finished.
     gameState.startupComplete = true;
+
+    // If persistent farming logging is enabled, start a session now. We wait until after the
+    // historical catch-up poll has drained so only live events are attributed to the session
+    // (auto-starting earlier would fold the entire log history into it).
+    if (settingsStore.settings.autoStartFarmingSessions && !farmingStore.sessionActive) {
+      farmingStore.startSession("Auto Farming Session");
+      log("Auto-started farming session (logging enabled)");
+    }
+
     log("App is interactive");
     phase.value = "ready";
   }

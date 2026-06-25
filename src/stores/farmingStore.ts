@@ -396,6 +396,28 @@ export const useFarmingStore = defineStore("farming", () => {
     }
   }
 
+  // Enable/disable persistent auto-logging of farming sessions. Shared by the menu-bar status
+  // light and the farming-tab checkbox, so both stay in sync via the settings store. Enabling
+  // starts a fresh session immediately; disabling ends & saves the running session and clears
+  // the live view — mirroring the two live-tailing lights, where turning the light off stops
+  // the activity (the saved session lives on in the Historical tab).
+  async function setAutoStart(enabled: boolean) {
+    await useSettingsStore().updateSettings({ autoStartFarmingSessions: enabled });
+    if (enabled) {
+      // Only (re)start when nothing is actively logging. A finished session left on screen
+      // (sessionActive but with an endTime) is cleared first, since startSession() no-ops while
+      // any session is active.
+      const liveSession = sessionActive.value && !session.value?.endTime;
+      if (!liveSession) {
+        reset();
+        startSession("Auto Farming Session");
+      }
+    } else if (sessionActive.value) {
+      await endSession();
+      reset();
+    }
+  }
+
   function togglePause() {
     if (!session.value) return;
 
@@ -738,6 +760,7 @@ export const useFarmingStore = defineStore("farming", () => {
     handleEnemyKilled,
     startSession,
     endSession,
+    setAutoStart,
     togglePause,
     toggleIgnoreItem,
     updateName,
