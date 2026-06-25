@@ -1,9 +1,10 @@
-## What's Changed since v0.11.2
+## What's Changed since v0.11.3
+
+### Features
+- feat(farming): auto-start session logging with status light + checkbox (`efbd096`)
 
 ### Fixes
-- fix(build-planner): register direct-hit damage from HealthSpecificDamage (`0b1b7f9`)
-- fix(build-planner): apply indirect-damage rule to every DoT component (`69a3f34`)
-- fix(build-planner): DoT damage uses indirect modifiers only (`df944df`)
+- fix(build-planner): show health/armor-specific damage components (`b5f9e3b`)
 
 ---
-*5 commits since v0.11.2*
+*3 commits since v0.11.3*
