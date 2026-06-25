@@ -1,5 +1,80 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-24 (Session 24 — Build Planner: effective ability stats + indirect-DoT rules)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` — committed + pushed (`2cd8bfa`, `df944df`, `69a3f34`); **[PR #22 `dev → main`](https://github.com/crisp-oddio/glogger-oddio/pull/22) open**.
+**Status:** ✅ `cargo test --lib` green (8 `ability_stats` formula tests), `vue-tsc` clean. Effective-stats
+tooltip + slot toggle verified live in `npm run tauri dev`; the indirect-DoT correction is pushed and the
+dev build hot-rebuilds — user is verifying the numbers against the in-game tooltip.
+
+## TL;DR — Session 24
+
+### 1. Effective ability stats on hover (Build Planner)
+Hovering an equipped ability now shows its full combat data folded with the build's assigned gear mods —
+mirroring the in-game tooltip — for **damage, DoTs, heals/special values, and power/rage costs**.
+- **Engine (Rust, all formula logic, unit-tested):** new
+  [game_data/ability_stats.rs](src-tauri/src/game_data/ability_stats.rs) — `compute(stats, damage_type,
+  &[ModEffect]) -> AbilityBuildStats`. PG direct-damage formula:
+  `final = base·(1 + ΣModBaseDamage% + ΣModDamage%) + ΣDeltaDamage·(1 + ΣModDamage%)`. Each mod token is
+  classified by **exact membership** in the ability's attribute arrays (no fuzzy matching).
+- **Typed combat stats:** [game_data/abilities.rs](src-tauri/src/game_data/abilities.rs) now parses
+  `DoTs[]` and `SpecialValues[]` into typed `CombatStats.dots` / `.special_values` (added to the known-keys
+  list so they leave `extra`).
+- **Command:** `compute_ability_build_stats(ability_id, mods, pvp)` in
+  [cdn_commands.rs](src-tauri/src/cdn_commands.rs) (registered in [lib.rs](src-tauri/src/lib.rs)) resolves
+  each preset mod's `{TOKEN}{VALUE}` effects to raw tokens (factored `parse_token_value` helper) and calls
+  the engine.
+- **Frontend:** [useAbilityBuildStats.ts](src/composables/useAbilityBuildStats.ts) (cached per ability +
+  mods signature), [abilityStats.ts](src/types/abilityStats.ts), and
+  [AbilityEffectiveStats.vue](src/components/Character/BuildPlanner/AbilityEffectiveStats.vue) rendered in
+  the bar-hover tooltip in
+  [AbilityBarSummary.vue](src/components/Character/BuildPlanner/AbilityBarSummary.vue) (replaced the old
+  `AbilityModBreakdown.vue`, deleted). Known limit stated in-tooltip: only gear mods are modeled, not
+  skill-level passives / active buffs — so it's "base + this build's gear," ~2% off the live number.
+
+### 2. DoT (indirect) damage rule — the important subtlety
+DoT damage is **indirect** damage, moved **only** by indirect-damage modifiers — **never** by
+base-skill-damage % or the ability's *direct*-damage arrays. (Two earlier wrong cuts: first applied
+ability-level direct mods per tick; corrected after the user confirmed against the in-game tooltip.)
+Indirect modifiers = the DoT's own per-ability tokens **plus** the generic per-damage-type and universal
+indirect attributes, applied globally by the DoT's `DamageType`:
+`per-tick = (DamagePerTick + Σ flat-indirect) · (1 + Σ %-indirect)`, where flat = `dot.AttributesThatDelta`
+∪ `{BOOST_<TYPE>_INDIRECT, BOOST_UNIVERSAL_INDIRECT}`, % = `dot.AttributesThatMod` ∪
+`{MOD_<TYPE>_INDIRECT, MOD_UNIVERSAL_INDIRECT}` (`indirect_tokens()` helper; `<TYPE>` = `DamageType`
+upper-cased). **Applies to every DoT representation:** the `DoTs[]` array (covers all 1,188 hybrid
+direct-hit + DoT abilities — direct hit uses direct mods, each tick indirect) **and** DoTs encoded as
+SpecialValues (reflect-style, e.g. Tough Hoof — gated on an `ABILITYDOT`/`_INDIRECT` token so heals/armor-
+over-time stay out; damage type parsed from the effect text).
+
+### 3. Slot deselect toggle + Pinia HMR
+- Clicking the already-selected equipment slot now **deselects** it, collapsing the slot detail panel back
+  to the global "Search All Mods" catalog (`selectSlot` toggle in
+  [buildPlannerStore.ts](src/stores/buildPlannerStore.ts), shown when `selectedSlot` is null in
+  [BuildPlannerScreen.vue](src/components/Character/BuildPlanner/BuildPlannerScreen.vue)).
+- **Dev-env gotcha fixed:** added `acceptHMRUpdate` to `buildPlannerStore` — without it, editing a store
+  action during `tauri dev` left the already-instantiated singleton running stale code (the deselect toggle
+  appeared to do nothing until a full reload). Other stores still lack it.
+
+### 4. Build import (gorgonexplorer + PgBuilder) — BUILT, PARKED uncommitted
+Per the user's "ditch the import stuff for a moment," this is **complete on disk but intentionally NOT
+committed** (kept out of PR #22). Sitting in the working tree:
+`src-tauri/src/db/build_planner_commands.rs` (refactored shared `insert_exported_build` + the two import
+commands), import hunks in `lib.rs` + `buildPlannerStore.ts`, `PaperDollLayout.vue` (auto-detecting import
++ unmatched report), `ModalDialog.vue` (multiline). Formats (both fully reverse-engineered):
+- **PgBuilder** — JSON `{ "Build": {…} }` with **exact internal IDs**: `ability_<id>`, `item_<id>`,
+  `power_<id>`+`PowerTier_N` (the `power_<id>` is the tsys `client_info` key → `internal_name`). No fuzzy
+  matching. Slots: `Main Hand`→`MainHand`, `Neck`→`Necklace`, `Waist`→`Belt`, `Racial`→skip.
+- **gorgonexplorer** — `GET https://api.gorgonexplorer.com/api/builds/{id}` (accept a share URL or bare id).
+  `firstSkill`/`secondSkill`, `selectedGear` slot→`item_<id>`, abilities by exact name (incl. tier), and
+  `selectedMods` resolved **text** → fuzzy reverse-match to power+tier (skill-narrowed; unmatched reported
+  for manual add — user chose "best-effort + report").
+**Next:** finish/verify the import path (`cargo test` + a live import of both the gx URL and a PgBuilder
+export), then commit when the user wants it in the PR.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-24 (Session 23 — Council-wallet estimator, Tier 1)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` (unreleased — committed + pushed, no release dispatched)

@@ -155,18 +155,24 @@ fn direct_damage(stats: &CombatStats, mods: &[ModEffect]) -> Option<ValueBreakdo
     })
 }
 
-/// A DoT-only ability's damage *is* its ticks, so the ability-level damage modifiers
-/// (the "+X% Ability Damage" / "+N Ability Damage" treasure effects players stack) apply
-/// to each tick — added flat *per tick* — on top of the DoT's own delta/mod arrays.
-fn dot_breakdown(dot: &DotEffect, stats: &CombatStats, mods: &[ModEffect]) -> DotBreakdown {
+/// DoT damage is *indirect* damage, governed only by indirect-damage modifiers — the DoT's
+/// own per-ability tokens plus the generic per-damage-type and universal indirect attributes
+/// (`BOOST_/MOD_<TYPE>_INDIRECT`, `*_UNIVERSAL_INDIRECT`, applied globally by the DoT's
+/// damage type). Base-skill-damage % and the ability's *direct*-damage modifiers do NOT
+/// affect ticks.
+fn dot_breakdown(dot: &DotEffect, mods: &[ModEffect]) -> DotBreakdown {
     let base = dot.damage_per_tick as f64;
     let mut contributions = Vec::new();
-    let added = collect_bucket(mods, &dot.attributes_that_delta, "delta", &mut contributions)
-        + collect_bucket(mods, &stats.attributes_that_delta_damage, "added", &mut contributions);
-    let base_pct = collect_bucket(mods, &stats.attributes_that_mod_base_damage, "base_mod", &mut contributions);
-    let all_pct = collect_bucket(mods, &dot.attributes_that_mod, "mod", &mut contributions)
-        + collect_bucket(mods, &stats.attributes_that_mod_damage, "damage_mod", &mut contributions);
-    let per_tick_eff = apply_formula(base, added, base_pct, all_pct);
+
+    let dtype = dot.damage_type.as_deref();
+    let mut flat_tokens = dot.attributes_that_delta.clone();
+    flat_tokens.extend(indirect_tokens("BOOST", dtype));
+    let mut pct_tokens = dot.attributes_that_mod.clone();
+    pct_tokens.extend(indirect_tokens("MOD", dtype));
+
+    let added = collect_bucket(mods, &flat_tokens, "delta", &mut contributions);
+    let all_pct = collect_bucket(mods, &pct_tokens, "mod", &mut contributions);
+    let per_tick_eff = apply_formula(base, added, 0.0, all_pct);
     let ticks = dot.num_ticks as f64;
     DotBreakdown {
         damage_type: dot.damage_type.clone(),
@@ -178,7 +184,7 @@ fn dot_breakdown(dot: &DotEffect, stats: &CombatStats, mods: &[ModEffect]) -> Do
             base,
             effective: per_tick_eff,
             added,
-            base_pct,
+            base_pct: 0.0,
             all_pct,
             dormant_activated: base == 0.0 && per_tick_eff != 0.0,
             contributions,
@@ -186,15 +192,73 @@ fn dot_breakdown(dot: &DotEffect, stats: &CombatStats, mods: &[ModEffect]) -> Do
     }
 }
 
+/// Generic indirect-damage attribute tokens that apply to any DoT of `damage_type`, plus
+/// the universal (all-type) indirect modifier. `prefix` is `BOOST` (flat per-tick) or
+/// `MOD` (percent). e.g. ("BOOST", Some("Psychic")) →
+/// ["BOOST_UNIVERSAL_INDIRECT", "BOOST_PSYCHIC_INDIRECT"].
+fn indirect_tokens(prefix: &str, damage_type: Option<&str>) -> Vec<String> {
+    let mut v = vec![format!("{prefix}_UNIVERSAL_INDIRECT")];
+    if let Some(dt) = damage_type {
+        v.push(format!("{prefix}_{}_INDIRECT", dt.to_uppercase()));
+    }
+    v
+}
+
+/// Damage-type names whose uppercase form matches the `*_<TYPE>_INDIRECT` attribute tokens.
+const DAMAGE_TYPES: &[&str] = &[
+    "Acid", "Cold", "Crushing", "Darkness", "Demonic", "Divine", "Electricity", "Fire",
+    "Fungus", "Nature", "Piercing", "Poison", "Psychic", "Seafood", "Slashing", "Sonic",
+    "Trauma",
+];
+
+/// True when a special value represents indirect (damage-over-time) damage — detected by a
+/// DoT/indirect attribute token in its own arrays (`*ABILITYDOT*`, `*_INDIRECT`). This keeps
+/// heals/armor-over-time (which use `*HEAL*`/`*ARMOR*` tokens) from picking up damage mods.
+fn sv_is_indirect_damage(sv: &SpecialValue) -> bool {
+    sv.attributes_that_delta_base
+        .iter()
+        .chain(&sv.attributes_that_delta)
+        .chain(&sv.attributes_that_mod)
+        .any(|t| t.contains("ABILITYDOT") || t.contains("_INDIRECT"))
+}
+
+/// Find the damage type named in a special value's label/suffix (e.g. "Trauma damage" →
+/// "Trauma") so the matching generic indirect tokens can be selected. Falls back to `None`
+/// (universal-only) when no type is named.
+fn parse_damage_type(sv: &SpecialValue) -> Option<String> {
+    let text = format!(
+        "{} {}",
+        sv.label.as_deref().unwrap_or(""),
+        sv.suffix.as_deref().unwrap_or("")
+    )
+    .to_lowercase();
+    DAMAGE_TYPES
+        .iter()
+        .find(|t| text.contains(&t.to_lowercase()))
+        .map(|t| t.to_string())
+}
+
 fn special_value_breakdown(sv: &SpecialValue, mods: &[ModEffect]) -> SpecialValueBreakdown {
     let base = sv.value as f64;
     let mut contributions = Vec::new();
+
+    // A special value that carries a DoT/indirect token (e.g. reflect-style "they suffer X
+    // Trauma damage over time") is indirect damage, so the generic per-damage-type and
+    // universal indirect modifiers apply on top of its own tokens — same rule as DoTs.
+    let mut delta_tokens = sv.attributes_that_delta.clone();
+    let mut mod_tokens = sv.attributes_that_mod.clone();
+    if sv_is_indirect_damage(sv) {
+        let dtype = parse_damage_type(sv);
+        delta_tokens.extend(indirect_tokens("BOOST", dtype.as_deref()));
+        mod_tokens.extend(indirect_tokens("MOD", dtype.as_deref()));
+    }
+
     // DeltaBase adds to the base before the multiplier; Delta adds afterward. Both end up
     // multiplied by (1 + mod%), so they fold into `added` for the arithmetic but keep
     // distinct bucket labels for the breakdown display.
     let delta_base = collect_bucket(mods, &sv.attributes_that_delta_base, "delta_base", &mut contributions);
-    let delta = collect_bucket(mods, &sv.attributes_that_delta, "delta", &mut contributions);
-    let mod_pct = collect_bucket(mods, &sv.attributes_that_mod, "mod", &mut contributions);
+    let delta = collect_bucket(mods, &delta_tokens, "delta", &mut contributions);
+    let mod_pct = collect_bucket(mods, &mod_tokens, "mod", &mut contributions);
     let effective = apply_formula(base + delta_base, delta, 0.0, mod_pct);
     SpecialValueBreakdown {
         label: sv.label.clone(),
@@ -242,7 +306,7 @@ pub fn compute(
     mods: &[ModEffect],
 ) -> AbilityBuildStats {
     let direct = direct_damage(stats, mods);
-    let dots: Vec<DotBreakdown> = stats.dots.iter().map(|d| dot_breakdown(d, stats, mods)).collect();
+    let dots: Vec<DotBreakdown> = stats.dots.iter().map(|d| dot_breakdown(d, mods)).collect();
     let special_values: Vec<SpecialValueBreakdown> = stats
         .special_values
         .iter()
@@ -354,6 +418,31 @@ mod tests {
         assert_eq!(sv.label.as_deref(), Some("Restore"));
     }
 
+    /// A DoT expressed as a SpecialValue (reflect-style, e.g. Tough Hoof's "X Trauma damage")
+    /// gets generic indirect modifiers too, but not base-skill-damage.
+    #[test]
+    fn special_value_dot_gets_generic_indirect() {
+        let stats = CombatStats {
+            special_values: vec![SpecialValue {
+                label: Some("For 8 seconds, each time target attacks you, they suffer".into()),
+                suffix: Some("Trauma damage".into()),
+                value: 50.0,
+                attributes_that_delta: vec!["BOOST_ABILITYDOT_TOUGHHOOF".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mods = vec![
+            m("BOOST_ABILITYDOT_TOUGHHOOF", 30.0), // ability-specific DoT flat
+            m("MOD_TRAUMA_INDIRECT", 0.25),        // generic % indirect (Trauma)
+            m("MOD_SKILL_UNARMED", 1.00),          // base-skill: must NOT apply
+        ];
+        let out = compute(&stats, None, &mods);
+        let sv = &out.special_values[0];
+        // (50 + 30) × (1 + 0.25) = 100
+        assert!((sv.value.effective - 100.0).abs() < 1e-6, "got {}", sv.value.effective);
+    }
+
     /// A dormant SpecialValue (base 0, SkipIfZero) lights up when a mod feeds its token.
     #[test]
     fn dormant_special_value_activates() {
@@ -395,19 +484,20 @@ mod tests {
         assert!((dot.total_base - 40.0).abs() < 1e-6);
     }
 
-    /// Mindworm: a DoT-only ability (no direct Damage). The ability-level damage mods the
-    /// player stacks must apply to each tick. Per-tick 140; +105% base (MOD_SKILL_MENTALISM),
-    /// +130% damage (MOD_ABILITY_MINDWORM), +202 flat (BOOST_ABILITY_MINDWORM):
-    /// 140×(1+1.05+1.30) + 202×(1+1.30) = 933.6/tick → 3734.4 total over 4 ticks.
+    /// Mindworm: a hybrid hit (Psychic). Its up-front hit is `HealthSpecificDamage` (369),
+    /// which the parser folds into `CombatStats.damage`, plus a Psychic DoT (84/tick × 4).
+    /// The two parts use disjoint modifier sets: the direct hit moves with base-skill /
+    /// direct-damage mods, while the DoT is *indirect* and moves only with indirect mods.
     #[test]
-    fn dot_only_ability_applies_ability_level_mods_per_tick() {
+    fn mindworm_direct_hit_and_dot_modify_independently() {
         let stats = CombatStats {
-            damage: None,
+            // From HealthSpecificDamage 369 (no plain `Damage` field on Mindworm).
+            damage: Some(369.0),
             attributes_that_delta_damage: vec!["BOOST_ABILITY_MINDWORM".into()],
             attributes_that_mod_base_damage: vec!["MOD_SKILL_MENTALISM".into()],
             attributes_that_mod_damage: vec!["MOD_ABILITY_MINDWORM".into()],
             dots: vec![DotEffect {
-                damage_per_tick: 140.0,
+                damage_per_tick: 84.0,
                 num_ticks: 4.0,
                 duration: Some(8.0),
                 damage_type: Some("Psychic".into()),
@@ -416,19 +506,36 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mods = vec![
-            m("MOD_SKILL_MENTALISM", 0.55),
-            m("MOD_SKILL_MENTALISM", 0.50),
-            m("MOD_ABILITY_MINDWORM", 0.68),
-            m("MOD_ABILITY_MINDWORM", 0.62),
+
+        // Direct + base-skill mods move the up-front hit but must NOT touch the DoT.
+        // direct = 369×(1 + 1.05 + 1.30) + 202×(1 + 1.30) = 1236.15 + 464.6 = 1700.75.
+        let direct_only = vec![
+            m("MOD_SKILL_MENTALISM", 1.05),
             m("BOOST_ABILITY_MINDWORM", 202.0),
+            m("MOD_ABILITY_MINDWORM", 1.30),
         ];
-        let out = compute(&stats, Some("Psychic".into()), &mods);
-        assert!(out.direct_damage.is_none(), "no direct Damage on Mindworm");
+        let out = compute(&stats, Some("Psychic".into()), &direct_only);
+        let dd = out.direct_damage.as_ref().expect("Mindworm has a direct hit (from HSD)");
+        assert!((dd.base - 369.0).abs() < 1e-6);
+        assert!((dd.effective - 1700.75).abs() < 1e-6, "got {}", dd.effective);
         let dot = &out.dots[0];
-        assert!((dot.per_tick.effective - 933.6).abs() < 1e-4, "got {}", dot.per_tick.effective);
-        assert!((dot.total_effective - 3734.4).abs() < 1e-3, "got {}", dot.total_effective);
+        assert!((dot.per_tick.effective - 84.0).abs() < 1e-6, "direct/base mods must not move the DoT, got {}", dot.per_tick.effective);
         assert!(out.any_modified);
+
+        // Indirect mods move the DoT but leave the up-front hit at its base.
+        // (84 + 84) × (1 + 0.20 + 0.10) = 168 × 1.30 = 218.4/tick → 873.6 total.
+        let indirect = vec![
+            m("BOOST_ABILITYDOT_MINDWORM", 84.0),
+            m("MOD_PSYCHIC_INDIRECT", 0.20),
+            m("MOD_UNIVERSAL_INDIRECT", 0.10),
+        ];
+        let out2 = compute(&stats, Some("Psychic".into()), &indirect);
+        let dd2 = out2.direct_damage.as_ref().unwrap();
+        assert!((dd2.effective - 369.0).abs() < 1e-6, "indirect mods must not move the direct hit, got {}", dd2.effective);
+        let dot2 = &out2.dots[0];
+        assert!((dot2.per_tick.effective - 218.4).abs() < 1e-6, "got {}", dot2.per_tick.effective);
+        assert!((dot2.total_effective - 873.6).abs() < 1e-6, "got {}", dot2.total_effective);
+        assert!(out2.any_modified);
     }
 
     /// Power cost reduction: base 16, -4 delta → 12.
