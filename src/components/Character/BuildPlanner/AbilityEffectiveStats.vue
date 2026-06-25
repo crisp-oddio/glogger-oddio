@@ -8,13 +8,16 @@
   <div v-else-if="stats && hasAnyValue" class="mt-2 pt-2 border-t border-border-default/60 space-y-1.5">
     <!-- Computed combat values -->
     <div class="space-y-1">
-      <!-- Direct damage -->
-      <div v-if="stats.direct_damage" class="flex items-baseline justify-between gap-3 text-xs">
-        <span class="text-text-muted">{{ damageLabel }}</span>
+      <!-- Direct damage (normal / health-specific / armor-specific) -->
+      <div
+        v-for="(dd, i) in stats.direct_damages"
+        :key="`dd-${i}`"
+        class="flex items-baseline justify-between gap-3 text-xs">
+        <span class="text-text-muted">{{ directDamageLabel(dd.kind) }}</span>
         <span class="flex items-baseline gap-1.5 shrink-0">
-          <span class="font-semibold" :class="valueClass(stats.direct_damage)">{{ fmt(stats.direct_damage.effective) }}</span>
-          <span v-if="isMod(stats.direct_damage)" class="text-[10px] text-text-dim">was {{ fmt(stats.direct_damage.base) }}</span>
-          <span v-if="pct(stats.direct_damage)" class="text-[10px] font-semibold text-value-positive">{{ pct(stats.direct_damage) }}</span>
+          <span class="font-semibold" :class="valueClass(dd.value)">{{ fmt(dd.value.effective) }}</span>
+          <span v-if="isMod(dd.value)" class="text-[10px] text-text-dim">was {{ fmt(dd.value.base) }}</span>
+          <span v-if="pct(dd.value)" class="text-[10px] font-semibold text-value-positive">{{ pct(dd.value) }}</span>
         </span>
       </div>
 
@@ -116,10 +119,15 @@ function pct(v: ValueBreakdown): string {
   return p > 0 ? `+${p}%` : `${p}%`
 }
 
-const damageLabel = computed(() => {
+/** Label for a direct-damage component, qualified by its kind. The base "{type} Damage" gets a
+ *  "to Health" / "to Armor" suffix for the armor-bypassing and armor-only hits. */
+function directDamageLabel(kind: string): string {
   const t = props.stats?.damage_type
-  return t ? `${t} Damage` : 'Damage'
-})
+  const base = t ? `${t} Damage` : 'Damage'
+  if (kind === 'health') return `${base} to Health`
+  if (kind === 'armor') return `${base} to Armor`
+  return base
+}
 
 function dotLabel(dot: DotBreakdown): string {
   const type = dot.damage_type ? `${dot.damage_type} ` : ''
@@ -147,7 +155,7 @@ const modifiedCosts = computed(() => {
 const hasAnyValue = computed(() => {
   const s = props.stats
   if (!s) return false
-  return !!s.direct_damage || s.dots.length > 0 || visibleSpecialValues.value.length > 0 || modifiedCosts.value.length > 0
+  return s.direct_damages.length > 0 || s.dots.length > 0 || visibleSpecialValues.value.length > 0 || modifiedCosts.value.length > 0
 })
 
 /** All unique contributing mod lines across every computed value, for the breakdown. */
@@ -155,7 +163,7 @@ const contributions = computed((): ContributionLine[] => {
   const s = props.stats
   if (!s) return []
   const buckets: ValueBreakdown[] = []
-  if (s.direct_damage) buckets.push(s.direct_damage)
+  for (const dd of s.direct_damages) buckets.push(dd.value)
   for (const d of s.dots) buckets.push(d.per_tick)
   for (const sv of s.special_values) buckets.push(sv.value)
   if (s.power_cost) buckets.push(s.power_cost)

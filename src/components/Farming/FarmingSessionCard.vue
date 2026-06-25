@@ -1,4 +1,17 @@
 <template>
+  <!-- Persistent auto-logging toggle — mirrors the third status light in the top-left menu bar.
+       Visible in both the no-session and active-session states so it can be toggled any time. -->
+  <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer shrink-0 self-start">
+    <input
+      type="checkbox"
+      class="accent-accent-gold"
+      :checked="autoStartEnabled"
+      @change="onToggleAutoStart(($event.target as HTMLInputElement).checked)"
+    />
+    Automatically start &amp; log a farming session
+    <span class="text-text-dim">— turning this off ends &amp; saves the current session</span>
+  </label>
+
   <!-- No active session -->
   <div v-if="!store.sessionActive" class="py-4 flex flex-col items-center gap-4">
     <EmptyState variant="compact" primary="No active farming session" secondary="Start one to track XP, items, favor, and more." />
@@ -289,6 +302,7 @@
 import { ref, computed, reactive } from "vue";
 import { useFarmingStore } from "../../stores/farmingStore";
 import { useGameDataStore } from "../../stores/gameDataStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { formatAnyTimestamp as formatTs } from "../../composables/useTimestamp";
 import EmptyState from "../Shared/EmptyState.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
@@ -302,8 +316,16 @@ import FarmingLog from "./FarmingLog.vue";
 
 const store = useFarmingStore();
 const gameData = useGameDataStore();
+const settingsStore = useSettingsStore();
 const s = computed(() => store.session);
 const sessionName = ref("");
+
+// Persistent auto-logging toggle, shared with the menu-bar status light via the settings store.
+const autoStartEnabled = computed(() => settingsStore.settings.autoStartFarmingSessions);
+
+function onToggleAutoStart(enabled: boolean) {
+  void store.setAutoStart(enabled);
+}
 
 // Lazily resolve internal item names (e.g. "SpiderLeg") to display names
 // ("Spider Leg") for the looted-items list. The row is the hover target for

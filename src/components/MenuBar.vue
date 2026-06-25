@@ -26,6 +26,12 @@
                 :title="isChatLogTailing ? 'Chat log: tailing (click to stop)' : 'Chat log: not tailing (click to start)'"
                 @click="toggleChatLog"
               />
+              <span
+                class="w-2 h-2 rounded-full cursor-pointer"
+                :class="isFarmingAutoStart ? 'bg-status-active' : 'bg-status-inactive'"
+                :title="isFarmingAutoStart ? 'Auto-log farming sessions: on (click to stop & save the current session)' : 'Auto-log farming sessions: off (click to start logging)'"
+                @click="toggleFarmingAutoStart"
+              />
             </div>
           </div>
           <CharacterPicker :isActive="currentView === 'character'" />
@@ -113,6 +119,7 @@
 import { computed, reactive, watch } from "vue";
 import { useCoordinatorStore } from "../stores/coordinatorStore";
 import { useDataBrowserStore } from "../stores/dataBrowserStore";
+import { useFarmingStore } from "../stores/farmingStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useUpdateStore } from "../stores/updateStore";
 import { useKeyboard } from "../composables/useKeyboard";
@@ -193,8 +200,17 @@ const defaultSubTabs: Partial<Record<AppView, string>> = {
 
 const coordinatorStore = useCoordinatorStore();
 const dataBrowserStore = useDataBrowserStore();
+const farmingStore = useFarmingStore();
 const isPlayerLogTailing = computed(() => coordinatorStore.isPlayerLogTailing);
 const isChatLogTailing = computed(() => coordinatorStore.isChatLogTailing);
+
+// Third status light: persistent auto-logging of farming sessions. Reflects the saved setting;
+// clicking it (or the farming-tab checkbox) starts/stops a session via the shared store action.
+const isFarmingAutoStart = computed(() => settingsStore.settings.autoStartFarmingSessions);
+
+async function toggleFarmingAutoStart() {
+  await farmingStore.setAutoStart(!isFarmingAutoStart.value);
+}
 
 async function togglePlayerLog() {
   if (isPlayerLogTailing.value) {
