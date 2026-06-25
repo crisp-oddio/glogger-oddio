@@ -12,7 +12,7 @@ import { ref, effectScope, watch } from "vue";
 import { useBuildPlannerStore } from "../stores/buildPlannerStore";
 import { useGameDataStore } from "../stores/gameDataStore";
 import { slotLabel } from "./useBuildModEffects";
-import type { AbilityBuildStats, AbilityModRef } from "../types/abilityStats";
+import type { AbilityBuildStats, AbilityItemRef, AbilityModRef } from "../types/abilityStats";
 
 const cache = ref<Record<number, AbilityBuildStats | null>>({});
 const inFlight = new Set<number>();
@@ -33,11 +33,31 @@ export function useAbilityBuildStats() {
       }));
   }
 
+  /** The build's equipped items, shaped for the backend command (folds in their innate bonuses). */
+  function currentItems(): AbilityItemRef[] {
+    return store.slotItems.map((si) => ({
+      item_id: si.item_id,
+      slot_label: slotLabel(si.equip_slot),
+    }));
+  }
+
+  /** The build's equipped (default) combat skills, used to gate skill-conditional mods. */
+  function equippedSkills(): string[] {
+    return [store.activePreset?.skill_primary, store.activePreset?.skill_secondary].filter(
+      (s): s is string => !!s,
+    );
+  }
+
   async function load(abilityId: number) {
     if (inFlight.has(abilityId)) return;
     inFlight.add(abilityId);
     try {
-      const result = await gameData.computeAbilityBuildStats(abilityId, currentMods());
+      const result = await gameData.computeAbilityBuildStats(
+        abilityId,
+        currentMods(),
+        currentItems(),
+        equippedSkills(),
+      );
       cache.value = { ...cache.value, [abilityId]: result };
     } catch {
       cache.value = { ...cache.value, [abilityId]: null };
@@ -64,13 +84,18 @@ export function useAbilityBuildStats() {
     }
   }
 
-  // Invalidate the whole cache when the build's mods change (the reference changes on
-  // any mod edit or preset switch).
+  // Invalidate the whole cache when anything feeding the calc changes: the build's mods,
+  // its equipped items (innate bonuses), or its default skills (which gate conditional mods).
   if (!scope) {
     scope = effectScope(true);
     scope.run(() => {
       watch(
-        () => store.presetMods,
+        () => [
+          store.presetMods,
+          store.slotItems,
+          store.activePreset?.skill_primary,
+          store.activePreset?.skill_secondary,
+        ],
         () => {
           cache.value = {};
           inFlight.clear();

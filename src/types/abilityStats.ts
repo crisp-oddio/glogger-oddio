@@ -63,6 +63,12 @@ export interface AbilityModRef {
   slot_label: string
 }
 
+/** An equipped slot item, as passed to `compute_ability_build_stats` (folds in its innate bonuses). */
+export interface AbilityItemRef {
+  item_id: number
+  slot_label: string
+}
+
 /** Whether a value breakdown was actually changed by the build's mods. */
 export function isValueModified(v: ValueBreakdown): boolean {
   return v.contributions.length > 0 && Math.abs(v.effective - v.base) > 1e-9

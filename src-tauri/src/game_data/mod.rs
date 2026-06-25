@@ -44,6 +44,7 @@ mod xp_tables;
 // ── Re-exports so cdn_commands.rs doesn't need updating ──────────────────────
 pub use abilities::AbilityFamily;
 pub use abilities::AbilityInfo;
+pub use abilities::{CombatStats, DotEffect};
 pub use areas::AreaInfo;
 pub use effects::EffectInfo;
 pub use item_uses::ItemUseInfo;
