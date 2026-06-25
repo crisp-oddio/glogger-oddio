@@ -189,6 +189,7 @@ pub fn parse(json: &str) -> Result<HashMap<u32, AbilityInfo>, String> {
 /// Known keys that are extracted into typed CombatStats fields.
 const COMBAT_STATS_KNOWN_KEYS: &[&str] = &[
     "Damage",
+    "HealthSpecificDamage",
     "PowerCost",
     "Range",
     "RageCost",
@@ -221,7 +222,13 @@ fn parse_combat_stats(value: &Value) -> CombatStats {
     };
 
     CombatStats {
-        damage: f32_field(value, "Damage"),
+        // Many abilities (Mentalism/Psychology/Vampirism, ~235 in the dataset) express their
+        // direct hit as `HealthSpecificDamage` (armor-bypassing health damage) with no plain
+        // `Damage` field, yet still carry the standard direct-damage modifier arrays
+        // (AttributesThatDelta/ModDamage). Treat it as the direct-hit base so the up-front hit
+        // shows alongside the DoT (e.g. Mindworm: 369 Psychic + 84/tick × 4). When both exist
+        // (a rare execute-bonus shape, e.g. Finishing Blow), the primary `Damage` wins.
+        damage: f32_field(value, "Damage").or_else(|| f32_field(value, "HealthSpecificDamage")),
         power_cost: f32_field(value, "PowerCost"),
         range: f32_field(value, "Range"),
         rage_cost: f32_field(value, "RageCost"),
@@ -311,4 +318,32 @@ fn str_array_field(value: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// HealthSpecificDamage (Mindworm-style armor-bypassing hit) is read as the direct-damage
+    /// base when no plain `Damage` field is present, and doesn't leak into `extra`.
+    #[test]
+    fn health_specific_damage_becomes_direct_damage() {
+        let pve = json!({
+            "HealthSpecificDamage": 369,
+            "AttributesThatDeltaDamage": ["BOOST_ABILITY_MINDWORM"],
+            "DoTs": [{ "DamagePerTick": 84, "NumTicks": 4, "DamageType": "Psychic" }],
+        });
+        let stats = parse_combat_stats(&pve);
+        assert_eq!(stats.damage, Some(369.0));
+        assert_eq!(stats.dots.len(), 1);
+        assert!(stats.extra.get("HealthSpecificDamage").is_none(), "HSD should be typed, not in extra");
+    }
+
+    /// When both exist (rare execute-bonus shape, e.g. Finishing Blow), the primary `Damage` wins.
+    #[test]
+    fn plain_damage_wins_over_health_specific() {
+        let pve = json!({ "Damage": 10, "HealthSpecificDamage": 50 });
+        assert_eq!(parse_combat_stats(&pve).damage, Some(10.0));
+    }
 }

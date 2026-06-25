@@ -484,18 +484,20 @@ mod tests {
         assert!((dot.total_base - 40.0).abs() < 1e-6);
     }
 
-    /// Mindworm: a DoT-only ability (Psychic, 140/tick × 4). DoT damage is *indirect*, so it
-    /// is moved only by indirect modifiers — never by base-skill-damage % or the ability's
-    /// direct-damage mods (which apply to the absent direct hit).
+    /// Mindworm: a hybrid hit (Psychic). Its up-front hit is `HealthSpecificDamage` (369),
+    /// which the parser folds into `CombatStats.damage`, plus a Psychic DoT (84/tick × 4).
+    /// The two parts use disjoint modifier sets: the direct hit moves with base-skill /
+    /// direct-damage mods, while the DoT is *indirect* and moves only with indirect mods.
     #[test]
-    fn dot_uses_indirect_mods_not_direct_or_base_skill() {
+    fn mindworm_direct_hit_and_dot_modify_independently() {
         let stats = CombatStats {
-            damage: None,
+            // From HealthSpecificDamage 369 (no plain `Damage` field on Mindworm).
+            damage: Some(369.0),
             attributes_that_delta_damage: vec!["BOOST_ABILITY_MINDWORM".into()],
             attributes_that_mod_base_damage: vec!["MOD_SKILL_MENTALISM".into()],
             attributes_that_mod_damage: vec!["MOD_ABILITY_MINDWORM".into()],
             dots: vec![DotEffect {
-                damage_per_tick: 140.0,
+                damage_per_tick: 84.0,
                 num_ticks: 4.0,
                 duration: Some(8.0),
                 damage_type: Some("Psychic".into()),
@@ -505,29 +507,34 @@ mod tests {
             ..Default::default()
         };
 
-        // Direct + base-skill mods must NOT touch the DoT.
+        // Direct + base-skill mods move the up-front hit but must NOT touch the DoT.
+        // direct = 369×(1 + 1.05 + 1.30) + 202×(1 + 1.30) = 1236.15 + 464.6 = 1700.75.
         let direct_only = vec![
             m("MOD_SKILL_MENTALISM", 1.05),
             m("BOOST_ABILITY_MINDWORM", 202.0),
             m("MOD_ABILITY_MINDWORM", 1.30),
         ];
         let out = compute(&stats, Some("Psychic".into()), &direct_only);
-        assert!(out.direct_damage.is_none(), "no direct Damage on Mindworm");
+        let dd = out.direct_damage.as_ref().expect("Mindworm has a direct hit (from HSD)");
+        assert!((dd.base - 369.0).abs() < 1e-6);
+        assert!((dd.effective - 1700.75).abs() < 1e-6, "got {}", dd.effective);
         let dot = &out.dots[0];
-        assert!((dot.per_tick.effective - 140.0).abs() < 1e-6, "direct/base mods must not move the DoT, got {}", dot.per_tick.effective);
-        assert!(!out.any_modified);
+        assert!((dot.per_tick.effective - 84.0).abs() < 1e-6, "direct/base mods must not move the DoT, got {}", dot.per_tick.effective);
+        assert!(out.any_modified);
 
-        // Indirect mods DO apply: +140 flat (DoT token), +20% Psychic-indirect, +10% universal.
-        // (140 + 140) × (1 + 0.20 + 0.10) = 280 × 1.30 = 364/tick → 1456 total.
+        // Indirect mods move the DoT but leave the up-front hit at its base.
+        // (84 + 84) × (1 + 0.20 + 0.10) = 168 × 1.30 = 218.4/tick → 873.6 total.
         let indirect = vec![
-            m("BOOST_ABILITYDOT_MINDWORM", 140.0),
+            m("BOOST_ABILITYDOT_MINDWORM", 84.0),
             m("MOD_PSYCHIC_INDIRECT", 0.20),
             m("MOD_UNIVERSAL_INDIRECT", 0.10),
         ];
         let out2 = compute(&stats, Some("Psychic".into()), &indirect);
+        let dd2 = out2.direct_damage.as_ref().unwrap();
+        assert!((dd2.effective - 369.0).abs() < 1e-6, "indirect mods must not move the direct hit, got {}", dd2.effective);
         let dot2 = &out2.dots[0];
-        assert!((dot2.per_tick.effective - 364.0).abs() < 1e-6, "got {}", dot2.per_tick.effective);
-        assert!((dot2.total_effective - 1456.0).abs() < 1e-6, "got {}", dot2.total_effective);
+        assert!((dot2.per_tick.effective - 218.4).abs() < 1e-6, "got {}", dot2.per_tick.effective);
+        assert!((dot2.total_effective - 873.6).abs() < 1e-6, "got {}", dot2.total_effective);
         assert!(out2.any_modified);
     }
 
