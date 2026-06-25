@@ -1,4 +1,5 @@
 use chrono::{Datelike, Local};
+use once_cell::sync::Lazy;
 /// Tauri commands for CDN data management and game data queries.
 /// These are the invoke() endpoints the Vue frontend calls.
 use std::collections::HashMap;
@@ -2088,17 +2089,230 @@ pub async fn get_tsys_power_info_batch(
 // ── Effective ability stats (build planner) ─────────────────────────────────
 
 /// Parse the `{TOKEN}{VALUE}` head of an effect desc into (raw token, numeric value).
-/// Mirrors `resolve_single_effect`'s parsing but keeps the token the resolver discards.
-fn parse_token_value(desc: &str) -> Option<(String, f64)> {
-    let parts: Vec<&str> = desc.split('{').filter(|s| !s.is_empty()).collect();
-    if parts.len() >= 2 {
-        let token = parts[0].trim_end_matches('}').to_string();
-        let value: f64 = parts[1].trim_end_matches('}').parse().ok()?;
-        if !token.is_empty() {
-            return Some((token, value));
+/// Parse a tsys/item effect desc in `{TOKEN}{VALUE}` form, keeping the token the display
+/// resolver discards. A 3rd `{SKILL}` segment (e.g. `{MOD_NATURE_INDIRECT}{0.1}{Druid}`) marks
+/// the effect as conditional on that skill being equipped — returned as the third tuple element
+/// so the caller can gate it. (Every 3rd segment in the CDN data is a valid skill name.)
+fn parse_token_value(desc: &str) -> Option<(String, f64, Option<String>)> {
+    let segs: Vec<&str> = desc
+        .split('{')
+        .map(|s| s.trim().trim_end_matches('}').trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let token = (*segs.first()?).to_string();
+    let value: f64 = segs.get(1)?.parse().ok()?;
+    let condition = segs.get(2).map(|s| s.to_string());
+    Some((token, value, condition))
+}
+
+/// Some conditional indirect-damage mods are stored as English prose instead of `{TOKEN}{VALUE}`
+/// (e.g. "Indirect Psychic damage is +53% per tick while Vampirism skill active"). Parse that one
+/// well-structured family into the equivalent `MOD_<TYPE>_INDIRECT` percent tokens, each
+/// conditional on the named skill. Returns one `(token, fraction, skill)` per damage type named.
+fn parse_conditional_indirect_text(desc: &str) -> Vec<(String, f64, String)> {
+    static RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(
+            r"^Indirect (\w+)(?: and Indirect (\w+))? damage is \+(\d+)% per tick while (\w+) skill active\.?$",
+        )
+        .unwrap()
+    });
+    let Some(caps) = RE.captures(desc.trim()) else {
+        return Vec::new();
+    };
+    let pct = caps[3].parse::<f64>().unwrap_or(0.0) / 100.0;
+    let skill = caps[4].to_string();
+    [1usize, 2]
+        .iter()
+        .filter_map(|&i| caps.get(i))
+        .map(|t| (format!("MOD_{}_INDIRECT", t.as_str().to_uppercase()), pct, skill.clone()))
+        .collect()
+}
+
+/// Pure regex extraction of a DoT-add prose mod's clause: the stated total damage, the damage type
+/// (None when the prose omits it), and the duration in seconds. Handles the `+N` / `N` /
+/// `an additional N` value forms and the optional `to health` / `to armor` qualifier. Deliberately
+/// matches as a *substring* so trailing side-effect clauses are ignored rather than blocking a
+/// match, but the value must be immediately followed by `[type] damage [to X] over M seconds`.
+fn parse_dot_clause(desc: &str) -> Option<(f64, Option<String>, f64)> {
+    static RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(
+            r"(?:an additional )?\+?(\d+) (?:(\w+) )?damage(?: to (?:health|armor))? over (\d+) seconds",
+        )
+        .unwrap()
+    });
+    let caps = RE.captures(desc)?;
+    Some((
+        caps[1].parse().ok()?,
+        caps.get(2).map(|m| m.as_str().to_string()),
+        caps[3].parse().ok()?,
+    ))
+}
+
+/// Strip leading `<icon=NNN>` tags, then greedily consume the run of known ability names that opens
+/// a DoT-add prose mod ("Screech", "Hacking Blade and Debilitating Blow", "Screech, Sonic Burst,
+/// and Deathscream"), returning their resolved ability ids. Stops at the first word that isn't part
+/// of a known ability name, so descriptive verbs ("…coats the target in insects that deal…") end the
+/// list. Returns empty for skill-wide prose that names no ability ("Archery attacks that crit…").
+fn extract_leading_abilities(desc: &str, data: &GameData) -> Vec<u32> {
+    static ICON: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?:<icon=\d+>)+").unwrap());
+    let body = ICON.replace(desc.trim(), "");
+    let words: Vec<&str> = body.split_whitespace().collect();
+    let mut ids = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let mut matched: Option<(usize, u32)> = None;
+        let max = (words.len() - i).min(4);
+        for len in (1..=max).rev() {
+            let cand = words[i..i + len].join(" ");
+            let cand = cand.trim_end_matches([',', '.', ':']).trim();
+            if let Some(&id) = data.ability_name_index.get(cand) {
+                matched = Some((len, id));
+                break;
+            }
+        }
+        let Some((len, id)) = matched else { break };
+        ids.push(id);
+        i += len;
+        // Skip an explicit "and"/"or" separator; comma separators are consumed with the name word.
+        if words
+            .get(i)
+            .map(|w| {
+                let w = w.trim_end_matches([',', '.']).to_lowercase();
+                w == "and" || w == "or"
+            })
+            .unwrap_or(false)
+        {
+            i += 1;
         }
     }
-    None
+    ids
+}
+
+/// Look up an attribute's display label + display type for the breakdown UI, falling back to the
+/// raw token when the attribute isn't in the table.
+fn attr_label(data: &GameData, token: &str) -> (String, String) {
+    data.attributes
+        .get(token)
+        .map(|attr| {
+            (
+                attr.raw.get("Label").and_then(|v| v.as_str()).unwrap_or(token).to_string(),
+                attr.raw.get("DisplayType").and_then(|v| v.as_str()).unwrap_or("AsInt").to_string(),
+            )
+        })
+        .unwrap_or_else(|| (token.to_string(), String::new()))
+}
+
+/// Resolve one effect desc (token or conditional-indirect prose) into gated [`ModEffect`]s, pushed
+/// into `out`. Effects conditional on a skill not present in `equipped` (lowercased skill names) are
+/// dropped; surviving effects are labeled from the attribute table for the breakdown UI. DoT-add
+/// prose is handled separately by [`resolve_dot_add`] (it needs the target ability).
+fn resolve_mod_effects(
+    desc: &str,
+    source: &str,
+    data: &GameData,
+    equipped: &std::collections::HashSet<String>,
+    out: &mut Vec<crate::game_data::ability_stats::ModEffect>,
+) {
+    let candidates: Vec<(String, f64, Option<String>)> = match parse_token_value(desc) {
+        Some(t) => vec![t],
+        None => parse_conditional_indirect_text(desc)
+            .into_iter()
+            .map(|(token, value, skill)| (token, value, Some(skill)))
+            .collect(),
+    };
+
+    for (token, value, condition) in candidates {
+        if let Some(skill) = &condition {
+            if !equipped.contains(&skill.to_lowercase()) {
+                continue;
+            }
+        }
+        let (label, display_type) = attr_label(data, &token);
+        out.push(crate::game_data::ability_stats::ModEffect {
+            token,
+            value,
+            source: source.to_string(),
+            label,
+            display_type,
+        });
+    }
+}
+
+/// Target-aware handling of DoT-adding prose mods ("X deals N Type damage over M seconds"). When the
+/// mod names an ability in the *target's* family it either feeds the target's matching dormant DoT
+/// (via that DoT's own `BOOST_ABILITYDOT_*` token, scaling the stated total to per-tick) or — when
+/// the target has no such base DoT — synthesizes a new DoT for it. A no-op for token-form descs and
+/// for prose that doesn't name the target's family.
+#[allow(clippy::too_many_arguments)]
+fn resolve_dot_add(
+    desc: &str,
+    source: &str,
+    target_family: Option<&str>,
+    stats: &crate::game_data::CombatStats,
+    data: &GameData,
+    effects: &mut Vec<crate::game_data::ability_stats::ModEffect>,
+    synthetic: &mut Vec<crate::game_data::DotEffect>,
+) {
+    if desc.contains('{') {
+        return; // token form — handled elsewhere
+    }
+    let Some(target_family) = target_family else { return };
+    let Some((total, dtype, seconds)) = parse_dot_clause(desc) else { return };
+    let ids = extract_leading_abilities(desc, data);
+    if ids.is_empty() {
+        return;
+    }
+    // Only applies when the ability being computed shares a family with one of the named abilities.
+    let affected = ids
+        .iter()
+        .any(|id| data.ability_to_family.get(id).map(|s| s.as_str()) == Some(target_family));
+    if !affected {
+        return;
+    }
+
+    let dtype_l = dtype.as_deref().map(str::to_lowercase);
+    let type_matches = |d: &&crate::game_data::DotEffect| {
+        dtype_l
+            .as_deref()
+            .map(|t| d.damage_type.as_deref().map(str::to_lowercase).as_deref() == Some(t))
+            .unwrap_or(false)
+    };
+    // Prefer a DoT matching both type and duration, then type, then duration, then a lone DoT.
+    let dot = stats
+        .dots
+        .iter()
+        .find(|d| type_matches(d) && d.duration == Some(seconds as f32))
+        .or_else(|| stats.dots.iter().find(type_matches))
+        .or_else(|| stats.dots.iter().find(|d| d.duration == Some(seconds as f32)))
+        .or_else(|| if stats.dots.len() == 1 { stats.dots.first() } else { None });
+
+    match dot {
+        // Feed an existing dormant DoT through its own per-tick token.
+        Some(d) if !d.attributes_that_delta.is_empty() && d.num_ticks > 0.0 => {
+            let token = d.attributes_that_delta[0].clone();
+            let (label, display_type) = attr_label(data, &token);
+            effects.push(crate::game_data::ability_stats::ModEffect {
+                token,
+                value: total / d.num_ticks as f64,
+                source: source.to_string(),
+                label,
+                display_type,
+            });
+        }
+        // No base DoT to feed — synthesize one. PG's "over N seconds" DoTs tick every 2 seconds.
+        _ => {
+            let ticks = (seconds / 2.0).round().max(1.0);
+            synthetic.push(crate::game_data::DotEffect {
+                damage_per_tick: (total / ticks) as f32,
+                num_ticks: ticks as f32,
+                duration: Some(seconds as f32),
+                damage_type: dtype.clone(),
+                preface: None,
+                attributes_that_delta: Vec::new(),
+                attributes_that_mod: Vec::new(),
+            });
+        }
+    }
 }
 
 /// One assigned build mod, as the frontend knows it (preset mods + slot label).
@@ -2110,16 +2324,28 @@ pub struct AbilityModRef {
     pub slot_label: String,
 }
 
-/// Compute an ability's effective combat stats under a build's assigned gear mods.
+/// One equipped slot item, for folding its innate `{TOKEN}{VALUE}` bonuses (e.g. a focus's flat
+/// Direct/Indirect damage) into the calculation alongside the assigned gear mods.
+#[derive(serde::Deserialize)]
+pub struct AbilityItemRef {
+    pub item_id: u32,
+    /// Pre-formatted equipment slot label (e.g. "Head") for source attribution.
+    pub slot_label: String,
+}
+
+/// Compute an ability's effective combat stats under a build's assigned gear mods and equipped
+/// items.
 ///
-/// Resolves each mod tier's `{TOKEN}{VALUE}` effects to raw tokens, then defers all
-/// game-formula math to `game_data::ability_stats` (which classifies each token by exact
-/// membership in the ability's attribute buckets). Returns `None` only if the ability id
-/// is unknown.
+/// Resolves each mod tier's and item's `{TOKEN}{VALUE}` effects to raw tokens (folding in the
+/// equipped items' own innate bonuses), gating skill-conditional mods on `equipped_skills`, then
+/// defers all game-formula math to `game_data::ability_stats` (which classifies each token by exact
+/// membership in the ability's attribute buckets). Returns `None` only if the ability id is unknown.
 #[tauri::command]
 pub async fn compute_ability_build_stats(
     ability_id: u32,
     mods: Vec<AbilityModRef>,
+    items: Vec<AbilityItemRef>,
+    equipped_skills: Vec<String>,
     pvp: bool,
     state: State<'_, GameDataState>,
 ) -> Result<Option<crate::game_data::ability_stats::AbilityBuildStats>, String> {
@@ -2135,7 +2361,18 @@ pub async fn compute_ability_build_stats(
         return Ok(Some(AbilityBuildStats::default()));
     };
 
+    // Skill-conditional mods ("while <skill> active") apply only when that skill is one of the
+    // build's equipped skills. Match case-insensitively.
+    let equipped: std::collections::HashSet<String> =
+        equipped_skills.iter().map(|s| s.to_lowercase()).collect();
+
     let mut effects: Vec<ModEffect> = Vec::new();
+    // DoTs that a prose mod creates on an ability with no base DoT (e.g. "Poison Arrow deals +600
+    // Poison damage over 12 seconds"). Appended to the ability's DoT list before the formula runs.
+    let mut synthetic_dots: Vec<crate::game_data::DotEffect> = Vec::new();
+    let target_family = data.ability_to_family.get(&ability_id).map(|s| s.as_str());
+
+    // Gear mods assigned to slots (tsys powers).
     for mref in &mods {
         // O(1) internal-name → CDN key → client_info lookup.
         let info = data
@@ -2154,36 +2391,31 @@ pub async fn compute_ability_build_stats(
         let tier_key = format!("id_{}", mref.tier);
         let Some(tier_info) = info.tiers.get(&tier_key) else { continue };
         for desc in &tier_info.effect_descs {
-            let Some((token, value)) = parse_token_value(desc) else { continue };
-            let (label, display_type) = data
-                .attributes
-                .get(&token)
-                .map(|attr| {
-                    (
-                        attr.raw
-                            .get("Label")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&token)
-                            .to_string(),
-                        attr.raw
-                            .get("DisplayType")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("AsInt")
-                            .to_string(),
-                    )
-                })
-                .unwrap_or_else(|| (token.clone(), String::new()));
-            effects.push(ModEffect {
-                token,
-                value,
-                source: source.clone(),
-                label,
-                display_type,
-            });
+            resolve_mod_effects(desc, &source, &data, &equipped, &mut effects);
+            resolve_dot_add(desc, &source, target_family, stats, &data, &mut effects, &mut synthetic_dots);
         }
     }
 
-    Ok(Some(compute(stats, ability.damage_type.clone(), &effects)))
+    // Equipped items' own innate bonuses (e.g. a focus's flat Direct/Indirect Psychic damage),
+    // which the in-game tooltip folds in the same way as gear mods.
+    for iref in &items {
+        let Some(item) = data.items.get(&iref.item_id) else { continue };
+        let source = format!("{} ({})", item.name, iref.slot_label);
+        for desc in &item.effect_descs {
+            resolve_mod_effects(desc, &source, &data, &equipped, &mut effects);
+            resolve_dot_add(desc, &source, target_family, stats, &data, &mut effects, &mut synthetic_dots);
+        }
+    }
+
+    // Fold any synthesized DoTs into the ability's stats so the formula applies indirect mods to
+    // them too. Cloning is cheap (one ability) and keeps the cached game data immutable.
+    if synthetic_dots.is_empty() {
+        Ok(Some(compute(stats, ability.damage_type.clone(), &effects)))
+    } else {
+        let mut stats = stats.clone();
+        stats.dots.extend(synthetic_dots);
+        Ok(Some(compute(&stats, ability.damage_type.clone(), &effects)))
+    }
 }
 
 // ── Storage Vault query commands ─────────────────────────────────────────────
@@ -4201,5 +4433,118 @@ pub async fn get_gardening_product_chain(
         products,
         gardening_level,
     }))
+}
+
+#[cfg(test)]
+mod build_stats_parsing_tests {
+    use super::{parse_conditional_indirect_text, parse_dot_clause, parse_token_value};
+
+    #[test]
+    fn parse_token_value_two_and_three_segments() {
+        // Plain item/mod token: no skill condition.
+        assert_eq!(
+            parse_token_value("{BOOST_PSYCHIC_DIRECT}{104}"),
+            Some(("BOOST_PSYCHIC_DIRECT".to_string(), 104.0, None))
+        );
+        // Conditional gear mod: the 3rd segment is the required skill.
+        assert_eq!(
+            parse_token_value("{MOD_NATURE_INDIRECT}{0.1}{Druid}"),
+            Some(("MOD_NATURE_INDIRECT".to_string(), 0.1, Some("Druid".to_string())))
+        );
+        // Fractional value with trailing whitespace.
+        assert_eq!(
+            parse_token_value("{MOD_PSYCHIC_INDIRECT}{0.05}{Rabbit} "),
+            Some(("MOD_PSYCHIC_INDIRECT".to_string(), 0.05, Some("Rabbit".to_string())))
+        );
+    }
+
+    #[test]
+    fn parse_token_value_rejects_prose_and_malformed() {
+        assert_eq!(parse_token_value("Indirect Psychic damage is +53% per tick while Vampirism skill active"), None);
+        assert_eq!(parse_token_value("{ONLY_ONE_SEGMENT}"), None);
+        assert_eq!(parse_token_value("{TOKEN}{not_a_number}"), None);
+    }
+
+    #[test]
+    fn parse_conditional_text_single_type() {
+        // The user's example: VampirismPsychMod tier text.
+        let out = parse_conditional_indirect_text(
+            "Indirect Psychic damage is +53% per tick while Vampirism skill active",
+        );
+        assert_eq!(out, vec![("MOD_PSYCHIC_INDIRECT".to_string(), 0.53, "Vampirism".to_string())]);
+    }
+
+    #[test]
+    fn parse_conditional_text_two_types_and_trailing_period() {
+        // Warden-family two-type variant, with a trailing period.
+        let out = parse_conditional_indirect_text(
+            "Indirect Poison and Indirect Trauma damage is +5% per tick while Warden skill active.",
+        );
+        assert_eq!(
+            out,
+            vec![
+                ("MOD_POISON_INDIRECT".to_string(), 0.05, "Warden".to_string()),
+                ("MOD_TRAUMA_INDIRECT".to_string(), 0.05, "Warden".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_conditional_text_ignores_unrelated_prose() {
+        // Mitigation / proc prose must not be misread as a damage boost.
+        assert!(parse_conditional_indirect_text(
+            "Max Armor +75 while Shield skill active"
+        )
+        .is_empty());
+        assert!(parse_conditional_indirect_text(
+            "<icon=108>Direct and indirect Psychic and Nature Mitigation +2 while Deer skill active"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn parse_dot_clause_handles_value_and_type_variants() {
+        // "+N" with explicit type (AgonizeDoT family).
+        assert_eq!(
+            parse_dot_clause("Agonize deals +900 Psychic damage over 12 seconds"),
+            Some((900.0, Some("Psychic".to_string()), 12.0))
+        );
+        // Bare "N" (no plus), "to health" qualifier (Giant Bat VirulentBiteBleed family).
+        assert_eq!(
+            parse_dot_clause("<icon=3548>Virulent Bite deals 24 Trauma damage to health over 12 seconds"),
+            Some((24.0, Some("Trauma".to_string()), 12.0))
+        );
+        // "an additional N" (Knife/Archery families).
+        assert_eq!(
+            parse_dot_clause("Fire Arrow deals an additional 375 Fire damage over 10 seconds"),
+            Some((375.0, Some("Fire".to_string()), 10.0))
+        );
+        // No damage type stated (FireMagic "deal +45 damage over 10 seconds").
+        assert_eq!(
+            parse_dot_clause("Fire Breath and Super Fireball deal +45 damage over 10 seconds"),
+            Some((45.0, None, 10.0))
+        );
+    }
+
+    #[test]
+    fn parse_dot_clause_extracts_dot_from_compound_prose() {
+        // The DoT clause is taken even when a side-effect clause trails it, and the immediate-damage
+        // figure before it ("+144 direct damage plus") is skipped in favor of the over-time clause.
+        assert_eq!(
+            parse_dot_clause("Squeal deals +144 direct damage plus 576 Trauma damage over 8 seconds"),
+            Some((576.0, Some("Trauma".to_string()), 8.0))
+        );
+        assert_eq!(
+            parse_dot_clause("Stunning Bash causes the target to take 318 Trauma damage over 12 seconds"),
+            Some((318.0, Some("Trauma".to_string()), 12.0))
+        );
+    }
+
+    #[test]
+    fn parse_dot_clause_rejects_non_dot_prose() {
+        // %-damage and instant-only forms have no "over M seconds" clause.
+        assert!(parse_dot_clause("Agonize deals +40% damage and conjures a magical field").is_none());
+        assert!(parse_dot_clause("Drink Blood steals 24 more Health over 12 seconds").is_none());
+    }
 }
 

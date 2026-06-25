@@ -149,11 +149,27 @@ fn collect_bucket(
 /// (added / base-mult / damage-mult buckets) and the ability's shared direct-damage modifier
 /// arrays. Crit-damage mods are surfaced as informational contribution lines but excluded from
 /// the non-crit `effective`.
-fn direct_damage_value(base: f64, stats: &CombatStats, mods: &[ModEffect]) -> ValueBreakdown {
+///
+/// Like DoTs, direct damage also picks up the generic per-damage-type and universal *direct*
+/// attributes (`BOOST_/MOD_<TYPE>_DIRECT`, `*_UNIVERSAL_DIRECT`) selected by the ability's
+/// `damage_type`. Flat-damage gear/items (e.g. a focus's "Direct Psychic Damage +104") feed
+/// these tokens, and abilities never list them in their own delta/mod arrays.
+fn direct_damage_value(
+    base: f64,
+    stats: &CombatStats,
+    damage_type: Option<&str>,
+    mods: &[ModEffect],
+) -> ValueBreakdown {
     let mut contributions = Vec::new();
-    let added = collect_bucket(mods, &stats.attributes_that_delta_damage, "added", &mut contributions);
+
+    let mut delta_tokens = stats.attributes_that_delta_damage.clone();
+    delta_tokens.extend(direct_tokens("BOOST", damage_type));
+    let mut damage_mod_tokens = stats.attributes_that_mod_damage.clone();
+    damage_mod_tokens.extend(direct_tokens("MOD", damage_type));
+
+    let added = collect_bucket(mods, &delta_tokens, "added", &mut contributions);
     let base_pct = collect_bucket(mods, &stats.attributes_that_mod_base_damage, "base_mod", &mut contributions);
-    let all_pct = collect_bucket(mods, &stats.attributes_that_mod_damage, "damage_mod", &mut contributions);
+    let all_pct = collect_bucket(mods, &damage_mod_tokens, "damage_mod", &mut contributions);
     // Crit mods are informational only (don't change the listed hit).
     collect_bucket(mods, &stats.attributes_that_mod_crit_damage, "crit_mod", &mut contributions);
 
@@ -172,7 +188,11 @@ fn direct_damage_value(base: f64, stats: &CombatStats, mods: &[ModEffect]) -> Va
 /// Build the ordered list of direct-damage components present on the ability — normal `Damage`,
 /// armor-bypassing `HealthSpecificDamage`, and `ArmorSpecificDamage` — each folded with the
 /// build's direct-damage mods. Components the ability doesn't have are omitted.
-fn direct_damages(stats: &CombatStats, mods: &[ModEffect]) -> Vec<DirectDamageBreakdown> {
+fn direct_damages(
+    stats: &CombatStats,
+    damage_type: Option<&str>,
+    mods: &[ModEffect],
+) -> Vec<DirectDamageBreakdown> {
     let mut out = Vec::new();
     for (kind, base) in [
         ("normal", stats.damage),
@@ -182,11 +202,23 @@ fn direct_damages(stats: &CombatStats, mods: &[ModEffect]) -> Vec<DirectDamageBr
         if let Some(base) = base {
             out.push(DirectDamageBreakdown {
                 kind: kind.to_string(),
-                value: direct_damage_value(base as f64, stats, mods),
+                value: direct_damage_value(base as f64, stats, damage_type, mods),
             });
         }
     }
     out
+}
+
+/// Generic *direct*-damage attribute tokens that apply to any direct hit of `damage_type`, plus
+/// the universal (all-type) direct modifier — the direct counterpart of [`indirect_tokens`].
+/// `prefix` is `BOOST` (flat) or `MOD` (percent). e.g. ("BOOST", Some("Psychic")) →
+/// ["BOOST_UNIVERSAL_DIRECT", "BOOST_PSYCHIC_DIRECT"].
+fn direct_tokens(prefix: &str, damage_type: Option<&str>) -> Vec<String> {
+    let mut v = vec![format!("{prefix}_UNIVERSAL_DIRECT")];
+    if let Some(dt) = damage_type {
+        v.push(format!("{prefix}_{}_DIRECT", dt.to_uppercase()));
+    }
+    v
 }
 
 /// DoT damage is *indirect* damage, governed only by indirect-damage modifiers — the DoT's
@@ -339,7 +371,7 @@ pub fn compute(
     damage_type: Option<String>,
     mods: &[ModEffect],
 ) -> AbilityBuildStats {
-    let direct = direct_damages(stats, mods);
+    let direct = direct_damages(stats, damage_type.as_deref(), mods);
     let dots: Vec<DotBreakdown> = stats.dots.iter().map(|d| dot_breakdown(d, mods)).collect();
     let special_values: Vec<SpecialValueBreakdown> = stats
         .special_values
@@ -606,6 +638,58 @@ mod tests {
         assert!((armor.value.base - 20.0).abs() < 1e-6);
         assert!((armor.value.effective - 30.0).abs() < 1e-6, "got {}", armor.value.effective);
         assert!(out.any_modified);
+    }
+
+    /// A flat-damage focus item ("Direct Psychic Damage +104") boosts a Psychic ability's direct
+    /// hit even though the ability never lists BOOST_PSYCHIC_DIRECT in its own delta array — the
+    /// engine adds the generic per-type/universal direct tokens, mirroring the DoT indirect rule.
+    #[test]
+    fn generic_direct_damage_tokens_apply_by_type() {
+        let stats = CombatStats {
+            damage: Some(100.0),
+            attributes_that_mod_base_damage: vec!["MOD_SKILL_MENTALISM".into()],
+            ..Default::default()
+        };
+        let mods = vec![
+            m("BOOST_PSYCHIC_DIRECT", 104.0),   // flat, typed
+            m("BOOST_UNIVERSAL_DIRECT", 6.0),   // flat, all-type
+            m("MOD_PSYCHIC_DIRECT", 0.10),      // percent, typed
+        ];
+        let out = compute(&stats, Some("Psychic".into()), &mods);
+        let dd = &out.direct_damages[0].value;
+        // added = 104 + 6 = 110; all_pct = 0.10 → 100×1.10 + 110×1.10 = 110 + 121 = 231.
+        assert!((dd.added - 110.0).abs() < 1e-6, "added {}", dd.added);
+        assert!((dd.effective - 231.0).abs() < 1e-6, "got {}", dd.effective);
+        assert!(out.any_modified);
+    }
+
+    /// Generic direct tokens of a *different* damage type must not touch the ability.
+    #[test]
+    fn generic_direct_tokens_respect_damage_type() {
+        let stats = CombatStats { damage: Some(100.0), ..Default::default() };
+        let out = compute(&stats, Some("Fire".into()), &[m("BOOST_PSYCHIC_DIRECT", 50.0)]);
+        let dd = &out.direct_damages[0].value;
+        assert!((dd.effective - 100.0).abs() < 1e-6, "got {}", dd.effective);
+        assert!(!dd.is_modified());
+        assert!(!out.any_modified);
+    }
+
+    /// The item's per-tick indirect bonus (BOOST_PSYCHIC_INDIRECT +21) feeds a Psychic DoT via
+    /// the existing indirect-token rule — the matching half of the focus-item fix.
+    #[test]
+    fn generic_indirect_flat_token_feeds_dot() {
+        let stats = CombatStats {
+            dots: vec![DotEffect {
+                damage_per_tick: 80.0,
+                num_ticks: 4.0,
+                damage_type: Some("Psychic".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let out = compute(&stats, Some("Psychic".into()), &[m("BOOST_PSYCHIC_INDIRECT", 21.0)]);
+        let dot = &out.dots[0];
+        assert!((dot.per_tick.effective - 101.0).abs() < 1e-6, "got {}", dot.per_tick.effective);
     }
 
     /// Power cost reduction: base 16, -4 delta → 12.
