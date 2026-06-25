@@ -1,10 +1,7 @@
-## What's Changed since v0.11.3
-
-### Features
-- feat(farming): auto-start session logging with status light + checkbox (`efbd096`)
+## What's Changed since v0.11.4
 
 ### Fixes
-- fix(build-planner): show health/armor-specific damage components (`b5f9e3b`)
+- fix(build-planner): apply conditional mods, item bonuses, and DoT-add mods to ability stats (`3321d89`)
 
 ---
-*3 commits since v0.11.3*
+*2 commits since v0.11.4*
