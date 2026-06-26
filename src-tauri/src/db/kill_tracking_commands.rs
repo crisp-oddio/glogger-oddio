@@ -715,21 +715,28 @@ struct ExportBundle {
     enemies: Vec<ExportedEnemy>,
 }
 
-/// Export the player's own personally-observed kills/loot (never previously
-/// imported data) to a CSV file at `path`. One row per (enemy, zone, looted item);
-/// an (enemy, zone) with kills but no recorded loot gets one row with empty item
-/// columns so its kill count (the drop-rate denominator) is preserved. The `zone`
-/// column is the internal area key (empty = unknown zone). A derived `drop_rate`
-/// column (times_dropped / total_kills, 0–1) is included for easy viewing and
-/// ignored on re-import. No character, server, or timestamp data is included —
-/// only aggregate counts. CSV opens cleanly in a spreadsheet and lets others
-/// build/import their own libraries using the same columns.
-#[tauri::command]
-pub fn export_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<usize, String> {
-    let conn = db
-        .get()
-        .map_err(|e| format!("Database connection error: {e}"))?;
+/// True if `path` names a SQLite database by extension (.db / .sqlite / .sqlite3).
+/// Drives the export writer choice; the file is one we create, so its extension is
+/// the user's intent. (Import detects SQLite by file header instead — see
+/// `file_is_sqlite` — since an imported file's extension can't be trusted.)
+fn is_sqlite_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            e.eq_ignore_ascii_case("db")
+                || e.eq_ignore_ascii_case("sqlite")
+                || e.eq_ignore_ascii_case("sqlite3")
+        })
+        .unwrap_or(false)
+}
 
+/// Build the (enemy, zone) → aggregate counts the player has personally observed
+/// (never previously imported data), shared by every export writer. Loot is sorted
+/// most-dropped-first for readability. Sums across loadouts (per enemy + zone); the
+/// loadout dimension is a live query-time filter, not part of a shared export. No
+/// character, server, or timestamp data is included — only aggregate counts.
+fn collect_export_enemies(conn: &rusqlite::Connection) -> Result<Vec<ExportedEnemy>, String> {
     let mut pair_stmt = conn
         .prepare("SELECT DISTINCT enemy_name, zone FROM enemy_kills ORDER BY enemy_name, zone")
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
@@ -739,6 +746,40 @@ pub fn export_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
         .filter_map(|r| r.ok())
         .collect();
 
+    let lf = LoadoutFilter::All;
+    let mut enemies = Vec::with_capacity(pairs.len());
+    for (enemy_name, zone) in pairs {
+        let zf = ZoneFilter::from_stored(zone.clone());
+        let total_kills = mine_total_kills(conn, &enemy_name, &zf, &lf);
+        let mut loot = mine_loot_rows(conn, &enemy_name, &zf, &lf);
+        // Most-dropped first for readability.
+        loot.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
+        enemies.push(ExportedEnemy {
+            enemy_name,
+            zone,
+            total_kills,
+            loot: loot
+                .into_iter()
+                .map(|(item_name, total_quantity, times_dropped)| ExportedLoot {
+                    item_name,
+                    total_quantity,
+                    times_dropped,
+                })
+                .collect(),
+        });
+    }
+    Ok(enemies)
+}
+
+/// Write the aggregated drop data as CSV — the spreadsheet-friendly share format.
+/// One row per (enemy, zone, looted item); an (enemy, zone) with kills but no
+/// recorded loot gets one row with empty item columns so its kill count (the
+/// drop-rate denominator) is preserved. The `zone` column is the internal area key
+/// (empty = unknown zone). A derived `drop_rate` column (times_dropped /
+/// total_kills, 0–1) is included for easy viewing and ignored on re-import. Opens
+/// cleanly in a spreadsheet and lets others build/import libraries with the same
+/// columns.
+fn write_csv_export(path: &str, enemies: &[ExportedEnemy]) -> Result<(), String> {
     let mut wtr = csv::WriterBuilder::new().from_writer(Vec::new());
     wtr.write_record([
         "enemy_name",
@@ -751,36 +792,34 @@ pub fn export_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
     ])
     .map_err(|e| format!("Failed to write CSV header: {e}"))?;
 
-    // Export sums across loadouts (per enemy + zone); the loadout dimension is a
-    // live query-time filter, not part of the shared CSV.
-    let lf = LoadoutFilter::All;
-    let count = pairs.len();
-    for (enemy_name, zone) in pairs {
-        let zf = ZoneFilter::from_stored(zone.clone());
-        let total_kills = mine_total_kills(&conn, &enemy_name, &zf, &lf);
-        let mut loot = mine_loot_rows(&conn, &enemy_name, &zf, &lf);
-        // Most-dropped first for readability in a spreadsheet.
-        loot.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-        let zone_str = zone.as_deref().unwrap_or("");
-
-        if loot.is_empty() {
-            wtr.write_record([enemy_name.as_str(), zone_str, &total_kills.to_string(), "", "", "", ""])
-                .map_err(|e| format!("Failed to write CSV row: {e}"))?;
+    for enemy in enemies {
+        let zone_str = enemy.zone.as_deref().unwrap_or("");
+        if enemy.loot.is_empty() {
+            wtr.write_record([
+                enemy.enemy_name.as_str(),
+                zone_str,
+                &enemy.total_kills.to_string(),
+                "",
+                "",
+                "",
+                "",
+            ])
+            .map_err(|e| format!("Failed to write CSV row: {e}"))?;
             continue;
         }
-        for (item_name, total_quantity, times_dropped) in loot {
-            let rate = if total_kills > 0 {
-                times_dropped as f64 / total_kills as f64
+        for loot in &enemy.loot {
+            let rate = if enemy.total_kills > 0 {
+                loot.times_dropped as f64 / enemy.total_kills as f64
             } else {
                 0.0
             };
             wtr.write_record([
-                enemy_name.as_str(),
+                enemy.enemy_name.as_str(),
                 zone_str,
-                &total_kills.to_string(),
-                &item_name,
-                &total_quantity.to_string(),
-                &times_dropped.to_string(),
+                &enemy.total_kills.to_string(),
+                &loot.item_name,
+                &loot.total_quantity.to_string(),
+                &loot.times_dropped.to_string(),
                 &format!("{rate:.4}"),
             ])
             .map_err(|e| format!("Failed to write CSV row: {e}"))?;
@@ -790,9 +829,91 @@ pub fn export_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
     let data = wtr
         .into_inner()
         .map_err(|e| format!("Failed to finalize CSV: {e}"))?;
-    fs::write(&path, data).map_err(|e| format!("Failed to write file: {e}"))?;
+    fs::write(path, data).map_err(|e| format!("Failed to write file: {e}"))?;
+    Ok(())
+}
 
-    Ok(count)
+/// Write the aggregated drop data as a standalone SQLite database — a portable,
+/// loss-free share format that round-trips back through import without the CSV's
+/// empty-placeholder rows. Schema: `meta(key, value)` plus `enemies(enemy_name,
+/// zone, total_kills)` and `loot(enemy_name, zone, item_name, total_quantity,
+/// times_dropped)`, with `zone` left NULL for the unknown-zone bucket. Any existing
+/// file at `path` is replaced — the save dialog already confirmed the overwrite, and
+/// starting clean keeps a prior export's tables from lingering.
+fn write_sqlite_export(path: &str, enemies: &[ExportedEnemy]) -> Result<(), String> {
+    let _ = fs::remove_file(path);
+    let mut conn = rusqlite::Connection::open(path)
+        .map_err(|e| format!("Failed to create SQLite file: {e}"))?;
+    conn.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE enemies (enemy_name TEXT NOT NULL, zone TEXT, total_kills INTEGER NOT NULL);
+         CREATE TABLE loot (
+             enemy_name TEXT NOT NULL, zone TEXT, item_name TEXT NOT NULL,
+             total_quantity INTEGER NOT NULL, times_dropped INTEGER NOT NULL
+         );",
+    )
+    .map_err(|e| format!("Failed to create SQLite schema: {e}"))?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES
+            ('format', 'glogger-drop-rates'),
+            ('format_version', '1'),
+            ('exported_at', datetime('now'))",
+        [],
+    )
+    .map_err(|e| format!("Failed to write export metadata: {e}"))?;
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to start transaction: {e}"))?;
+    {
+        let mut enemy_stmt = tx
+            .prepare("INSERT INTO enemies (enemy_name, zone, total_kills) VALUES (?1, ?2, ?3)")
+            .map_err(|e| format!("Failed to prepare enemy insert: {e}"))?;
+        let mut loot_stmt = tx
+            .prepare(
+                "INSERT INTO loot (enemy_name, zone, item_name, total_quantity, times_dropped)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(|e| format!("Failed to prepare loot insert: {e}"))?;
+        for enemy in enemies {
+            enemy_stmt
+                .execute(rusqlite::params![enemy.enemy_name, enemy.zone, enemy.total_kills])
+                .map_err(|e| format!("Failed to write enemy '{}': {e}", enemy.enemy_name))?;
+            for loot in &enemy.loot {
+                loot_stmt
+                    .execute(rusqlite::params![
+                        enemy.enemy_name,
+                        enemy.zone,
+                        loot.item_name,
+                        loot.total_quantity,
+                        loot.times_dropped
+                    ])
+                    .map_err(|e| format!("Failed to write loot row: {e}"))?;
+            }
+        }
+    }
+    tx.commit()
+        .map_err(|e| format!("Failed to commit SQLite export: {e}"))?;
+    Ok(())
+}
+
+/// Export the player's own personally-observed kills/loot (never previously
+/// imported data) to `path`. The format follows `path`'s extension: a SQLite
+/// database for `.db`/`.sqlite`/`.sqlite3` (see `write_sqlite_export`), otherwise
+/// CSV (see `write_csv_export`). Returns the number of (enemy, zone) entries
+/// written.
+#[tauri::command]
+pub fn export_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<usize, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    let enemies = collect_export_enemies(&conn)?;
+    if is_sqlite_path(&path) {
+        write_sqlite_export(&path, &enemies)?;
+    } else {
+        write_csv_export(&path, &enemies)?;
+    }
+    Ok(enemies.len())
 }
 
 #[derive(Serialize)]
@@ -1120,16 +1241,110 @@ fn parse_csv_aggregated(content: &str) -> Result<Vec<ExportedEnemy>, String> {
     Ok(enemies)
 }
 
-/// Import a previously-exported drop-rate file (CSV, or legacy JSON). The data
-/// merges permanently into the local database — removing the source from the
-/// "Imported Sources" list (see `delete_imported_source`) no longer deletes it.
-/// Tagged by the file's name (`source_label`) so re-importing the same file
-/// replaces just that source's rows instead of double-counting. Never touches the
-/// player's own `enemy_kills`/`enemy_kill_loot` ground truth.
+/// Detect a SQLite database by its 16-byte file header magic. Import uses this
+/// rather than the extension because an imported file's name can't be trusted
+/// (and reading a binary SQLite file as UTF-8 text would fail or produce garbage).
+fn file_is_sqlite(path: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 16];
+    f.read_exact(&mut magic).is_ok() && &magic == b"SQLite format 3\0"
+}
+
+/// Read a glogger SQLite drop-rate export (written by `write_sqlite_export`) into
+/// the shared `ExportedEnemy` list the importer merges. Opened read-only. Loot is
+/// attached to its (enemy, zone) and ordered most-dropped-first. Errors clearly if
+/// the file is some other SQLite database (no `enemies` table).
+fn parse_sqlite_drop_data(path: &str) -> Result<Vec<ExportedEnemy>, String> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("Failed to open SQLite file: {e}"))?;
+
+    let table_exists = |name: &str| -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |_| Ok(true),
+        )
+        .unwrap_or(false)
+    };
+    if !table_exists("enemies") {
+        return Err(
+            "This SQLite file isn't a glogger drop-rate export (no 'enemies' table).".to_string(),
+        );
+    }
+
+    // Loot grouped by (enemy, zone). A malformed export with no `loot` table just
+    // yields lootless enemies rather than erroring.
+    use std::collections::HashMap;
+    type Key = (String, Option<String>);
+    let mut loot_map: HashMap<Key, Vec<ExportedLoot>> = HashMap::new();
+    if table_exists("loot") {
+        let mut stmt = conn
+            .prepare(
+                "SELECT enemy_name, zone, item_name, total_quantity, times_dropped
+                 FROM loot ORDER BY enemy_name, zone, times_dropped DESC, total_quantity DESC",
+            )
+            .map_err(|e| format!("Failed to read loot table: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    ExportedLoot {
+                        item_name: row.get::<_, String>(2)?,
+                        total_quantity: row.get::<_, i64>(3)?,
+                        times_dropped: row.get::<_, i64>(4)?,
+                    },
+                ))
+            })
+            .map_err(|e| format!("Loot query failed: {e}"))?;
+        for r in rows {
+            let (enemy_name, zone, loot) = r.map_err(|e| format!("Loot row error: {e}"))?;
+            loot_map.entry((enemy_name, zone)).or_default().push(loot);
+        }
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT enemy_name, zone, total_kills FROM enemies ORDER BY enemy_name, zone")
+        .map_err(|e| format!("Failed to read enemies table: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Enemies query failed: {e}"))?;
+
+    let mut enemies = Vec::new();
+    for r in rows {
+        let (enemy_name, zone, total_kills) = r.map_err(|e| format!("Enemy row error: {e}"))?;
+        let loot = loot_map.remove(&(enemy_name.clone(), zone.clone())).unwrap_or_default();
+        enemies.push(ExportedEnemy { enemy_name, zone, total_kills, loot });
+    }
+    Ok(enemies)
+}
+
+/// Import a previously-exported drop-rate file. Accepts a glogger SQLite export
+/// (detected by file header), the CSV export, a friend's raw loot-event CSV, or a
+/// legacy JSON bundle. The data merges permanently into the local database —
+/// removing the source from the "Imported Sources" list (see
+/// `delete_imported_source`) no longer deletes it. Tagged by the file's name
+/// (`source_label`) so re-importing the same file replaces just that source's rows
+/// instead of double-counting. Never touches the player's own
+/// `enemy_kills`/`enemy_kill_loot` ground truth.
 #[tauri::command]
 pub fn import_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<ImportSummary, String> {
-    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-    let enemies = parse_drop_data(&content)?;
+    let enemies = if file_is_sqlite(&path) {
+        parse_sqlite_drop_data(&path)?
+    } else {
+        let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+        parse_drop_data(&content)?
+    };
 
     let source_label = std::path::Path::new(&path)
         .file_name()
@@ -1463,6 +1678,62 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kills, 42, "re-import should replace, not double-count");
+    }
+
+    /// A SQLite export written by `write_sqlite_export` round-trips back through
+    /// `parse_sqlite_drop_data` with identical enemies, zones, kills, and loot —
+    /// including a lootless enemy and the unknown-zone (NULL) bucket — and the
+    /// written file is recognized as SQLite by header magic.
+    #[test]
+    fn sqlite_export_round_trips() {
+        use super::{ExportedEnemy, ExportedLoot};
+
+        let path = std::env::temp_dir().join(format!(
+            "glogger_sqlite_roundtrip_{}.db",
+            std::process::id()
+        ));
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let original = vec![
+            ExportedEnemy {
+                enemy_name: "Sand Dog".to_string(),
+                zone: Some("AreaDesert".to_string()),
+                total_kills: 26,
+                loot: vec![
+                    ExportedLoot { item_name: "Gold Nugget".into(), total_quantity: 5, times_dropped: 5 },
+                    ExportedLoot { item_name: "Watercress".into(), total_quantity: 2, times_dropped: 2 },
+                ],
+            },
+            // Comma in the name (no CSV quoting here) + lootless + unknown zone.
+            ExportedEnemy {
+                enemy_name: "Late, Great Beast".to_string(),
+                zone: None,
+                total_kills: 10,
+                loot: vec![],
+            },
+        ];
+
+        super::write_sqlite_export(&path_str, &original).expect("write sqlite export");
+        assert!(super::file_is_sqlite(&path_str), "written file should be detected as SQLite");
+
+        let parsed = super::parse_sqlite_drop_data(&path_str).expect("parse sqlite export");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(parsed.len(), 2);
+
+        let dog = parsed.iter().find(|e| e.enemy_name == "Sand Dog").unwrap();
+        assert_eq!(dog.zone.as_deref(), Some("AreaDesert"));
+        assert_eq!(dog.total_kills, 26);
+        assert_eq!(dog.loot.len(), 2);
+        // Loot comes back most-dropped first.
+        assert_eq!(dog.loot[0].item_name, "Gold Nugget");
+        assert_eq!(dog.loot[0].times_dropped, 5);
+
+        let beast = parsed.iter().find(|e| e.enemy_name == "Late, Great Beast").unwrap();
+        assert_eq!(beast.zone, None, "unknown zone round-trips as NULL/None");
+        assert_eq!(beast.total_kills, 10);
+        assert!(beast.loot.is_empty(), "lootless enemy survives with no loot rows");
     }
 
     /// CSV parsing: groups rows by enemy, sums duplicate (enemy, item) rows,

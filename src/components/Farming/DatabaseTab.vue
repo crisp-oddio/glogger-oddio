@@ -54,6 +54,13 @@
       </div>
 
       <div class="flex items-center gap-2">
+        <select
+          v-model="exportFormat"
+          title="Export file format — CSV opens in a spreadsheet; SQLite is a portable, loss-free .db file."
+          class="px-2 py-1.5 text-xs bg-surface-card border border-border-light rounded text-text-secondary outline-none focus:border-entity-item cursor-pointer">
+          <option value="csv">CSV</option>
+          <option value="sqlite">SQLite</option>
+        </select>
         <button
           @click="doExport"
           :disabled="exporting"
@@ -373,10 +380,15 @@ const gameDataStore = useGameDataStore();
 const gameStateStore = useGameStateStore();
 const settingsStore = useSettingsStore();
 
-// Persisted export serial counter (drives the suggested export filename).
+// Persisted export prefs: the serial counter (drives the suggested filename) and
+// the chosen share format (CSV by default, or a portable SQLite .db file).
+type ExportFormat = "csv" | "sqlite";
 const { prefs: exportPrefs, update: updateExportPrefs } = useViewPrefs("database", {
   exportSerial: 0,
+  exportFormat: "csv" as ExportFormat,
 });
+const exportFormat = ref<ExportFormat>(exportPrefs.value.exportFormat ?? "csv");
+watch(exportFormat, (f) => updateExportPrefs({ exportFormat: f }));
 
 const combatSkillOptions = ref<SkillInfo[]>([]);
 const selectedSkill1 = ref("");
@@ -498,14 +510,16 @@ async function loadImportedSources() {
   }
 }
 
-// Suggested export filename: "<charname>-<NNNN>.csv", where NNNN is a 4-digit
-// serial that increments each successful export (e.g. oddio-0001, oddio-0002).
-// The counter persists per-install in view prefs; the character name is the
-// active character (sanitized, lowercased) or "glogger" when none is loaded.
+// Suggested export filename: "<charname>-<NNNN>.<ext>", where NNNN is a 4-digit
+// serial that increments each successful export (e.g. oddio-0001, oddio-0002) and
+// <ext> follows the chosen format (csv or db). The counter persists per-install in
+// view prefs; the character name is the active character (sanitized, lowercased)
+// or "glogger" when none is loaded.
 function exportFileName(serial: number): string {
   const raw = settingsStore.settings.activeCharacterName || "glogger";
   const name = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, "") || "glogger";
-  return `${name}-${String(serial).padStart(4, "0")}.csv`;
+  const ext = exportFormat.value === "sqlite" ? "db" : "csv";
+  return `${name}-${String(serial).padStart(4, "0")}.${ext}`;
 }
 
 async function doExport() {
@@ -514,8 +528,12 @@ async function doExport() {
   exporting.value = true;
   try {
     const nextSerial = (exportPrefs.value.exportSerial ?? 0) + 1;
+    const filters =
+      exportFormat.value === "sqlite"
+        ? [{ name: "SQLite Database", extensions: ["db"] }]
+        : [{ name: "CSV", extensions: ["csv"] }];
     const filePath = await save({
-      filters: [{ name: "CSV", extensions: ["csv"] }],
+      filters,
       defaultPath: exportFileName(nextSerial),
     });
     if (!filePath) return;
@@ -536,7 +554,7 @@ async function doImport() {
   importing.value = true;
   try {
     const filePath = await open({
-      filters: [{ name: "Drop data", extensions: ["csv", "json"] }],
+      filters: [{ name: "Drop data", extensions: ["csv", "json", "db", "sqlite", "sqlite3"] }],
       multiple: false,
     });
     if (!filePath) return;

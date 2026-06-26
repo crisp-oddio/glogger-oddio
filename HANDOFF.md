@@ -1,5 +1,61 @@
 # glogger — Session Handoff
 
+**Date:** 2026-06-25 (Session 25 — Farming Database: SQLite share format)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` — feature committed (`50343e3`) + this `docs(handoff)` commit; pushed to `origin/dev`
+(a fast-forward that also syncs 14 pre-existing release-merge commits, v0.11.1–v0.11.5).
+**Status:** ✅ `cargo test --lib kill_tracking_commands` green (11 tests incl. new
+`sqlite_export_round_trips`), `cargo build --lib` clean (no warnings), `vue-tsc --noEmit` clean. Not yet
+exercised in `tauri dev` — export/import run through native file dialogs + Rust `invoke`, which a
+frontend-only preview can't drive; the round-trip is covered by the unit test and the CSV path is unchanged.
+
+## TL;DR — Session 25
+
+### 1. SQLite `.db` as a share format for the drop-rate database
+The Farming → **Database** share feature ("Export My Data" / "Import Database" in
+[DatabaseTab.vue](src/components/Farming/DatabaseTab.vue)) gained a portable **SQLite** file format
+**alongside** the existing CSV / JSON / friend-format raw-event support — nothing removed, and both Tauri
+command signatures are unchanged (no other callers affected). Note this is the *share/backup* file format:
+the drop-rate data itself was always SQLite (tables `enemy_kills`, `enemy_kill_loot`,
+`imported_enemy_kill*_agg`, … in the primary `glogger.db`); it was never CSV-backed.
+
+- **Backend** ([kill_tracking_commands.rs](src-tauri/src/db/kill_tracking_commands.rs)):
+  `export_kill_loot_database` now builds the aggregate once (`collect_export_enemies`) and dispatches on the
+  **destination extension** — `.db`/`.sqlite`/`.sqlite3` → `write_sqlite_export`, else `write_csv_export`.
+  The CSV output is **byte-for-byte unchanged** (same columns, derived `drop_rate`, empty-item placeholder
+  row for lootless enemies, most-dropped-first sort).
+- **Export schema:** a standalone DB with `meta(key, value)` (`format`/`format_version`/`exported_at`) plus
+  `enemies(enemy_name, zone, total_kills)` and `loot(enemy_name, zone, item_name, total_quantity,
+  times_dropped)`; `zone` is `NULL` for the unknown-zone bucket. Any existing file at the path is removed
+  first so a prior export's tables can't linger.
+- **Import** (`import_kill_loot_database`): detects SQLite by the **16-byte file-header magic**
+  (`file_is_sqlite`), then `parse_sqlite_drop_data` (read-only open, validates the `enemies` table exists,
+  attaches loot per (enemy, zone), errors clearly on a non-glogger DB). Everything else still flows through
+  the text path (`parse_drop_data` → CSV aggregated / raw-event / legacy JSON). The idempotent,
+  `source_label`-tagged merge into the `imported_*` tables is unchanged.
+- **Deliberate asymmetry:** export chooses format by **extension** (we create the file, so the extension is
+  the user's intent); import chooses by **header magic** (a received file's name can't be trusted, and
+  reading a binary DB as UTF-8 text would fail/garble).
+- **Frontend:** a CSV/SQLite `<select>` next to *Export My Data*, persisted in the `database` view prefs
+  (`exportFormat`, default `csv`); the choice drives the save-dialog filter and the suggested filename
+  extension (`oddio-0001.csv` vs `oddio-0001.db`). The import dialog now also accepts
+  `.db`/`.sqlite`/`.sqlite3`.
+
+### 2. Verification
+`cargo test --lib kill_tracking_commands` → **11 passed** including the new `sqlite_export_round_trips`
+(lossless round-trip through write→read: a lootless enemy, the NULL-zone bucket, and most-dropped-first loot
+order). `cargo build --lib` clean. `vue-tsc --noEmit` clean.
+
+### 3. Notes for next session
+- This push fast-forwards `origin/dev` and also carries 14 pre-existing **release-sync merge commits**
+  (v0.11.1–v0.11.5) that local `dev` was ahead by — expected, not from today's work.
+- `src-tauri/Cargo.toml` shows as modified in `git status` but it's **pure LF→CRLF line-ending noise** (no
+  content diff under `--ignore-space-at-eol`) — intentionally left uncommitted.
+- Possible follow-ups (not done): extend the same SQLite option to the **Brewery** discoveries import and the
+  **Words of Power** CSV export; and a live `tauri dev` click-through of an actual export→import.
+
+---
+
 **Date:** 2026-06-24 (Session 24 — Build Planner: effective ability stats + indirect-DoT rules)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` — committed + pushed (`2cd8bfa`, `df944df`, `69a3f34`); **[PR #22 `dev → main`](https://github.com/crisp-oddio/glogger-oddio/pull/22) open**.
