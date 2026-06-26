@@ -16,20 +16,35 @@
 
       <!-- Buffer control + recheck button (visible when there's content) -->
       <div v-if="recipeEntries.length > 0 && hasContent" class="flex items-center justify-end gap-3">
-        <label
+        <div
           class="flex items-center gap-1 text-[0.65rem] text-text-muted cursor-help"
           title="Safety buffer added to ingredients with a variable (<100%) chance to be consumed per craft. Their actual usage is random, so this pads the plan to avoid coming up short. Always-consumed materials are unaffected.">
           <span>Consume buffer</span>
-          <input
-            type="number"
-            min="0"
-            max="100"
-            step="5"
-            :value="consumeBufferPct"
-            class="input w-12 text-center text-[0.65rem] py-0"
-            @change="onBufferInput" />
+          <!-- Stepper: −/+ buttons sit outside the input box so they never overlap the value -->
+          <div class="flex items-center">
+            <button
+              type="button"
+              class="w-4 h-[1.15rem] flex items-center justify-center leading-none text-text-muted hover:text-accent-gold bg-surface-card border border-border-default border-r-0 rounded-l cursor-pointer disabled:opacity-40 disabled:cursor-default"
+              :disabled="consumeBufferPct <= 0"
+              title="Decrease buffer by 5%"
+              @click="stepBuffer(-5)">&minus;</button>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="5"
+              :value="consumeBufferPct"
+              class="input no-spinner w-7 text-center text-[0.65rem] py-0 px-0 rounded-none"
+              @change="onBufferInput" />
+            <button
+              type="button"
+              class="w-4 h-[1.15rem] flex items-center justify-center leading-none text-text-muted hover:text-accent-gold bg-surface-card border border-border-default border-l-0 rounded-r cursor-pointer disabled:opacity-40 disabled:cursor-default"
+              :disabled="consumeBufferPct >= 100"
+              title="Increase buffer by 5%"
+              @click="stepBuffer(5)">+</button>
+          </div>
           <span>%</span>
-        </label>
+        </div>
         <button
           class="text-[0.65rem] text-text-muted hover:text-text-primary cursor-pointer bg-transparent border border-border-light rounded px-1.5 py-0.5 shrink-0 transition-colors"
           :disabled="resolving"
@@ -373,6 +388,10 @@ const emit = defineEmits<{
 function onBufferInput(event: Event) {
   const target = event.target as HTMLInputElement;
   emit('update-buffer', Math.max(0, Math.min(100, parseInt(target.value, 10) || 0)));
+}
+
+function stepBuffer(delta: number) {
+  emit('update-buffer', Math.max(0, Math.min(100, props.consumeBufferPct + delta)));
 }
 
 function onCustomerProvidesChange(key: string, maxQty: number, event: Event) {

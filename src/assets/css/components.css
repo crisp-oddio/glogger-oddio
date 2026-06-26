@@ -49,6 +49,18 @@
     font-family: inherit;
   }
 
+  /* Hide the native number-input spin buttons (e.g. when custom +/- steppers are
+     provided instead, so the arrows don't overlap a narrow centered field). */
+  .no-spinner::-webkit-inner-spin-button,
+  .no-spinner::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .no-spinner {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
   .tab {
     @apply px-6 py-3 text-text-secondary cursor-pointer border-b-2 border-transparent;
   }
