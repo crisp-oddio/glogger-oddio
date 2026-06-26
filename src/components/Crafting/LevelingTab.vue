@@ -260,10 +260,10 @@
               <span v-if="entry.estimated_cost > 0" class="text-text-muted text-[0.65rem] shrink-0">
                 {{ entry.estimated_cost.toLocaleString() }}g
               </span>
-              <!-- Remove entry (only for current incomplete level) -->
+              <!-- Remove entry -->
               <button
-                v-if="idx === 0 && lvl.xp_accumulated < lvl.xp_needed"
                 class="text-text-muted text-[0.6rem] cursor-pointer bg-transparent border-none hover:text-accent-red"
+                title="Remove this entry"
                 @click="removeEntry(idx, eIdx)">
                 ×
               </button>
@@ -650,6 +650,13 @@ async function loadCosts(recipes: RecipeInfo[], costMap: Map<number, number>) {
 watch([planningLevel, multiplier], () => {
   if (allRecipes.value.length === 0) return;
   refreshRecipeState();
+});
+
+// Re-scale already-planned entries live as the XP buff changes (repeat crafts only;
+// first crafts stay at the flat base × 4 with no bonus — see recomputeEntryXpForBuff).
+watch(multiplier, () => {
+  if (state.value.planLevels.length === 0) return;
+  recomputeEntryXpForBuff();
 });
 
 // Reload costs when showCosts toggled on
@@ -1046,6 +1053,31 @@ function updateEntryCount(levelIdx: number, entryIdx: number, newCount: number) 
   lvl.xp_accumulated += entry.total_xp - oldXp;
 
   refreshRecipeState();
+}
+
+/**
+ * Re-scale every planned entry to the current XP buff. Repeat (2nd+) crafts scale with
+ * the buff and the entry's captured over-level drop-off; the first craft of a recipe is
+ * a flat base × FIRST_CRAFT_XP_MULTIPLIER and gains NOTHING from any XP bonus, so we
+ * re-derive the stored first-time bonus against the new buff to keep that total pinned.
+ * xp_accumulated is adjusted by each entry's delta so the starting-XP seed on the
+ * bottom level is preserved.
+ */
+function recomputeEntryXpForBuff() {
+  const mult = multiplier.value;
+  for (const lvl of state.value.planLevels) {
+    for (const entry of lvl.entries) {
+      const dropOffMult = entry.xp_drop_off_mult ?? 1;
+      const effectiveXpPerCraft = Math.round(entry.xp_per_craft * mult * dropOffMult);
+      const hasFirst = entry.xp_first_time > 0;
+      if (hasFirst) {
+        entry.xp_first_time = Math.max(0, entry.xp_per_craft * FIRST_CRAFT_XP_MULTIPLIER - effectiveXpPerCraft);
+      }
+      const oldXp = entry.total_xp;
+      entry.total_xp = (hasFirst ? entry.xp_first_time : 0) + entry.craft_count * effectiveXpPerCraft;
+      lvl.xp_accumulated += entry.total_xp - oldXp;
+    }
+  }
 }
 
 function clearCurrentLevel() {
