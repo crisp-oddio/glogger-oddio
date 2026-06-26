@@ -1,7 +1,7 @@
-## What's Changed since v0.11.4
+## What's Changed since v0.11.5
 
-### Fixes
-- fix(build-planner): apply conditional mods, item bonuses, and DoT-add mods to ability stats (`3321d89`)
+### Features
+- feat(farming): add SQLite .db export/import for the drop-rate database (`50343e3`)
 
 ---
-*2 commits since v0.11.4*
+*3 commits since v0.11.5*
