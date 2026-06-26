@@ -2333,6 +2333,38 @@ pub struct AbilityItemRef {
     pub slot_label: String,
 }
 
+/// Attack-category keywords whose flat/percent damage bonuses ("+N Core Attack Damage", etc.) gear
+/// and mods grant but abilities never list in their own modifier arrays. Each maps to the
+/// `BOOST_ABILITY_<KW>` (flat) / `MOD_ABILITY_<KW>` (percent) attribute the in-game engine applies to
+/// every attack of that category. Type-specific variants always co-occur with their general
+/// category keyword in the data, so listing both lets an ability pick up both bonuses.
+const ATTACK_CATEGORY_KEYWORDS: &[&str] = &[
+    "CoreAttack",
+    "NiceAttack",
+    "EpicAttack",
+    "SignatureDebuff",
+    "CorePoisonAttack",
+    "NiceAcidAttack",
+    "NicePoisonAttack",
+];
+
+/// Build the direct-damage delta/mod tokens an ability inherits from its attack-category keywords
+/// (Core/Nice/Epic/Signature). Returns `(delta_tokens, mod_tokens)` to extend the direct buckets so
+/// that "+N Core Attack Damage" gear/mods land on every attack of that category. No ability lists
+/// these in its own arrays, so this is purely additive.
+fn category_attack_tokens(keywords: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut delta = Vec::new();
+    let mut mods = Vec::new();
+    for kw in keywords {
+        if ATTACK_CATEGORY_KEYWORDS.contains(&kw.as_str()) {
+            let up = kw.to_uppercase();
+            delta.push(format!("BOOST_ABILITY_{up}"));
+            mods.push(format!("MOD_ABILITY_{up}"));
+        }
+    }
+    (delta, mods)
+}
+
 /// Compute an ability's effective combat stats under a build's assigned gear mods and equipped
 /// items.
 ///
@@ -2407,13 +2439,19 @@ pub async fn compute_ability_build_stats(
         }
     }
 
-    // Fold any synthesized DoTs into the ability's stats so the formula applies indirect mods to
-    // them too. Cloning is cheap (one ability) and keeps the cached game data immutable.
-    if synthetic_dots.is_empty() {
+    // Attack-category damage tokens (Core/Nice/Epic/Signature) the ability inherits from its
+    // keywords but never lists itself — so "+N Core Attack Damage" gear/mods can land on it.
+    let (cat_delta, cat_mods) = category_attack_tokens(&ability.keywords);
+
+    // Fold the synthesized DoTs and category tokens into the ability's stats so the formula sees
+    // them. Cloning is cheap (one ability) and keeps the cached game data immutable.
+    if synthetic_dots.is_empty() && cat_delta.is_empty() {
         Ok(Some(compute(stats, ability.damage_type.clone(), &effects)))
     } else {
         let mut stats = stats.clone();
         stats.dots.extend(synthetic_dots);
+        stats.attributes_that_delta_damage.extend(cat_delta);
+        stats.attributes_that_mod_damage.extend(cat_mods);
         Ok(Some(compute(&stats, ability.damage_type.clone(), &effects)))
     }
 }
@@ -4437,7 +4475,31 @@ pub async fn get_gardening_product_chain(
 
 #[cfg(test)]
 mod build_stats_parsing_tests {
-    use super::{parse_conditional_indirect_text, parse_dot_clause, parse_token_value};
+    use super::{
+        category_attack_tokens, parse_conditional_indirect_text, parse_dot_clause,
+        parse_token_value,
+    };
+
+    #[test]
+    fn category_attack_tokens_maps_keywords_to_tokens() {
+        // A core crushing attack (e.g. Cobra Strike: Attack, BodypartAttack, CoreAttack, ...).
+        let kws = ["Attack", "BodypartAttack", "CoreAttack", "CrushingAttack"].map(String::from);
+        let (delta, mods) = category_attack_tokens(&kws);
+        assert_eq!(delta, vec!["BOOST_ABILITY_COREATTACK"]);
+        assert_eq!(mods, vec!["MOD_ABILITY_COREATTACK"]);
+
+        // A nice poison attack carries both the general and type-specific category tokens.
+        let kws = ["NiceAttack", "NicePoisonAttack"].map(String::from);
+        let (delta, _) = category_attack_tokens(&kws);
+        assert_eq!(
+            delta,
+            vec!["BOOST_ABILITY_NICEATTACK", "BOOST_ABILITY_NICEPOISONATTACK"]
+        );
+
+        // Non-category keywords contribute nothing.
+        let (delta, mods) = category_attack_tokens(&["Melee".to_string(), "Ranged".to_string()]);
+        assert!(delta.is_empty() && mods.is_empty());
+    }
 
     #[test]
     fn parse_token_value_two_and_three_segments() {
