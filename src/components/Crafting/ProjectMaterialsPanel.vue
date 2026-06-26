@@ -14,8 +14,22 @@
         </div>
       </div>
 
-      <!-- Recheck button (always visible when there's content) -->
-      <div v-if="recipeEntries.length > 0 && hasContent" class="flex justify-end">
+      <!-- Buffer control + recheck button (visible when there's content) -->
+      <div v-if="recipeEntries.length > 0 && hasContent" class="flex items-center justify-end gap-3">
+        <label
+          class="flex items-center gap-1 text-[0.65rem] text-text-muted cursor-help"
+          title="Safety buffer added to ingredients with a variable (<100%) chance to be consumed per craft. Their actual usage is random, so this pads the plan to avoid coming up short. Always-consumed materials are unaffected.">
+          <span>Consume buffer</span>
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="5"
+            :value="consumeBufferPct"
+            class="input w-12 text-center text-[0.65rem] py-0"
+            @change="onBufferInput" />
+          <span>%</span>
+        </label>
         <button
           class="text-[0.65rem] text-text-muted hover:text-text-primary cursor-pointer bg-transparent border border-border-light rounded px-1.5 py-0.5 shrink-0 transition-colors"
           :disabled="resolving"
@@ -195,7 +209,7 @@
                     <span
                       v-if="mat.chance_to_consume < 1"
                       class="text-accent-gold cursor-help"
-                      :title="`~${Math.round(mat.chance_to_consume * 100)}% chance to consume per use. Raw quantity: ${mat.quantity}`">
+                      :title="`~${Math.round(mat.chance_to_consume * 100)}% chance to consume per use${consumeBufferPct > 0 ? ` (incl. +${consumeBufferPct}% safety buffer)` : ''}. Raw quantity: ${mat.quantity}`">
                       *
                     </span>
                   </td>
@@ -345,6 +359,7 @@ const props = defineProps<{
   pricingMode: boolean
   customerProvides: Record<string, number>
   pricingCalculation: PriceCalculation | null
+  consumeBufferPct: number
 }>();
 
 const emit = defineEmits<{
@@ -352,7 +367,13 @@ const emit = defineEmits<{
   'toggle-intermediate': [itemId: number]
   'set-all-intermediates': [itemIds: number[], expand: boolean]
   'update-customer-provides': [key: string, quantity: number]
+  'update-buffer': [pct: number]
 }>();
+
+function onBufferInput(event: Event) {
+  const target = event.target as HTMLInputElement;
+  emit('update-buffer', Math.max(0, Math.min(100, parseInt(target.value, 10) || 0)));
+}
 
 function onCustomerProvidesChange(key: string, maxQty: number, event: Event) {
   const target = event.target as HTMLInputElement;

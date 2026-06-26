@@ -36,6 +36,14 @@ export const useCraftingStore = defineStore("crafting", () => {
   const gameData = useGameDataStore();
   const marketStore = useMarketStore();
 
+  // ── Consume-chance safety buffer ───────────────────────────────────────────
+  // Some ingredients are only consumed with a chance (<100%) per craft, so their
+  // expected consumption is probabilistic and undershoots ~half the time. We add
+  // a configurable buffer (default 10%) to every chance-consumed ingredient so a
+  // plan is unlikely to come up short mid-craft. Buffering expected_quantity also
+  // cascades automatically into intermediate craft counts and their raw materials.
+  const consumeBufferPct = ref(10);
+
   // ── Price helpers ──────────────────────────────────────────────────────────
 
   /**
@@ -85,7 +93,8 @@ export const useCraftingStore = defineStore("crafting", () => {
     const expandKey = expandItemIds
       ? Array.from(expandItemIds).sort((a, b) => a - b).join(",")
       : "";
-    return `${recipeId}:${quantity}:${expandKey}`;
+    // The buffer changes expected quantities, so it must be part of the key.
+    return `${recipeId}:${quantity}:${expandKey}:b${consumeBufferPct.value}`;
   }
 
   /** Clear all in-memory caches (call on CDN reload or when data changes). */
@@ -259,7 +268,10 @@ export const useCraftingStore = defineStore("crafting", () => {
     for (const ing of recipe.ingredients) {
       const chanceToConsume = ing.chance_to_consume ?? 1;
       const totalNeeded = ing.stack_size * craftCount;
-      const expectedQty = Math.ceil(totalNeeded * chanceToConsume);
+      // Chance-consumed ingredients get the safety buffer (see consumeBufferPct);
+      // always-consumed ingredients (chance == 1) are exact and never buffered.
+      const bufferMult = chanceToConsume < 1 ? 1 + consumeBufferPct.value / 100 : 1;
+      const expectedQty = Math.ceil(totalNeeded * chanceToConsume * bufferMult);
       const isDynamic = ing.item_id === null && ing.item_keys.length > 0;
 
       // Check if this ingredient is itself craftable
@@ -1369,6 +1381,7 @@ export const useCraftingStore = defineStore("crafting", () => {
     updateEntry,
     removeEntry,
     // Dependency resolver
+    consumeBufferPct,
     resolveRecipeIngredients,
     flattenIngredients,
     collectIntermediates,
