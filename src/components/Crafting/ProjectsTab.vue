@@ -24,10 +24,12 @@
       :pricing-mode="pricingMode"
       :customer-provides="localCustomerProvides"
       :pricing-calculation="pricingCalculation"
+      :consume-buffer-pct="store.consumeBufferPct"
       @resolve="onResolve"
       @toggle-intermediate="toggleIntermediateGlobal"
       @set-all-intermediates="setAllIntermediates"
-      @update-customer-provides="onCustomerProvidesChange" />
+      @update-customer-provides="onCustomerProvidesChange"
+      @update-buffer="onBufferChange" />
 
     <template v-if="!store.activeGroupName" #right>
       <ProjectRecipePanel
@@ -79,6 +81,23 @@ const { prefs: selectionPrefs, update: updateSelectionPrefs } = useViewPrefs(
   "crafting-projects-selection",
   { lastProjectId: null as number | null, lastGroupName: null as string | null },
 );
+
+// Consume-chance safety buffer (%) — persisted via view-prefs and pushed into the
+// crafting store, which applies it during ingredient resolution.
+const { prefs: bufferPrefs, update: updateBufferPrefs } = useViewPrefs(
+  "crafting-buffer",
+  { consumeBufferPct: 10 },
+);
+store.consumeBufferPct = bufferPrefs.value.consumeBufferPct;
+
+function onBufferChange(pct: number) {
+  const clamped = Math.max(0, Math.min(100, Math.round(pct) || 0));
+  if (clamped === store.consumeBufferPct) return;
+  updateBufferPrefs({ consumeBufferPct: clamped });
+  store.consumeBufferPct = clamped;
+  store.clearCaches();
+  onResolve();
+}
 
 // ── Right pane config (hidden in group view) ────────────────────────────────
 
