@@ -1,7 +1,4 @@
-## What's Changed since v0.11.6
-
-### Fixes
-- fix(build-planner): apply Core/Nice/Epic attack & Signature Debuff damage to abilities (`8c6c250`)
+## What's Changed since v0.11.7
 
 ---
-*2 commits since v0.11.6*
+*0 commits since v0.11.7*
