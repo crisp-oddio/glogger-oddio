@@ -1,7 +1,7 @@
-## What's Changed since v0.11.8
+## What's Changed since v0.11.9
 
-### Features
-- feat(crafting): configurable consume-chance safety buffer on project materials (`2e33e05`)
+### Fixes
+- fix(crafting): move consume-buffer arrows outside the input box (`f8c5c26`)
 
 ---
-*2 commits since v0.11.8*
+*2 commits since v0.11.9*
