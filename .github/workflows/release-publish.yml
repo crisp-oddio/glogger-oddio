@@ -202,7 +202,7 @@ jobs:
           ref: ${{ needs.check.outputs.tag }}
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: all-artifacts
