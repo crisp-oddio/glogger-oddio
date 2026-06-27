@@ -20,8 +20,8 @@
     "survey-test": "cd src-tauri && cargo test --lib survey::replay_tests::accuracy_report -- --ignored --nocapture"
   },
   "dependencies": {
-    "@tauri-apps/api": "~2.10.1",
-    "@tauri-apps/plugin-dialog": "~2.6.0",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
