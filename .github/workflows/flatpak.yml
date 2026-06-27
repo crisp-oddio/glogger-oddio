@@ -93,7 +93,7 @@ jobs:
       # ── Upload artifact / attach to release ────────────────────────────
 
       - name: Upload bundle as workflow artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: glogger-flatpak
           path: glogger.flatpak
