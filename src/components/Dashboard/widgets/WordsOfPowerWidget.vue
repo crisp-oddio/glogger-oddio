@@ -86,13 +86,18 @@
       Copied "{{ copiedWord }}" to clipboard
     </div>
 
-    <!-- Export -->
-    <div class="shrink-0">
+    <!-- Export / Import -->
+    <div class="shrink-0 flex gap-3">
       <button
         class="text-xs text-text-dim hover:text-text-primary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         :disabled="words.length === 0"
         @click="exportCsv">
         Export to CSV
+      </button>
+      <button
+        class="text-xs text-text-dim hover:text-text-primary cursor-pointer"
+        @click="importCsv">
+        Import from CSV
       </button>
       <span v-if="exportStatus" class="text-[11px] text-text-dim ml-2">{{ exportStatus }}</span>
     </div>
@@ -373,6 +378,36 @@ async function exportCsv() {
   } catch (e) {
     console.error('Failed to export words of power CSV:', e)
     exportStatus.value = 'Export failed'
+  }
+}
+
+async function importCsv() {
+  exportStatus.value = ''
+  const char = settings.settings.activeCharacterName
+  const server = settings.settings.activeServerName
+  if (!char || !server) return
+
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const filePath = await open({
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+      multiple: false,
+    })
+    if (!filePath) return
+
+    const count = await invoke<number>('import_words_of_power_csv', {
+      characterName: char,
+      serverName: server,
+      filePath,
+    })
+    exportStatus.value = `Imported ${count} word${count !== 1 ? 's' : ''}`
+    await loadWords()
+    setTimeout(() => {
+      exportStatus.value = ''
+    }, 3000)
+  } catch (e) {
+    console.error('Failed to import words of power CSV:', e)
+    exportStatus.value = `Import failed: ${e}`
   }
 }
 
