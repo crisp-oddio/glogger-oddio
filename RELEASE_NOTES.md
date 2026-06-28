@@ -1,7 +1,8 @@
-## What's Changed since v0.11.9
+## What's Changed since v0.11.10
 
-### Fixes
-- fix(crafting): move consume-buffer arrows outside the input box (`f8c5c26`)
+### Features
+- feat(db): user-data maintenance — purge big tables, compact, fix FTS triggers (`e5357db`)
+- feat: add CSV import for words of power widget (`5f0cc6e`)
 
 ---
-*2 commits since v0.11.9*
+*22 commits since v0.11.10*
