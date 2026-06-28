@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Linux dependencies
         run: |
@@ -63,7 +63,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -106,7 +106,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout (at experimental tag)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: v${{ needs.prepare.outputs.version }}-exp
 
@@ -185,7 +185,7 @@ jobs:
           ls -la release-artifacts/
 
       - name: Upload platform artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-${{ matrix.label }}
           path: release-artifacts/*
@@ -196,7 +196,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: all-artifacts

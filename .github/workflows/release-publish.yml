@@ -27,7 +27,7 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -89,7 +89,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout (at release tag)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.tag }}
 
@@ -185,7 +185,7 @@ jobs:
           ls -la release-artifacts/
 
       - name: Upload platform artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-${{ matrix.label }}
           path: release-artifacts/*
@@ -197,12 +197,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (at release tag, for RELEASE_NOTES.md)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.tag }}
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: all-artifacts
