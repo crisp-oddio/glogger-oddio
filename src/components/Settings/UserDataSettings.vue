@@ -6,8 +6,24 @@
       <div class="mb-4">
         <div v-if="dbStats" class="status-panel">
           <div class="status-row">
+            <span class="status-label">Total Database Size:</span>
+            <span class="status-value">{{ formatBytes(dbStats.total_size_bytes) }}</span>
+          </div>
+          <div class="status-row">
             <span class="status-label">Player Data Size:</span>
             <span class="status-value">{{ formatBytes(dbStats.player_data_size_bytes) }}</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Reclaimable (Compact):</span>
+            <span class="status-value">{{ formatBytes(dbStats.free_bytes) }}</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Item Transactions:</span>
+            <span class="status-value">{{ dbStats.item_transactions_count.toLocaleString() }}</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Chat Messages:</span>
+            <span class="status-value">{{ dbStats.chat_messages_count.toLocaleString() }}</span>
           </div>
           <div class="status-row">
             <span class="status-label">Market Prices:</span>
@@ -27,9 +43,34 @@
           </div>
         </div>
 
-        <button @click="loadStats" class="btn btn-secondary" :disabled="loadingStats">
-          {{ loadingStats ? 'Loading...' : 'Refresh Statistics' }}
-        </button>
+        <div v-if="dbStats && dbStats.largest_tables.length" class="status-panel mt-3">
+          <div class="status-row font-semibold">
+            <span class="status-label">Largest Tables</span>
+            <span class="status-value">On-disk size</span>
+          </div>
+          <div
+            v-for="t in dbStats.largest_tables"
+            :key="t.name"
+            class="status-row">
+            <span class="status-label font-mono text-xs">{{ t.name }}</span>
+            <span class="status-value">{{ formatBytes(t.size_bytes) }}</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 mt-3">
+          <button @click="loadStats" class="btn btn-secondary" :disabled="loadingStats">
+            {{ loadingStats ? 'Loading...' : 'Refresh Statistics' }}
+          </button>
+          <button @click="compactDatabase" class="btn btn-secondary" :disabled="compacting">
+            {{ compacting ? 'Compacting...' : 'Compact Database' }}
+          </button>
+        </div>
+        <p class="mt-2 text-text-muted text-xs leading-relaxed">
+          Compact rebuilds the database file to return free space to your disk. It does
+          not delete any data — safe to run any time.
+        </p>
+        <div v-if="compactResult" class="success-box">{{ compactResult }}</div>
+        <div v-if="compactError" class="error-box">{{ compactError }}</div>
       </div>
     </div>
 
@@ -77,8 +118,10 @@
         </div>
 
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
-          When enabled, player data (market prices, sales, surveys, events) older than the
-          specified number of days will be automatically deleted on app startup.
+          When enabled, player data older than the specified number of days is automatically
+          deleted on app startup — including item transactions and stored chat history (the
+          two largest tables), plus market prices, sales, surveys, and events. Your raw chat
+          <code>.log</code> files on disk are never touched.
         </p>
       </div>
     </div>
@@ -123,18 +166,22 @@
         </label>
 
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
-          Permanently delete ALL user data (market prices, sales, surveys, events).
-          CDN data and chat logs are NOT affected. This cannot be undone.
+          Permanently delete ALL user data: item transactions, stored chat history, market
+          prices, sales, surveys, and events. CDN data and your raw chat <code>.log</code>
+          files on disk are NOT affected. This cannot be undone.
         </p>
       </div>
 
       <div v-if="purgeResult" class="info-box">
         <strong>Purge Complete:</strong>
         <ul class="mt-2 mb-0 pl-6">
-          <li class="my-1">Market Prices: {{ purgeResult.market_prices_deleted }} deleted</li>
-          <li class="my-1">Sales History: {{ purgeResult.sales_deleted }} deleted</li>
-          <li class="my-1">Survey Sessions: {{ purgeResult.survey_sessions_deleted }} deleted</li>
-          <li class="my-1">Event Log: {{ purgeResult.events_deleted }} deleted</li>
+          <li class="my-1">Item Transactions: {{ purgeResult.item_transactions_deleted.toLocaleString() }} deleted</li>
+          <li class="my-1">Chat Messages: {{ purgeResult.chat_messages_deleted.toLocaleString() }} deleted</li>
+          <li class="my-1">Market Prices: {{ purgeResult.market_prices_deleted.toLocaleString() }} deleted</li>
+          <li class="my-1">Sales History: {{ purgeResult.sales_deleted.toLocaleString() }} deleted</li>
+          <li class="my-1">Survey Sessions: {{ purgeResult.survey_sessions_deleted.toLocaleString() }} deleted</li>
+          <li class="my-1">Event Log: {{ purgeResult.events_deleted.toLocaleString() }} deleted</li>
+          <li class="my-1 font-semibold">Space reclaimed: {{ formatBytes(purgeResult.bytes_reclaimed) }}</li>
         </ul>
       </div>
 
@@ -159,19 +206,13 @@ import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore } from "../../stores/settingsStore";
+import type {
+  DatabaseStats,
+  PurgeResult,
+  CompactResult,
+} from "../../types/database";
 
 const settingsStore = useSettingsStore();
-
-// Database stats
-interface DatabaseStats {
-  total_size_bytes: number;
-  cdn_size_bytes: number;
-  player_data_size_bytes: number;
-  market_prices_count: number;
-  sales_history_count: number;
-  survey_sessions_count: number;
-  event_log_count: number;
-}
 
 const dbStats = ref<DatabaseStats | null>(null);
 const loadingStats = ref(false);
@@ -237,14 +278,30 @@ function handleAutoPurgeDaysChange() {
   }
 }
 
-// Manual purge
-interface PurgeResult {
-  market_prices_deleted: number;
-  sales_deleted: number;
-  survey_sessions_deleted: number;
-  events_deleted: number;
+// Compact (VACUUM)
+const compacting = ref(false);
+const compactResult = ref<string | null>(null);
+const compactError = ref<string | null>(null);
+
+async function compactDatabase() {
+  compacting.value = true;
+  compactResult.value = null;
+  compactError.value = null;
+  try {
+    const r = await invoke<CompactResult>('compact_database');
+    compactResult.value =
+      r.bytes_reclaimed > 0
+        ? `Reclaimed ${formatBytes(r.bytes_reclaimed)} (now ${formatBytes(r.bytes_after)}).`
+        : `Already compact — nothing to reclaim.`;
+    await loadStats();
+  } catch (e: any) {
+    compactError.value = e.toString();
+  } finally {
+    compacting.value = false;
+  }
 }
 
+// Manual purge
 const purgeDays = ref<number>(90);
 const purging = ref(false);
 const confirmPurgeAll = ref(false);

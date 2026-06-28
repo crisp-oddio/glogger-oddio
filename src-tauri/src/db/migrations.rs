@@ -307,6 +307,50 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 56)?;
     }
 
+    if current_version < 57 {
+        migration_v57_fix_chat_fts_delete_triggers(conn)?;
+        super::record_migration(conn, 57)?;
+    }
+
+    Ok(())
+}
+
+/// Migration v57: fix the chat_messages FTS sync triggers.
+///
+/// `chat_messages_fts` is an **external-content** FTS5 table (`content=`). For
+/// such tables a row must be removed with the special
+/// `INSERT INTO ft(ft, rowid, …) VALUES('delete', …)` command, which supplies
+/// the original column values so FTS5 knows which tokens to drop. The original
+/// delete/update triggers (created with the table) used a plain
+/// `DELETE FROM chat_messages_fts WHERE rowid = old.id`; in an AFTER DELETE
+/// trigger the content row is already gone, so FTS5 can't read the old values
+/// and the index/`_docsize` shadow table accumulate orphaned entries (and can
+/// later report "database disk image is malformed").
+///
+/// This was latent because nothing deleted chat rows before — the new user-data
+/// purge does, so the triggers must be correct first. We also run a one-time
+/// `'rebuild'` to repair any drift already present.
+fn migration_v57_fix_chat_fts_delete_triggers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS chat_messages_fts_delete;
+         DROP TRIGGER IF EXISTS chat_messages_fts_update;
+
+         CREATE TRIGGER chat_messages_fts_delete AFTER DELETE ON chat_messages BEGIN
+             INSERT INTO chat_messages_fts(chat_messages_fts, rowid, message, sender)
+             VALUES('delete', old.id, old.message, old.sender);
+         END;
+
+         CREATE TRIGGER chat_messages_fts_update AFTER UPDATE ON chat_messages BEGIN
+             INSERT INTO chat_messages_fts(chat_messages_fts, rowid, message, sender)
+             VALUES('delete', old.id, old.message, old.sender);
+             INSERT INTO chat_messages_fts(rowid, message, sender)
+             VALUES (new.id, new.message, new.sender);
+         END;
+
+         -- Rebuild the index from the content table to clear any orphaned
+         -- entries left by the previous (incorrect) delete idiom.
+         INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('rebuild');",
+    )?;
     Ok(())
 }
 
@@ -2652,4 +2696,83 @@ fn migration_v50_corpse_extracts(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_corpse_extracts_corpse ON corpse_extracts(corpse_name);"
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Recreate the original chat_messages + external-content FTS setup with the
+    /// *old, buggy* delete trigger, so we can prove v57 repairs it.
+    fn setup_legacy_chat_fts() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE chat_messages (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 message TEXT NOT NULL,
+                 sender TEXT
+             );
+             CREATE VIRTUAL TABLE chat_messages_fts USING fts5(
+                 message, sender, content=chat_messages, content_rowid=id
+             );
+             CREATE TRIGGER chat_messages_fts_insert AFTER INSERT ON chat_messages BEGIN
+                 INSERT INTO chat_messages_fts(rowid, message, sender)
+                 VALUES (new.id, new.message, new.sender);
+             END;
+             -- the buggy idiom v57 replaces
+             CREATE TRIGGER chat_messages_fts_delete AFTER DELETE ON chat_messages BEGIN
+                 DELETE FROM chat_messages_fts WHERE rowid = old.id;
+             END;",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn v57_delete_trigger_removes_fts_and_docsize_entries() {
+        let c = setup_legacy_chat_fts();
+        c.execute(
+            "INSERT INTO chat_messages(message, sender) VALUES ('hello world', 'alice')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO chat_messages(message, sender) VALUES ('goodbye world', 'bob')",
+            [],
+        )
+        .unwrap();
+
+        migration_v57_fix_chat_fts_delete_triggers(&c).unwrap();
+
+        // Delete one message; the corrected trigger must purge it from the index.
+        c.execute("DELETE FROM chat_messages WHERE sender = 'alice'", [])
+            .unwrap();
+
+        // No orphan left behind in the docsize shadow table.
+        let docsize: i64 = c
+            .query_row("SELECT COUNT(*) FROM chat_messages_fts_docsize", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(docsize, 1, "deleted row must not leave a docsize orphan");
+
+        // The deleted message is no longer searchable; the survivor still is.
+        let hits_hello: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM chat_messages_fts WHERE chat_messages_fts MATCH 'hello'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits_hello, 0);
+        let hits_goodbye: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM chat_messages_fts WHERE chat_messages_fts MATCH 'goodbye'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits_goodbye, 1);
+    }
 }

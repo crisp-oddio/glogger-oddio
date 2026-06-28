@@ -1,13 +1,22 @@
 // Database statistics and admin types
 
+export interface TableSize {
+  name: string;
+  size_bytes: number;
+}
+
 export interface DatabaseStats {
   total_size_bytes: number;
   cdn_size_bytes: number;
   player_data_size_bytes: number;
+  free_bytes: number;
   market_prices_count: number;
   sales_history_count: number;
   survey_sessions_count: number;
   event_log_count: number;
+  item_transactions_count: number;
+  chat_messages_count: number;
+  largest_tables: TableSize[];
 }
 
 export interface PurgeOptions {
@@ -20,6 +29,15 @@ export interface PurgeResult {
   sales_deleted: number;
   survey_sessions_deleted: number;
   events_deleted: number;
+  item_transactions_deleted: number;
+  chat_messages_deleted: number;
+  bytes_reclaimed: number;
+}
+
+export interface CompactResult {
+  bytes_before: number;
+  bytes_after: number;
+  bytes_reclaimed: number;
 }
 
 // Market price types

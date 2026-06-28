@@ -152,7 +152,9 @@ use coordinator::{
     stop_chat_tailing, stop_player_tailing,
     spawn_polling_thread, DataIngestCoordinator, PollingHandle,
 };
-use db::admin_commands::{force_rebuild_cdn_tables, get_database_stats, purge_player_data};
+use db::admin_commands::{
+    compact_database, force_rebuild_cdn_tables, get_database_stats, purge_player_data,
+};
 use db::aggregate_commands::{get_aggregate_inventory, get_aggregate_skills, get_aggregate_vendor, get_aggregate_wealth};
 use db::build_planner_commands::{
     clear_build_preset_slot_item, clone_build_preset, create_build_preset, delete_build_preset,
@@ -512,6 +514,36 @@ pub fn run() {
                 });
             }
 
+            // Step 5e: Auto-purge old user data on startup, if enabled in
+            // settings. Bounds unbounded growth of the big append-only tables
+            // (item_transactions, chat_messages + its FTS index). Non-fatal —
+            // a failure here must never block startup.
+            {
+                let s = settings_manager.get();
+                if s.auto_purge_enabled {
+                    match db_pool.get() {
+                        Ok(conn) => {
+                            match db::admin_commands::check_auto_purge(&conn, Some(s.auto_purge_days)) {
+                                Ok(r) if r.bytes_reclaimed > 0 => {
+                                    startup_log!(
+                                        "Auto-purge reclaimed {} bytes (data older than {}d)",
+                                        r.bytes_reclaimed,
+                                        s.auto_purge_days
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    startup_log!("Auto-purge failed: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            startup_log!("Auto-purge skipped (no DB connection): {e}");
+                        }
+                    }
+                }
+            }
+
             // Step 6: Register managed state
             app.manage(settings_manager.clone());
             app.manage(db_pool.clone());
@@ -699,6 +731,7 @@ pub fn run() {
             get_recent_events,
             // Database admin
             get_database_stats,
+            compact_database,
             force_rebuild_cdn_tables,
             purge_player_data,
             // Settings
