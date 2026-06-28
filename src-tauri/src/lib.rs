@@ -936,6 +936,7 @@ pub fn run() {
             db::words_of_power_commands::get_words_of_power,
             db::words_of_power_commands::add_word_of_power,
             db::words_of_power_commands::delete_word_of_power,
+            db::words_of_power_commands::import_words_of_power_csv,
             // User timers
             get_user_timers,
             save_user_timer,

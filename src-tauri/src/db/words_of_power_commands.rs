@@ -143,6 +143,141 @@ pub fn delete_word_of_power(db: State<'_, DbPool>, id: i64) -> Result<(), String
     Ok(())
 }
 
+// ── CSV import ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn import_words_of_power_csv(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+    file_path: String,
+) -> Result<usize, String> {
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read CSV file: {e}"))?;
+
+    let mut reader = csv::Reader::from_reader(content.as_bytes());
+    let headers = reader
+        .headers()
+        .map_err(|e| format!("Failed to read CSV headers: {e}"))?
+        .clone();
+
+    let col_word = find_header(&headers, &["Word", "word"])?;
+    let col_power = find_header(&headers, &["Power Name", "power_name", "Power Name"])?;
+
+    let col_date = find_header_opt(&headers, &["Date", "date"]);
+    let col_time = find_header_opt(&headers, &["Time", "time"]);
+    let col_desc = find_header_opt(&headers, &["Description", "description"]);
+
+    let conn = db.get().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let mut imported = 0usize;
+
+    for result in reader.records() {
+        let record = result.map_err(|e| format!("Failed to read CSV record: {e}"))?;
+
+        let word = record
+            .get(col_word)
+            .ok_or_else(|| "Missing Word field in CSV row".to_string())?
+            .trim();
+        let power_name = record
+            .get(col_power)
+            .ok_or_else(|| "Missing Power Name field in CSV row".to_string())?
+            .trim();
+
+        if word.is_empty() || power_name.is_empty() {
+            continue;
+        }
+
+        let discovered_at = if let (Some(di), Some(ti)) = (col_date, col_time) {
+            let date = record.get(di).unwrap_or("");
+            let time = record.get(ti).unwrap_or("");
+            let combined = format!("{} {}", date, time).trim().to_string();
+            if combined.is_empty() || combined == " " {
+                now.clone()
+            } else {
+                // Try parsing common date/time formats into ISO 8601
+                parse_csv_datetime(&combined).unwrap_or_else(|| now.clone())
+            }
+        } else {
+            now.clone()
+        };
+
+        let description = col_desc
+            .and_then(|i| record.get(i))
+            .filter(|s: &&str| !s.is_empty())
+            .map(|s| s.to_string());
+
+        conn.execute(
+            "INSERT INTO words_of_power (character_name, server_name, word, power_name, description, discovered_at, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'csv-import')",
+            rusqlite::params![
+                &character_name,
+                &server_name,
+                word,
+                power_name,
+                description,
+                &discovered_at,
+            ],
+        )
+        .map_err(|e| format!("Failed to insert word '{}': {e}", word))?;
+
+        imported += 1;
+    }
+
+    Ok(imported)
+}
+
+fn find_header(headers: &csv::StringRecord, candidates: &[&str]) -> Result<usize, String> {
+    for c in candidates {
+        if let Some(i) = headers.iter().position(|h| h.trim().eq_ignore_ascii_case(c)) {
+            return Ok(i);
+        }
+    }
+    Err(format!(
+        "CSV is missing a required column. Expected one of: {}",
+        candidates.join(", ")
+    ))
+}
+
+fn find_header_opt(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usize> {
+    for c in candidates {
+        if let Some(i) = headers.iter().position(|h| h.trim().eq_ignore_ascii_case(c)) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Best-effort parsing of common date+time formats into ISO 8601.
+/// Accepts "MM/DD/YYYY HH:MM:SS AM/PM", "YYYY-MM-DD HH:MM:SS", etc.
+fn parse_csv_datetime(s: &str) -> Option<String> {
+    let s = s.trim();
+
+    // Try common formats in order
+    let formats = &[
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ];
+
+    for fmt in formats {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        }
+    }
+
+    // If it's already ISO-like, return as-is
+    if s.contains('T') && s.ends_with('Z') {
+        return Some(s.to_string());
+    }
+
+    None
+}
+
 // ── Internal helper (called from coordinator, not a Tauri command) ──────────
 
 pub fn insert_word_of_power(
