@@ -81,6 +81,12 @@ pub enum ChatStatusEvent {
         timestamp: String,
         file_path: String,
     },
+
+    /// "Roulette ball ended on N!" — the winning number of a casino roulette
+    /// spin (European single-zero wheel, so `number` is 0..=36). This is the
+    /// only roulette event written to the logs; the player's own bet is an
+    /// on-screen toast that is never logged, so only outcomes are trackable.
+    RouletteResult { timestamp: String, number: u32 },
 }
 
 /// Try to parse a Status channel ChatMessage into a structured event.
@@ -108,6 +114,18 @@ pub fn parse_status_message(msg: &ChatMessage) -> Option<ChatStatusEvent> {
         .or_else(|| try_summoned(text, &ts))
         .or_else(|| try_item_studied(text, &ts))
         .or_else(|| try_report_saved(text, &ts))
+        .or_else(|| try_roulette_result(text, &ts))
+}
+
+/// "Roulette ball ended on N!" — casino roulette spin outcome.
+fn try_roulette_result(text: &str, ts: &str) -> Option<ChatStatusEvent> {
+    let prefix = "Roulette ball ended on ";
+    let inner = text.strip_prefix(prefix)?.strip_suffix('!')?;
+    let number: u32 = inner.parse().ok()?;
+    Some(ChatStatusEvent::RouletteResult {
+        timestamp: ts.to_string(),
+        number,
+    })
 }
 
 /// "X added to inventory." or "X xN added to inventory."
@@ -836,6 +854,24 @@ mod tests {
         // "Saved book to ..." should NOT match ReportSaved
         let msg = status_msg("Saved book to C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Books/HelpScreen_260419_185352.txt");
         assert!(parse_status_message(&msg).is_none());
+    }
+
+    #[test]
+    fn test_roulette_result() {
+        let msg = status_msg("Roulette ball ended on 25!");
+        match parse_status_message(&msg).unwrap() {
+            ChatStatusEvent::RouletteResult { number, .. } => assert_eq!(number, 25),
+            other => panic!("Expected RouletteResult(25), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_roulette_result_zero() {
+        let msg = status_msg("Roulette ball ended on 0!");
+        match parse_status_message(&msg).unwrap() {
+            ChatStatusEvent::RouletteResult { number, .. } => assert_eq!(number, 0),
+            other => panic!("Expected RouletteResult(0), got {:?}", other),
+        }
     }
 
     #[test]
