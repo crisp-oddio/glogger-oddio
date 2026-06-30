@@ -312,6 +312,29 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 57)?;
     }
 
+    if current_version < 58 {
+        migration_v58_roulette_results(conn)?;
+        super::record_migration(conn, 58)?;
+    }
+
+    Ok(())
+}
+
+/// Migration V58: casino roulette spin outcomes (drives the Roulette dashboard
+/// widget's outcome-percentage pie chart). Only the winning number is logged
+/// (`[Status] Roulette ball ended on N!`); bets/payouts are never written to
+/// disk, so we store outcomes only. Idempotent via the unique index — the same
+/// spin re-ingested from chat backfill dedups on (spun_at, number).
+fn migration_v58_roulette_results(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS roulette_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            spun_at TEXT NOT NULL,
+            number INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_roulette_dedup
+            ON roulette_results(spun_at, number);",
+    )?;
     Ok(())
 }
 

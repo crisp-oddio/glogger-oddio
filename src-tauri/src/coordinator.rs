@@ -1151,6 +1151,16 @@ impl DataIngestCoordinator {
                                 // stolen) — feeds the council estimate.
                                 self.accrue_currency_delta(*amount, timestamp);
                             }
+                            ChatStatusEvent::RouletteResult { timestamp, number } => {
+                                // Persist the casino roulette spin outcome for the
+                                // Roulette widget's history pie chart. Idempotent.
+                                if let Ok(conn) = self.db_pool.get() {
+                                    crate::db::roulette_commands::record_roulette_result(
+                                        &conn, timestamp, *number,
+                                    )
+                                    .ok();
+                                }
+                            }
                             _ => {}
                         }
 

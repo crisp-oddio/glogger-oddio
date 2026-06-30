@@ -31,6 +31,7 @@ import GardenAlmanacWidget from "./widgets/GardenAlmanacWidget.vue";
 import MessagesWidget from "./widgets/MessagesWidget.vue";
 import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
+import RouletteWidget from "./widgets/RouletteWidget.vue";
 
 export type WidgetSize = "small" | "medium" | "large";
 
@@ -231,6 +232,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     name: "Hoplology",
     component: HoplologyWidget,
     defaultSize: "small",
+  },
+  {
+    id: "roulette",
+    name: "Casino Roulette",
+    component: RouletteWidget,
+    defaultSize: "medium",
   },
 ];
 

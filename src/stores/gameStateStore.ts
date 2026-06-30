@@ -66,6 +66,7 @@ export type ChatStatusEvent =
       verb: string
       zone: string | null
     }
+  | { kind: 'RouletteResult'; timestamp: string; number: number }
 
 // ── Currency Estimate ─────────────────────────────────────────────────────
 // Matches Rust CurrencyEstimate (db/game_state_commands.rs). Running estimate
@@ -82,6 +83,21 @@ export interface CurrencyEstimate {
 
 // ── Combat Wisdom Types ──────────────────────────────────────────────────
 // Matches Rust CombatWisdomMonster (db/combat_wisdom_commands.rs).
+
+// ── Roulette Types ───────────────────────────────────────────────────────
+// Matches Rust RouletteStats (db/roulette_commands.rs).
+
+export interface RouletteNumberCount {
+  number: number
+  count: number
+}
+
+export interface RouletteStats {
+  total: number
+  counts: RouletteNumberCount[]
+  last_spun_at: string | null
+  last_number: number | null
+}
 
 export interface CombatWisdomMonster {
   name: string
@@ -183,6 +199,15 @@ export const useGameStateStore = defineStore('gameState', () => {
 
   /** Persisted per-monster Combat Wisdom cooldown data (from the DB). */
   const combatWisdomMonsters = ref<CombatWisdomMonster[]>([])
+
+  /** Persisted casino roulette outcome history (from the DB). Drives the
+   *  Roulette widget's outcome-percentage pie chart. */
+  const rouletteStats = ref<RouletteStats>({
+    total: 0,
+    counts: [],
+    last_spun_at: null,
+    last_number: null,
+  })
 
   // ── Council-wallet estimate (anchored on last export + live deltas) ───
   const currencyEstimate = ref<CurrencyEstimate | null>(null)
@@ -558,6 +583,15 @@ export const useGameStateStore = defineStore('gameState', () => {
     }
   }
 
+  /** Fetch persisted casino roulette outcome history. */
+  async function fetchRouletteStats() {
+    try {
+      rouletteStats.value = await invoke<RouletteStats>('get_roulette_stats')
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load roulette stats:', e)
+    }
+  }
+
   /** Reconcile the council-wallet estimate from the DB (anchor + delta_since).
    *  Call on load/login and after a fresh export re-anchors it. */
   async function fetchCurrencyEstimate() {
@@ -910,6 +944,12 @@ export const useGameStateStore = defineStore('gameState', () => {
         if (event.source_name) void fetchCombatWisdomMonsters()
         break
       }
+
+      case 'RouletteResult':
+        // A new casino spin landed — refresh the persisted outcome stats so
+        // the Roulette widget's pie chart and last-number update live.
+        void fetchRouletteStats()
+        break
     }
   }
 
@@ -1137,6 +1177,10 @@ export const useGameStateStore = defineStore('gameState', () => {
     combatWisdomSession,
     combatWisdomMonsters,
     fetchCombatWisdomMonsters,
+
+    // Casino roulette outcome history
+    rouletteStats,
+    fetchRouletteStats,
 
     // Council-wallet estimate
     currencyEstimate,

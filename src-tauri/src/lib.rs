@@ -514,6 +514,22 @@ pub fn run() {
                 });
             }
 
+            // Step 5d-ii: One-shot backfill of casino roulette outcomes from the
+            // historical ChatLogs so the Roulette widget's pie chart is populated
+            // immediately. Idempotent (unique index).
+            {
+                let sm = settings_manager.clone();
+                let dbp = db_pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    match db::roulette_commands::backfill_from_chat_logs(&sm, &dbp) {
+                        Ok(n) => {
+                            startup_log!("Roulette backfill: {} new spin(s)", n);
+                        }
+                        Err(e) => eprintln!("Roulette backfill failed: {e}"),
+                    }
+                });
+            }
+
             // Step 5e: Auto-purge old user data on startup, if enabled in
             // settings. Bounds unbounded growth of the big append-only tables
             // (item_transactions, chat_messages + its FTS index). Non-fatal —
@@ -613,6 +629,8 @@ pub fn run() {
             // Combat Wisdom tracking
             db::combat_wisdom_commands::get_combat_wisdom_monsters,
             db::combat_wisdom_commands::backfill_combat_wisdom_from_chat_logs,
+            db::roulette_commands::get_roulette_stats,
+            db::roulette_commands::backfill_roulette_from_chat_logs,
             // CDN management
             get_cache_status,
             check_cdn_version,
