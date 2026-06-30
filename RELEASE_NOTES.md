@@ -1,8 +1,7 @@
-## What's Changed since v0.11.10
+## What's Changed since v0.11.11
 
 ### Features
-- feat(db): user-data maintenance — purge big tables, compact, fix FTS triggers (`e5357db`)
-- feat: add CSV import for words of power widget (`5f0cc6e`)
+- feat(roulette): casino roulette outcome tracker widget (`54a50c5`)
 
 ---
-*22 commits since v0.11.10*
+*2 commits since v0.11.11*
