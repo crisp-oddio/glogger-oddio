@@ -69,19 +69,32 @@
 
       <div class="h-px bg-border-default" />
 
-      <!-- Per-number board: every number tiled in its wheel color -->
+      <!-- Per-number board, laid out like the casino felt: 0 on the left,
+           then 12 columns × 3 rows (top 3,6,…,36 / mid 2,5,…,35 / bot 1,4,…,34). -->
       <div class="flex flex-col gap-1.5 min-h-0 flex-1">
         <span class="text-xs text-text-dim uppercase tracking-wide">By number</span>
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(34px,1fr))] gap-1 overflow-y-auto pr-1">
+        <div class="flex gap-1 overflow-x-auto pb-1">
+          <!-- Zero spans the full height on the left -->
           <div
-            v-for="n in board"
-            :key="n.number"
-            class="flex flex-col items-center justify-center rounded py-1 leading-none"
-            :class="n.count === 0 ? 'opacity-30' : ''"
-            :style="{ backgroundColor: colorOf(n.number) }"
-            :title="`${n.number}: ${n.count} spin(s) (${pct(n.count)}%)`">
-            <span class="text-[13px] font-semibold tabular-nums text-white/95">{{ n.number }}</span>
-            <span class="text-[10px] tabular-nums text-white/75">{{ n.count }}</span>
+            class="flex flex-col items-center justify-center rounded px-1.5 leading-none shrink-0"
+            :class="countOf(0) === 0 ? 'opacity-30' : ''"
+            :style="{ backgroundColor: colorOf(0) }"
+            :title="`0: ${countOf(0)} spin(s) (${pct(countOf(0))}%)`">
+            <span class="text-[13px] font-semibold tabular-nums text-white/95">0</span>
+            <span class="text-[10px] tabular-nums text-white/75">{{ countOf(0) }}</span>
+          </div>
+          <!-- 12 columns × 3 rows -->
+          <div class="grid grid-flow-col grid-rows-3 gap-1 flex-1">
+            <div
+              v-for="n in TABLE_NUMBERS"
+              :key="n"
+              class="flex flex-col items-center justify-center rounded py-0.5 leading-none min-w-[26px]"
+              :class="countOf(n) === 0 ? 'opacity-30' : ''"
+              :style="{ backgroundColor: colorOf(n) }"
+              :title="`${n}: ${countOf(n)} spin(s) (${pct(countOf(n))}%)`">
+              <span class="text-[12px] font-semibold tabular-nums text-white/95">{{ n }}</span>
+              <span class="text-[10px] tabular-nums text-white/75">{{ countOf(n) }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -109,10 +122,11 @@ const stats = computed(() => store.rouletteStats)
 const RED_NUMBERS = new Set([
   1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36,
 ])
-// Matte/pastel palette (consistent with the app's chart styling).
-const COLOR_RED = '#d18585' // dusty rose
-const COLOR_BLACK = '#4b5563' // slate/charcoal
-const COLOR_GREEN = '#82c07b' // sage
+// Matte casino palette — true roulette red/black/green, toned down from neon
+// so it still sits comfortably on the dashboard.
+const COLOR_RED = '#b23b36' // deep matte red
+const COLOR_BLACK = '#2b2b2b' // near-black charcoal
+const COLOR_GREEN = '#2f7d4f' // casino felt green
 
 function colorOf(n: number): string {
   if (n === 0) return COLOR_GREEN
@@ -122,8 +136,8 @@ function colorOf(n: number): string {
 const lastColorClass = computed(() => {
   const n = stats.value.last_number
   if (n == null) return 'fill-text-dim'
-  if (n === 0) return 'fill-[color:#82c07b]'
-  return RED_NUMBERS.has(n) ? 'fill-[color:#d18585]' : 'fill-text-primary'
+  if (n === 0) return 'fill-[color:#2f7d4f]'
+  return RED_NUMBERS.has(n) ? 'fill-[color:#b23b36]' : 'fill-text-primary'
 })
 
 function pct(count: number): string {
@@ -173,13 +187,20 @@ const segments = computed(() => {
   })
 })
 
-/** Every wheel number 0..=36 with its observed count (0 if never hit),
- *  ordered 0 then 1..36 so it reads like the table layout. */
-const board = computed(() => {
-  const byNumber = new Map(stats.value.counts.map((c) => [c.number, c.count]))
-  return Array.from({ length: 37 }, (_, number) => ({
-    number,
-    count: byNumber.get(number) ?? 0,
-  }))
-})
+/** Casino-felt column order: filling a `grid-flow-col grid-rows-3` grid in
+ *  this order reproduces the table — top row 3,6,…,36 / middle 2,5,…,35 /
+ *  bottom 1,4,…,34, one table-column at a time (3, 2, 1, then 6, 5, 4, …). */
+const TABLE_NUMBERS: number[] = Array.from({ length: 12 }, (_, col) => [
+  col * 3 + 3,
+  col * 3 + 2,
+  col * 3 + 1,
+]).flat()
+
+/** Observed spin count for a given number (0 if never hit). */
+const countMap = computed(
+  () => new Map(stats.value.counts.map((c) => [c.number, c.count])),
+)
+function countOf(n: number): number {
+  return countMap.value.get(n) ?? 0
+}
 </script>
