@@ -1680,7 +1680,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "glogger"
-version = "0.11.14"
+version = "0.11.15"
 dependencies = [
  "base64 0.22.1",
  "chrono",
