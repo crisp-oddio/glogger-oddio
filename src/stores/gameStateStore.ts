@@ -97,6 +97,7 @@ export interface RouletteStats {
   counts: RouletteNumberCount[]
   last_spun_at: string | null
   last_number: number | null
+  recent: number[]
 }
 
 export interface CombatWisdomMonster {
@@ -207,6 +208,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     counts: [],
     last_spun_at: null,
     last_number: null,
+    recent: [],
   })
 
   // ── Council-wallet estimate (anchored on last export + live deltas) ───

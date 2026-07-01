@@ -14,6 +14,24 @@
     </div>
 
     <template v-else>
+      <!-- Recent rolls: last 10 numbers, newest → oldest -->
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-text-dim uppercase tracking-wide">Last 10 rolls</span>
+        <div class="flex items-center gap-1 overflow-x-auto pb-0.5">
+          <div
+            v-for="(n, i) in stats.recent"
+            :key="i"
+            class="flex items-center justify-center rounded shrink-0 w-6 h-6 text-[12px] font-semibold tabular-nums text-white/95"
+            :class="i === 0 ? 'ring-1 ring-accent-gold' : ''"
+            :style="{ backgroundColor: colorOf(n) }"
+            :title="i === 0 ? `${n} (most recent)` : `${n}`">
+            {{ n }}
+          </div>
+        </div>
+      </div>
+
+      <div class="h-px bg-border-default" />
+
       <!-- Donut + color legend -->
       <div class="flex items-center gap-4">
         <svg :viewBox="`0 0 ${SIZE} ${SIZE}`" class="shrink-0" :width="SIZE" :height="SIZE">
@@ -72,12 +90,18 @@
       <!-- Per-number board, laid out like the casino felt: 0 on the left,
            then 12 columns × 3 rows (top 3,6,…,36 / mid 2,5,…,35 / bot 1,4,…,34). -->
       <div class="flex flex-col gap-1.5 min-h-0 flex-1">
-        <span class="text-xs text-text-dim uppercase tracking-wide">By number</span>
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="text-xs text-text-dim uppercase tracking-wide">By number</span>
+          <span class="text-[10px] text-text-dim/80 flex items-center gap-1">
+            <span class="inline-block w-2.5 h-2.5 rounded-sm ring-2 ring-inset ring-accent-gold" />
+            hottest 3
+          </span>
+        </div>
         <div class="flex gap-1 overflow-x-auto pb-1">
           <!-- Zero spans the full height on the left -->
           <div
             class="flex flex-col items-center justify-center rounded px-1.5 leading-none shrink-0"
-            :class="countOf(0) === 0 ? 'opacity-30' : ''"
+            :class="[countOf(0) === 0 ? 'opacity-30' : '', isHot(0) ? 'ring-2 ring-inset ring-accent-gold' : '']"
             :style="{ backgroundColor: colorOf(0) }"
             :title="`0: ${countOf(0)} spin(s) (${pct(countOf(0))}%)`">
             <span class="text-[13px] font-semibold tabular-nums text-white/95">0</span>
@@ -89,7 +113,7 @@
               v-for="n in TABLE_NUMBERS"
               :key="n"
               class="flex flex-col items-center justify-center rounded py-0.5 leading-none min-w-[26px]"
-              :class="countOf(n) === 0 ? 'opacity-30' : ''"
+              :class="[countOf(n) === 0 ? 'opacity-30' : '', isHot(n) ? 'ring-2 ring-inset ring-accent-gold' : '']"
               :style="{ backgroundColor: colorOf(n) }"
               :title="`${n}: ${countOf(n)} spin(s) (${pct(countOf(n))}%)`">
               <span class="text-[12px] font-semibold tabular-nums text-white/95">{{ n }}</span>
@@ -202,5 +226,20 @@ const countMap = computed(
 )
 function countOf(n: number): number {
   return countMap.value.get(n) ?? 0
+}
+
+/** The 3 most-hit numbers (count > 0), for the board highlight. */
+const hotSet = computed(
+  () =>
+    new Set(
+      [...stats.value.counts]
+        .filter((c) => c.count > 0)
+        .sort((a, b) => b.count - a.count || a.number - b.number)
+        .slice(0, 3)
+        .map((c) => c.number),
+    ),
+)
+function isHot(n: number): boolean {
+  return hotSet.value.has(n)
 }
 </script>
