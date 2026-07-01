@@ -41,6 +41,8 @@ pub struct RouletteStats {
     pub last_spun_at: Option<String>,
     /// The most recent winning number, if any.
     pub last_number: Option<u32>,
+    /// Up to the last 10 winning numbers, most recent first.
+    pub recent: Vec<u32>,
 }
 
 /// Persist a single roulette spin outcome. Idempotent via `idx_roulette_dedup`.
@@ -94,11 +96,25 @@ pub fn aggregate_stats(conn: &rusqlite::Connection) -> Result<RouletteStats, Str
         .map(|(ts, n)| (Some(ts), Some(n)))
         .unwrap_or((None, None));
 
+    // Last 10 winning numbers, most recent first.
+    let mut recent_stmt = conn
+        .prepare(
+            "SELECT number FROM roulette_results
+             ORDER BY spun_at DESC, id DESC LIMIT 10",
+        )
+        .map_err(|e| format!("Query prepare error: {e}"))?;
+    let recent = recent_stmt
+        .query_map([], |row| Ok(row.get::<_, i64>(0)? as u32))
+        .map_err(|e| format!("Query error: {e}"))?
+        .collect::<Result<Vec<u32>, _>>()
+        .map_err(|e| format!("Row error: {e}"))?;
+
     Ok(RouletteStats {
         total,
         counts,
         last_spun_at,
         last_number,
+        recent,
     })
 }
 
@@ -235,6 +251,9 @@ mod tests {
         // Most recent spin.
         assert_eq!(stats.last_number, Some(25));
         assert_eq!(stats.last_spun_at.as_deref(), Some("2026-06-25 22:00:00"));
+        // Recent list is most-recent-first.
+        assert_eq!(stats.recent.first(), Some(&25));
+        assert_eq!(stats.recent, vec![25, 25, 0, 8, 23, 31]);
     }
 
     #[test]

@@ -64,6 +64,7 @@
           v-for="(mod, i) in modSlots"
           :key="i"
           :mod="mod"
+          :accent-class="accentClassForMod(mod)"
           :label="mod ? '' : emptySlotLabel"
           @remove="removeMod(mod!)"
           @drop="(key) => onDropToSlot(key, false, i)" />
@@ -142,9 +143,51 @@ const assignedRegularMods = computed(() =>
   store.selectedSlotMods.filter(m => !m.is_augment)
 )
 
+const slotPrimarySkill = computed(() =>
+  store.selectedSlot ? store.getSlotSkillPrimary(store.selectedSlot) : null
+)
+const slotSecondarySkill = computed(() =>
+  store.selectedSlot ? store.getSlotSkillSecondary(store.selectedSlot) : null
+)
+
+/**
+ * Group rank for ordering regular mods: primary-skill mods first, then
+ * secondary-skill mods, then everything else (other skills / generic).
+ * The augment lives in its own section and is unaffected.
+ */
+function skillGroupRank(mod: typeof assignedRegularMods.value[number]): number {
+  const skill = getModSkill(mod.power_name)
+  if (skill && slotPrimarySkill.value && skill === slotPrimarySkill.value) return 0
+  if (skill && slotSecondarySkill.value && skill === slotSecondarySkill.value) return 1
+  return 2
+}
+
+/**
+ * Left-edge accent color per skill group, matching the skill dropdown colors
+ * in the slot header (primary = blue, secondary = emerald, other/generic = slate).
+ */
+function accentClassForMod(mod: typeof assignedRegularMods.value[number] | null): string {
+  if (!mod) return ''
+  switch (skillGroupRank(mod)) {
+    case 0: return 'border-l-4 border-l-blue-400/70'
+    case 1: return 'border-l-4 border-l-emerald-400/70'
+    default: return 'border-l-4 border-l-slate-500/50'
+  }
+}
+
+/** Regular mods ordered by skill group, then by sort_order within each group */
+const orderedRegularMods = computed(() =>
+  [...assignedRegularMods.value].sort((a, b) => {
+    const ra = skillGroupRank(a)
+    const rb = skillGroupRank(b)
+    if (ra !== rb) return ra - rb
+    return a.sort_order - b.sort_order
+  })
+)
+
 const modSlots = computed(() => {
   const slots: (typeof assignedRegularMods.value[number] | null)[] = []
-  const mods = [...assignedRegularMods.value].sort((a, b) => a.sort_order - b.sort_order)
+  const mods = orderedRegularMods.value
   for (let i = 0; i < maxMods.value; i++) {
     slots.push(mods[i] ?? null)
   }
@@ -323,8 +366,7 @@ function onDropToSlot(powerKey: string, isAugment: boolean, slotIndex?: number) 
     if (assignedRegularMods.value.length >= maxMods.value) {
       // Slots full — replace the mod at the dropped position
       if (slotIndex == null) return
-      const sorted = [...assignedRegularMods.value].sort((a, b) => a.sort_order - b.sort_order)
-      const target = sorted[slotIndex]
+      const target = orderedRegularMods.value[slotIndex]
       if (target) store.removeMod(target)
       else return
     }

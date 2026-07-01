@@ -5,6 +5,7 @@
     class="flex items-start gap-2 px-3 py-2 rounded border text-sm group transition-all"
     :class="[
       mod.is_augment ? 'bg-purple-900/15 border-purple-700/30' : 'bg-surface-elevated border-border-default',
+      mod.is_augment ? '' : accentClass,
       dragOver ? 'ring-1 ring-accent-gold/50' : '',
     ]"
     @dragenter.prevent
@@ -67,6 +68,7 @@ const props = defineProps<{
   mod: BuildPresetMod | null
   label: string
   isAugment?: boolean
+  accentClass?: string
 }>()
 
 const emit = defineEmits<{
