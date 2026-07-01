@@ -29,6 +29,7 @@ import type {
   LevelingPlanLevel,
 } from "../types/crafting";
 import type { RecipeInfo } from "../types/gameData/recipes";
+import type { ItemInfo } from "../types/gameData/items";
 import type { PlayerEvent } from "../types/playerEvents";
 import { type GameStateSkill } from "../types/gameState";
 
@@ -77,6 +78,20 @@ export const useCraftingStore = defineStore("crafting", () => {
     return recipes;
   }
 
+  // Item info is likewise static within a CDN version. Ingredient resolution
+  // looks up the same items repeatedly (once per entry), so memoizing turns
+  // hundreds of IPC round-trips into one per distinct item — important for
+  // large projects like a full brewing combo sweep (144 entries × 7 items).
+  const itemInfoCache = new Map<number, ItemInfo | null>();
+
+  async function getCachedItem(itemId: number): Promise<ItemInfo | null> {
+    const cached = itemInfoCache.get(itemId);
+    if (cached !== undefined) return cached;
+    const item = await gameData.resolveItem(itemId);
+    itemInfoCache.set(itemId, item);
+    return item;
+  }
+
   // ── Ingredient tree cache ──────────────────────────────────────────────────
   // Caches resolved ingredient trees keyed by recipe_id + quantity + expanded
   // item IDs hash. Avoids re-resolving unchanged entries during bulk operations.
@@ -86,20 +101,29 @@ export const useCraftingStore = defineStore("crafting", () => {
   const ingredientTreeCache = new Map<string, ResolvedRecipe>();
 
   function buildIngredientCacheKey(
-    recipeId: number,
+    recipe: RecipeInfo,
     quantity: number,
     expandItemIds?: Set<number>,
   ): string {
     const expandKey = expandItemIds
       ? Array.from(expandItemIds).sort((a, b) => a - b).join(",")
       : "";
+    // Slot-pinned recipes share a recipe.id but differ in their concrete
+    // ingredients, so the ingredient shape must be part of the key — otherwise
+    // two brewing combos of the same recipe would collide and return the wrong
+    // material tree. Normal recipes have a stable signature, so this is a no-op
+    // for them.
+    const ingSig = recipe.ingredients
+      .map((i) => (i.item_id ?? `k:${i.item_keys[0] ?? ""}`))
+      .join("|");
     // The buffer changes expected quantities, so it must be part of the key.
-    return `${recipeId}:${quantity}:${expandKey}:b${consumeBufferPct.value}`;
+    return `${recipe.id}:${quantity}:${expandKey}:b${consumeBufferPct.value}:${ingSig}`;
   }
 
   /** Clear all in-memory caches (call on CDN reload or when data changes). */
   function clearCaches() {
     recipesForItemCache.clear();
+    itemInfoCache.clear();
     ingredientTreeCache.clear();
   }
 
@@ -202,14 +226,64 @@ export const useCraftingStore = defineStore("crafting", () => {
     return newId;
   }
 
-  async function addEntry(projectId: number, recipeId: number, recipeName: string, quantity: number, targetStock?: number | null) {
+  async function addEntry(projectId: number, recipeId: number, recipeName: string, quantity: number, targetStock?: number | null, slotItemIds?: number[]) {
     await invoke("add_project_entry", {
-      input: { project_id: projectId, recipe_id: recipeId, recipe_name: recipeName, quantity, target_stock: targetStock ?? null },
+      input: { project_id: projectId, recipe_id: recipeId, recipe_name: recipeName, quantity, target_stock: targetStock ?? null, slot_item_ids: slotItemIds ?? null },
     });
     if (activeProject.value?.id === projectId) {
       await loadProject(projectId);
     }
     await loadProjects();
+  }
+
+  /**
+   * Add many entries for the same recipe in one pass, each with its own pinned
+   * slot ingredients (used by the Brewery tab to turn selected discovery combos
+   * into a project). Reloads the project/list once at the end rather than per
+   * entry.
+   */
+  async function addComboEntries(
+    projectId: number,
+    recipeId: number,
+    recipeName: string,
+    combos: number[][],
+    quantity: number = 1,
+  ) {
+    for (const combo of combos) {
+      await invoke("add_project_entry", {
+        input: {
+          project_id: projectId,
+          recipe_id: recipeId,
+          recipe_name: recipeName,
+          quantity,
+          target_stock: null,
+          slot_item_ids: combo,
+        },
+      });
+    }
+    if (activeProject.value?.id === projectId) {
+      await loadProject(projectId);
+    }
+    await loadProjects();
+  }
+
+  /**
+   * Return a copy of `recipe` with its variable (keyword) slots replaced by the
+   * concrete `slotItemIds`, in slot order. This turns an entry's pinned combo
+   * into a fully-concrete recipe so the material resolver reports exact
+   * ingredient quantities instead of generic keyword aggregates.
+   */
+  function pinRecipeSlots(recipe: RecipeInfo, slotItemIds: number[]): RecipeInfo {
+    if (!slotItemIds || slotItemIds.length === 0) return recipe;
+    let slotIdx = 0;
+    const ingredients = recipe.ingredients.map((ing) => {
+      if (ing.item_id === null && ing.item_keys.length > 0 && slotIdx < slotItemIds.length) {
+        const pinned = slotItemIds[slotIdx++];
+        return { ...ing, item_id: pinned, item_keys: [] };
+      }
+      return ing;
+    });
+    return { ...recipe, ingredients };
   }
 
   async function updateEntry(entryId: number, quantity: number, expandedIngredientIds: number[] = [], targetStock?: number | null) {
@@ -252,7 +326,7 @@ export const useCraftingStore = defineStore("crafting", () => {
     const isCacheable = visited.size === 0 && !intermediateStock;
     let cacheKey: string | null = null;
     if (isCacheable) {
-      cacheKey = buildIngredientCacheKey(recipe.id, desiredQuantity, expandItemIds);
+      cacheKey = buildIngredientCacheKey(recipe, desiredQuantity, expandItemIds);
       const cached = ingredientTreeCache.get(cacheKey);
       if (cached) return cached;
     }
@@ -330,7 +404,7 @@ export const useCraftingStore = defineStore("crafting", () => {
       // Get item name
       let itemName = ing.description ?? "Unknown item";
       if (ing.item_id) {
-        const item = await gameData.resolveItem(ing.item_id);
+        const item = await getCachedItem(ing.item_id);
         if (item) itemName = item.name;
       }
 
@@ -358,10 +432,9 @@ export const useCraftingStore = defineStore("crafting", () => {
 
     let estimatedCost = 0;
     if (itemIds.length > 0) {
-      const items = await gameData.resolveItemsBatch(itemIds.map(String));
       for (const ing of ingredients) {
         if (ing.item_id && ing.children.length === 0) {
-          const item = items[String(ing.item_id)];
+          const item = await getCachedItem(ing.item_id);
           const price = getItemPrice(ing.item_id, item?.value);
           if (price) {
             estimatedCost += price * ing.expected_quantity;
@@ -1378,6 +1451,8 @@ export const useCraftingStore = defineStore("crafting", () => {
     deleteProject,
     duplicateProject,
     addEntry,
+    addComboEntries,
+    pinRecipeSlots,
     updateEntry,
     removeEntry,
     // Dependency resolver

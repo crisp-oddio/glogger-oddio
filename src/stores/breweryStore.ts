@@ -75,6 +75,53 @@ export const useBreweryStore = defineStore("brewery", () => {
     return map;
   });
 
+  /**
+   * Combination-space progress per recipe, derived entirely from CDN data.
+   *
+   * `total` is the product of each variable slot's valid-ingredient count — i.e.
+   * every material combination the game permits for that recipe, whether or not
+   * the player has ever brewed it. `discovered` is the number of *distinct*
+   * combos the player has recorded (keyed by the sorted ingredient-id set, which
+   * uniquely identifies one grid cell because a recipe's slots never share
+   * ingredients). Recipes without variable slots are omitted (nothing to explore).
+   */
+  const comboStatsByRecipe = computed(() => {
+    const map = new Map<number, { discovered: number; total: number; remaining: number }>();
+    for (const r of recipes.value) {
+      const slots = r.variable_slots;
+      if (!slots || slots.length === 0) continue;
+
+      let total = 1;
+      for (const s of slots) {
+        total *= s.valid_item_ids.length;
+      }
+      // If any slot has no resolvable items, the total is unknown (0).
+      if (!Number.isFinite(total)) total = 0;
+
+      const seen = new Set<string>();
+      for (const d of discoveriesByRecipe.value.get(r.recipe_id) ?? []) {
+        seen.add([...d.ingredient_ids].sort((a, b) => a - b).join(","));
+      }
+      const discovered = Math.min(seen.size, total || seen.size);
+      const remaining = total > 0 ? Math.max(0, total - discovered) : 0;
+      map.set(r.recipe_id, { discovered, total, remaining });
+    }
+    return map;
+  });
+
+  /** Rolled-up combination progress across every recipe with a known combo space. */
+  const overallComboStats = computed(() => {
+    let discovered = 0;
+    let total = 0;
+    for (const s of comboStatsByRecipe.value.values()) {
+      if (s.total > 0) {
+        discovered += s.discovered;
+        total += s.total;
+      }
+    }
+    return { discovered, total, remaining: Math.max(0, total - discovered) };
+  });
+
   /** Total discoveries across all recipes */
   const totalDiscoveries = computed(() => discoveries.value.length);
 
@@ -434,6 +481,8 @@ export const useBreweryStore = defineStore("brewery", () => {
     recipeById,
     discoveriesByRecipe,
     discoveryCountByRecipe,
+    comboStatsByRecipe,
+    overallComboStats,
     totalDiscoveries,
     selectedRecipeDiscoveries,
     recipesByCategory,
