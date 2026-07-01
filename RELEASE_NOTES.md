@@ -1,7 +1,7 @@
-## What's Changed since v0.11.11
+## What's Changed since v0.11.12
 
 ### Features
-- feat(roulette): casino roulette outcome tracker widget (`54a50c5`)
+- feat(roulette): table-felt number board + true casino colors (`44864db`)
 
 ---
-*2 commits since v0.11.11*
+*2 commits since v0.11.12*
