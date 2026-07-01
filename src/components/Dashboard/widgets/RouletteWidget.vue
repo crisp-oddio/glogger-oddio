@@ -17,11 +17,11 @@
       <!-- Recent rolls: last 10 numbers, newest → oldest -->
       <div class="flex flex-col gap-1">
         <span class="text-xs text-text-dim uppercase tracking-wide">Last 10 rolls</span>
-        <div class="flex items-center gap-1 overflow-x-auto pb-0.5">
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
           <div
             v-for="(n, i) in stats.recent"
             :key="i"
-            class="flex items-center justify-center rounded shrink-0 w-6 h-6 text-[12px] font-semibold tabular-nums text-white/95"
+            class="flex items-center justify-center rounded shrink-0 w-7 h-7 text-[13px] font-semibold tabular-nums text-white/95"
             :class="i === 0 ? 'ring-1 ring-accent-gold' : ''"
             :style="{ backgroundColor: colorOf(n) }"
             :title="i === 0 ? `${n} (most recent)` : `${n}`">
@@ -97,27 +97,27 @@
             hottest 3
           </span>
         </div>
-        <div class="flex gap-1 overflow-x-auto pb-1">
+        <div class="flex gap-1.5 overflow-x-auto pb-1">
           <!-- Zero spans the full height on the left -->
           <div
-            class="flex flex-col items-center justify-center rounded px-1.5 leading-none shrink-0"
+            class="flex flex-col items-center justify-center gap-0.5 rounded px-2.5 py-1 leading-none shrink-0"
             :class="[countOf(0) === 0 ? 'opacity-30' : '', isHot(0) ? 'ring-2 ring-inset ring-accent-gold' : '']"
             :style="{ backgroundColor: colorOf(0) }"
             :title="`0: ${countOf(0)} spin(s) (${pct(countOf(0))}%)`">
             <span class="text-[13px] font-semibold tabular-nums text-white/95">0</span>
-            <span class="text-[10px] tabular-nums text-white/75">{{ countOf(0) }}</span>
+            <span class="text-[10px] tabular-nums text-white/70">{{ countOf(0) }}</span>
           </div>
           <!-- 12 columns × 3 rows -->
-          <div class="grid grid-flow-col grid-rows-3 gap-1 flex-1">
+          <div class="grid grid-flow-col grid-rows-3 gap-1.5 flex-1">
             <div
               v-for="n in TABLE_NUMBERS"
               :key="n"
-              class="flex flex-col items-center justify-center rounded py-0.5 leading-none min-w-[26px]"
+              class="flex flex-col items-center justify-center gap-0.5 rounded px-1 py-1.5 leading-none min-w-[30px]"
               :class="[countOf(n) === 0 ? 'opacity-30' : '', isHot(n) ? 'ring-2 ring-inset ring-accent-gold' : '']"
               :style="{ backgroundColor: colorOf(n) }"
               :title="`${n}: ${countOf(n)} spin(s) (${pct(countOf(n))}%)`">
               <span class="text-[12px] font-semibold tabular-nums text-white/95">{{ n }}</span>
-              <span class="text-[10px] tabular-nums text-white/75">{{ countOf(n) }}</span>
+              <span class="text-[10px] tabular-nums text-white/70">{{ countOf(n) }}</span>
             </div>
           </div>
         </div>
