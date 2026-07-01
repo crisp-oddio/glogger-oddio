@@ -19,6 +19,8 @@ export interface CraftingProjectEntry {
   sort_order: number
   expanded_ingredient_ids: number[]
   target_stock: number | null
+  /** Item IDs pinned to the recipe's variable slots, in slot order. Empty = generic. */
+  slot_item_ids: number[]
 }
 
 export interface CraftingProject {

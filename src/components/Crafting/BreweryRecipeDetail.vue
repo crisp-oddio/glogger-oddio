@@ -268,50 +268,166 @@
       </div>
     </div>
 
-    <!-- Try Next suggestions -->
-    <div v-if="suggestions.length > 0">
-      <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5 mb-1.5">
-        Try Next
-        <span class="normal-case tracking-normal text-text-dim ml-1">(untried combos you have ingredients for)</span>
+    <!-- Untried combinations -->
+    <div v-if="recipe.variable_slots.length > 0 && recipeComboStat">
+      <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5 mb-1.5 flex items-center justify-between gap-2">
+        <span>Untried Combinations</span>
+        <span
+          class="normal-case tracking-normal font-mono"
+          :class="recipeComboStat.remaining === 0 ? 'text-accent-green' : 'text-text-muted'">
+          {{ recipeComboStat.discovered }}/{{ recipeComboStat.total }} discovered · {{ recipeComboStat.remaining }} left
+        </span>
       </div>
-      <div class="flex flex-col gap-1.5">
+
+      <!-- Progress bar -->
+      <div class="h-1.5 w-full bg-surface-base rounded overflow-hidden mb-2">
         <div
-          v-for="(sug, i) in suggestions"
-          :key="i"
-          class="flex items-center gap-2 bg-surface-base border rounded px-3 py-1.5"
-          :class="sug.ownedCount === sug.totalCount
-            ? 'border-accent-green/40'
-            : sug.ownedCount > 0
-              ? 'border-accent-gold/25'
-              : 'border-surface-elevated'">
-          <span
-            v-if="sug.ownedCount === sug.totalCount"
-            class="text-xs text-accent-green font-semibold shrink-0 w-12">
-            ✓ Ready
-          </span>
-          <span
-            v-else
-            class="text-xs text-text-dim font-mono shrink-0 w-12">
-            {{ sug.ownedCount }}/{{ sug.totalCount }}
-          </span>
-          <div class="flex flex-wrap gap-x-2 gap-y-0.5">
-            <span
-              v-for="ingId in sug.ingredientIds"
-              :key="ingId"
-              class="text-xs inline-flex items-center gap-0.5">
+          class="h-full rounded transition-all"
+          :class="recipeComboStat.remaining === 0 ? 'bg-accent-green' : 'bg-accent-gold/70'"
+          :style="{ width: `${recipeComboStat.total > 0 ? (recipeComboStat.discovered / recipeComboStat.total) * 100 : 0}%` }" />
+      </div>
+
+      <div v-if="recipeComboStat.remaining === 0" class="text-xs text-accent-green italic">
+        All {{ recipeComboStat.total }} material combinations discovered for this recipe. 🎉
+      </div>
+
+      <template v-else>
+        <!-- Expand to the full missing list -->
+        <button
+          v-if="missingCombos.length > 0"
+          class="text-xs px-2 py-0.5 rounded border border-border-light text-text-muted hover:text-accent-gold hover:border-accent-gold/40 cursor-pointer transition-colors bg-transparent"
+          @click="showAllMissing = !showAllMissing">
+          {{ showAllMissing ? 'Hide full list' : `Show all ${recipeComboStat.remaining} missing combinations` }}
+        </button>
+
+        <div v-if="showAllMissing" class="mt-2 border border-surface-elevated rounded overflow-hidden">
+          <!-- Selection toolbar -->
+          <div class="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-surface-card bg-surface-base">
+            <div class="flex items-center gap-2 text-xs">
+              <button
+                class="text-text-muted hover:text-accent-gold cursor-pointer bg-transparent border border-border-light hover:border-accent-gold/30 rounded px-1.5 py-0.5 transition-colors"
+                @click="selectAllVisible">
+                Select all
+              </button>
+              <button
+                v-if="selectedCount > 0"
+                class="text-text-muted hover:text-accent-gold cursor-pointer bg-transparent border border-border-light hover:border-accent-gold/30 rounded px-1.5 py-0.5 transition-colors"
+                @click="clearComboSelection">
+                Clear
+              </button>
+              <span class="text-text-dim">{{ selectedCount }} selected</span>
+            </div>
+            <button
+              class="text-xs px-2 py-0.5 rounded border cursor-pointer transition-colors bg-transparent disabled:opacity-40 disabled:cursor-not-allowed"
+              :class="selectedCount > 0
+                ? 'border-accent-gold/50 text-accent-gold hover:bg-accent-gold/10'
+                : 'border-border-light text-text-muted'"
+              :disabled="selectedCount === 0"
+              @click="openProjectDialog">
+              + Create crafting project
+            </button>
+          </div>
+
+          <!-- Missing combos -->
+          <div class="max-h-96 overflow-y-auto">
+            <div
+              v-for="(sug, i) in missingCombosCapped"
+              :key="i"
+              class="flex items-center gap-2 px-3 py-1 border-b border-surface-card last:border-b-0"
+              :class="isComboSelected(sug.ingredientIds) ? 'bg-accent-gold/5' : ''">
+              <input
+                type="checkbox"
+                class="accent-accent-gold cursor-pointer shrink-0"
+                :checked="isComboSelected(sug.ingredientIds)"
+                @change="toggleCombo(sug.ingredientIds)" />
               <span
-                class="w-1.5 h-1.5 rounded-full inline-block shrink-0"
-                :class="hasItem(ingId) ? 'bg-accent-green' : 'bg-surface-elevated border border-border-light'" />
-              <ItemInline :reference="String(ingId)" />
-            </span>
+                class="text-xs font-mono shrink-0 w-8"
+                :class="sug.ownedCount === sug.totalCount ? 'text-accent-green' : 'text-text-dim'">
+                {{ sug.ownedCount }}/{{ sug.totalCount }}
+              </span>
+              <div class="flex flex-wrap gap-x-2 gap-y-0.5">
+                <span
+                  v-for="ingId in sug.ingredientIds"
+                  :key="ingId"
+                  class="text-xs inline-flex items-center gap-0.5">
+                  <span
+                    class="w-1.5 h-1.5 rounded-full inline-block shrink-0"
+                    :class="hasItem(ingId) ? 'bg-accent-green' : 'bg-surface-elevated border border-border-light'" />
+                  <ItemInline :reference="String(ingId)" />
+                </span>
+              </div>
+            </div>
+            <div
+              v-if="missingCombos.length > missingCombosCapped.length"
+              class="px-3 py-1.5 text-xs text-text-dim italic">
+              …and {{ missingCombos.length - missingCombosCapped.length }} more — narrow the list or select from above
+            </div>
           </div>
         </div>
-      </div>
-      <div class="text-xs text-text-dim mt-1">
-        {{ discoveredCombos.size }} of {{ discoveredCombos.size + suggestions.length }} combos discovered
-        <template v-if="totalUntriedCount > suggestions.length">
-          · showing top {{ suggestions.length }} of {{ totalUntriedCount }} untried
-        </template>
+      </template>
+    </div>
+
+    <!-- Create-project dialog -->
+    <div
+      v-if="showProjectDialog"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      @click.self="showProjectDialog = false">
+      <div class="bg-surface-card border border-border-default rounded-lg p-4 w-96 shadow-lg flex flex-col gap-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-bold text-text-primary m-0">Create crafting project</h3>
+          <button class="text-text-dim hover:text-text-secondary cursor-pointer bg-transparent border-none" @click="showProjectDialog = false">✕</button>
+        </div>
+        <p class="text-xs text-text-muted m-0">
+          {{ selectedCount }} untried combo{{ selectedCount === 1 ? '' : 's' }} of
+          <span class="text-text-secondary">{{ recipe.name }}</span> → one entry each (qty 1). Materials roll up in the project.
+        </p>
+
+        <!-- Mode toggle -->
+        <div class="flex gap-1">
+          <button
+            class="flex-1 text-xs px-2 py-1 rounded border cursor-pointer transition-colors"
+            :class="projectMode === 'new' ? 'border-accent-gold/50 text-accent-gold bg-accent-gold/10' : 'border-border-light text-text-muted bg-transparent hover:text-text-primary'"
+            @click="projectMode = 'new'">
+            New project
+          </button>
+          <button
+            class="flex-1 text-xs px-2 py-1 rounded border cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            :class="projectMode === 'existing' ? 'border-accent-gold/50 text-accent-gold bg-accent-gold/10' : 'border-border-light text-text-muted bg-transparent hover:text-text-primary'"
+            :disabled="craftingStore.projects.length === 0"
+            @click="projectMode = 'existing'">
+            Existing project
+          </button>
+        </div>
+
+        <input
+          v-if="projectMode === 'new'"
+          v-model="newProjectName"
+          type="text"
+          placeholder="Project name"
+          class="input text-xs w-full" />
+        <select
+          v-else
+          v-model="existingProjectId"
+          class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary w-full">
+          <option :value="null" disabled>-- Select a project --</option>
+          <option v-for="p in craftingStore.projects" :key="p.id" :value="p.id">
+            {{ p.name }} ({{ p.entry_count }})
+          </option>
+        </select>
+
+        <div class="flex items-center gap-2">
+          <button
+            class="text-xs px-2.5 py-1 rounded border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/10 cursor-pointer transition-colors bg-transparent disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="creatingProject || (projectMode === 'existing' && existingProjectId === null) || (projectMode === 'new' && !newProjectName.trim())"
+            @click="confirmCreateProject">
+            {{ creatingProject ? 'Working…' : (projectMode === 'new' ? 'Create & open' : 'Add & open') }}
+          </button>
+          <button
+            class="text-xs px-2 py-1 rounded border border-border-light text-text-muted hover:text-text-secondary cursor-pointer transition-colors bg-transparent"
+            @click="showProjectDialog = false">
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -326,6 +442,9 @@ import { CATEGORY_LABELS, getPoolLabel, getPoolDescription } from "../../types/g
 import { useBreweryStore } from "../../stores/breweryStore";
 import { useGameStateStore } from "../../stores/gameStateStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useCraftingStore } from "../../stores/craftingStore";
+import { useViewNavigation } from "../../composables/useViewNavigation";
+import { useToast } from "../../composables/useToast";
 
 const props = defineProps<{
   recipe: BrewingRecipe;
@@ -336,10 +455,13 @@ const props = defineProps<{
 const store = useBreweryStore();
 const gameState = useGameStateStore();
 const settingsStore = useSettingsStore();
+const craftingStore = useCraftingStore();
+const { navigateToView } = useViewNavigation();
+const toast = useToast();
 
 const characterName = computed(() => settingsStore.settings.activeCharacterName);
 
-// Session-stable random seed for shuffling suggestions
+// Session-stable random seed for shuffling untried combos
 const sessionSeed = Math.random();
 
 // ── Add Discovery form state ────────────────────────────────────────────────
@@ -444,7 +566,10 @@ async function confirmDelete(disc: BrewingDiscovery) {
   }
 }
 
-// ── "Try Next" suggestions ──────────────────────────────────────────────────
+// ── Untried combinations ─────────────────────────────────────────────────────
+
+/** CDN-derived combo progress for this recipe (discovered / total / remaining). */
+const recipeComboStat = computed(() => store.comboStatsByRecipe.get(props.recipe.recipe_id));
 
 /** Set of sorted ingredient ID arrays that have already been discovered */
 const discoveredCombos = computed(() => {
@@ -462,56 +587,130 @@ interface Suggestion {
   totalCount: number;
 }
 
-/** Generate untried combos, prioritized by ingredient availability. Capped to avoid explosion. */
-const suggestions = computed((): Suggestion[] => {
+/**
+ * Every untried material combination for this recipe, ordered so the ones whose
+ * ingredients the player already owns come first (then stable-shuffled per
+ * session). Enumerates the full cartesian product of the variable slots, so it
+ * covers combinations the player has never touched — not just ones seen in a
+ * CSV. Guarded against pathological explosion, though no real recipe approaches
+ * the cap.
+ */
+const missingCombos = computed((): Suggestion[] => {
   const slots = props.recipe.variable_slots;
   if (slots.length === 0) return [];
 
-  // Get valid item IDs for each slot
   const slotOptions = slots.map((s) => s.valid_item_ids);
-
-  // Guard against combinatorial explosion — if total combos > 500, skip
   const totalCombos = slotOptions.reduce((acc, opts) => acc * Math.max(opts.length, 1), 1);
-  if (totalCombos > 500) return [];
+  if (totalCombos > 5000) return []; // safety valve
 
-  // Generate all combos via cartesian product
-  const allCombos: number[][] = cartesian(slotOptions);
-
-  // Filter out already-discovered combos
   const untried: Suggestion[] = [];
-  for (const combo of allCombos) {
-    const sorted = [...combo].sort((a, b) => a - b);
-    const key = sorted.join(",");
+  for (const combo of cartesian(slotOptions)) {
+    const key = [...combo].sort((a, b) => a - b).join(",");
     if (discoveredCombos.value.has(key)) continue;
-
     const ownedCount = combo.filter((id) => hasItem(id)).length;
-    untried.push({
-      ingredientIds: combo,
-      ownedCount,
-      totalCount: combo.length,
-    });
+    untried.push({ ingredientIds: combo, ownedCount, totalCount: combo.length });
   }
 
-  // Sort: most owned ingredients first, then shuffle within each tier
-  // using a seeded hash so it's stable per session but varies between sessions
+  // Most-owned ingredients first, then stable-shuffle within each tier.
   untried.sort((a, b) => {
     if (b.ownedCount !== a.ownedCount) return b.ownedCount - a.ownedCount;
     return seededHash(a.ingredientIds) - seededHash(b.ingredientIds);
   });
-
-  // Return top suggestions
-  return untried.slice(0, 5);
+  return untried;
 });
 
-/** Total count of untried combos (for the "showing X of Y" message) */
-const totalUntriedCount = computed(() => {
-  const slots = props.recipe.variable_slots;
-  if (slots.length === 0) return 0;
-  const slotOptions = slots.map((s) => s.valid_item_ids);
-  const totalCombos = slotOptions.reduce((acc, opts) => acc * Math.max(opts.length, 1), 1);
-  if (totalCombos > 500) return 0;
-  return totalCombos - discoveredCombos.value.size;
+/** Cap on how many rows we render in the full missing list at once. */
+const MISSING_RENDER_CAP = 500;
+const missingCombosCapped = computed(() => missingCombos.value.slice(0, MISSING_RENDER_CAP));
+
+/** Whether the full missing-combinations list is expanded. */
+const showAllMissing = ref(false);
+watch(() => props.recipe.recipe_id, () => {
+  showAllMissing.value = false;
+  clearComboSelection();
+  showProjectDialog.value = false;
 });
+
+// ── Combo selection → crafting project ──────────────────────────────────────
+
+/**
+ * Selected untried combos, keyed by their slot-ordered ingredient IDs joined
+ * with "-". Because item IDs are positive integers, the key round-trips back to
+ * the ingredient array via split, so we don't need to hold the arrays too.
+ */
+const selectedComboKeys = ref<Set<string>>(new Set());
+
+function comboKey(ids: number[]): string {
+  return ids.join("-");
+}
+function isComboSelected(ids: number[]): boolean {
+  return selectedComboKeys.value.has(comboKey(ids));
+}
+function toggleCombo(ids: number[]) {
+  const next = new Set(selectedComboKeys.value);
+  const key = comboKey(ids);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  selectedComboKeys.value = next;
+}
+function selectAllVisible() {
+  const next = new Set(selectedComboKeys.value);
+  for (const c of missingCombosCapped.value) next.add(comboKey(c.ingredientIds));
+  selectedComboKeys.value = next;
+}
+function clearComboSelection() {
+  selectedComboKeys.value = new Set();
+}
+const selectedCount = computed(() => selectedComboKeys.value.size);
+
+/** The selected combos as slot-ordered ingredient-ID arrays (recovered from keys). */
+const selectedCombos = computed<number[][]>(() =>
+  [...selectedComboKeys.value].map((k) => k.split("-").map(Number)),
+);
+
+// Create-project dialog state
+const showProjectDialog = ref(false);
+const projectMode = ref<"new" | "existing">("new");
+const newProjectName = ref("");
+const existingProjectId = ref<number | null>(null);
+const creatingProject = ref(false);
+
+async function openProjectDialog() {
+  if (selectedCount.value === 0) return;
+  newProjectName.value = `${props.recipe.name} — untried`;
+  existingProjectId.value = null;
+  projectMode.value = "new";
+  showProjectDialog.value = true;
+  await craftingStore.loadProjects();
+}
+
+async function confirmCreateProject() {
+  const combos = selectedCombos.value;
+  if (combos.length === 0) return;
+  creatingProject.value = true;
+  try {
+    let projectId: number;
+    if (projectMode.value === "existing" && existingProjectId.value !== null) {
+      projectId = existingProjectId.value;
+    } else {
+      const name = newProjectName.value.trim() || `${props.recipe.name} — untried`;
+      projectId = await craftingStore.createProject(name);
+    }
+    // One entry per combo, each pinned to its exact ingredients (qty 1).
+    await craftingStore.addComboEntries(projectId, props.recipe.recipe_id, props.recipe.name, combos, 1);
+    await craftingStore.loadProject(projectId);
+    toast.success(
+      `Added ${combos.length} combo${combos.length === 1 ? "" : "s"} to the project.`,
+    );
+    showProjectDialog.value = false;
+    clearComboSelection();
+    navigateToView({ view: "crafting", subTab: "projects" });
+  } catch (e) {
+    toast.error(`Failed to create project: ${e}`);
+  } finally {
+    creatingProject.value = false;
+  }
+}
 
 /** Cartesian product of arrays */
 function cartesian(arrays: number[][]): number[][] {

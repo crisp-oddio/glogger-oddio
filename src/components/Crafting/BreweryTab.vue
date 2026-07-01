@@ -60,9 +60,15 @@
                 <span class="truncate">{{ recipe.name }}</span>
                 <span class="flex items-center gap-1.5 shrink-0 ml-2">
                   <span
-                    v-if="store.discoveryCountByRecipe.get(recipe.recipe_id)"
-                    class="text-xs font-mono text-accent-green">
-                    {{ store.discoveryCountByRecipe.get(recipe.recipe_id) }}
+                    v-if="comboStat(recipe.recipe_id)"
+                    class="text-xs font-mono"
+                    :class="comboStat(recipe.recipe_id)!.remaining === 0
+                      ? 'text-accent-green'
+                      : comboStat(recipe.recipe_id)!.discovered > 0
+                        ? 'text-accent-gold/80'
+                        : 'text-text-dim'"
+                    :title="`${comboStat(recipe.recipe_id)!.discovered} of ${comboStat(recipe.recipe_id)!.total} material combinations discovered · ${comboStat(recipe.recipe_id)!.remaining} remaining`">
+                    {{ comboStat(recipe.recipe_id)!.discovered }}/{{ comboStat(recipe.recipe_id)!.total }}
                   </span>
                   <span class="text-text-muted font-mono text-xs">Lv{{ recipe.skill_level_req }}</span>
                 </span>
@@ -75,8 +81,8 @@
         <div v-if="!store.loading" class="flex items-center justify-between px-2 py-1.5 border-t border-surface-card">
           <span class="text-xs text-text-muted">
             {{ store.filteredCount }} recipes
-            <template v-if="store.totalDiscoveries > 0">
-              · {{ store.totalDiscoveries }} discovered
+            <template v-if="store.overallComboStats.total > 0">
+              · <span class="font-mono" :title="`${store.overallComboStats.discovered} of ${store.overallComboStats.total} material combinations discovered across all recipes · ${store.overallComboStats.remaining} remaining`">{{ store.overallComboStats.discovered }}/{{ store.overallComboStats.total }} combos</span>
             </template>
           </span>
           <div v-if="characterName" class="flex gap-1">
@@ -203,6 +209,12 @@ const toast = useToastComposable();
 const showCsvHelp = ref(false);
 
 const characterName = computed(() => settingsStore.settings.activeCharacterName);
+
+/** Combo-space progress for a recipe (undefined for recipes with no variable slots). */
+function comboStat(recipeId: number) {
+  const s = store.comboStatsByRecipe.get(recipeId);
+  return s && s.total > 0 ? s : undefined;
+}
 
 const categoryOptions = computed(() => {
   const options: { value: BrewingCategory | "all"; label: string; count: number }[] = [

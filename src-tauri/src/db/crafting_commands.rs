@@ -31,6 +31,10 @@ pub struct AddProjectEntryInput {
     pub recipe_name: String,
     pub quantity: i32,
     pub target_stock: Option<i32>,
+    /// Concrete item IDs pinned to the recipe's variable (keyword) slots, in slot
+    /// order. `None`/empty resolves slots generically. Used by the Brewery tab to
+    /// turn a specific discovery combo into a project entry with exact materials.
+    pub slot_item_ids: Option<Vec<i64>>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +82,9 @@ pub struct CraftingProjectEntry {
     pub sort_order: i32,
     pub expanded_ingredient_ids: Vec<i64>,
     pub target_stock: Option<i32>,
+    /// Item IDs pinned to the recipe's variable slots, in slot order (see
+    /// `AddProjectEntryInput::slot_item_ids`). Empty when slots resolve generically.
+    pub slot_item_ids: Vec<i64>,
 }
 
 #[derive(Serialize)]
@@ -182,7 +189,7 @@ pub fn get_crafting_project(
         .map_err(|e| format!("Project not found: {e}"))?;
 
     let mut entry_stmt = conn.prepare(
-        "SELECT id, project_id, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock
+        "SELECT id, project_id, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids
          FROM crafting_project_entries
          WHERE project_id = ?1
          ORDER BY sort_order ASC"
@@ -192,6 +199,8 @@ pub fn get_crafting_project(
         .query_map([project_id], |row| {
             let ids_json: String = row.get(6)?;
             let expanded_ids: Vec<i64> = serde_json::from_str(&ids_json).unwrap_or_default();
+            let slot_json: String = row.get(8)?;
+            let slot_item_ids: Vec<i64> = serde_json::from_str(&slot_json).unwrap_or_default();
             Ok(CraftingProjectEntry {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -201,6 +210,7 @@ pub fn get_crafting_project(
                 sort_order: row.get(5)?,
                 expanded_ingredient_ids: expanded_ids,
                 target_stock: row.get(7)?,
+                slot_item_ids,
             })
         })
         .map_err(|e| format!("Entry query failed: {e}"))?;
@@ -262,10 +272,13 @@ pub fn add_project_entry(
         |row| row.get(0),
     ).map_err(|e| format!("Failed to get sort order: {e}"))?;
 
+    let slot_ids_json = serde_json::to_string(&input.slot_item_ids.unwrap_or_default())
+        .map_err(|e| format!("Failed to serialize slot_item_ids: {e}"))?;
+
     conn.execute(
-        "INSERT INTO crafting_project_entries (project_id, recipe_id, recipe_name, quantity, sort_order, target_stock)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![input.project_id, input.recipe_id, input.recipe_name, input.quantity, next_order, input.target_stock],
+        "INSERT INTO crafting_project_entries (project_id, recipe_id, recipe_name, quantity, sort_order, target_stock, slot_item_ids)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![input.project_id, input.recipe_id, input.recipe_name, input.quantity, next_order, input.target_stock, slot_ids_json],
     ).map_err(|e| format!("Failed to add entry: {e}"))?;
 
     // Touch the project's updated_at
@@ -417,8 +430,8 @@ pub fn duplicate_crafting_project(db: State<'_, DbPool>, project_id: i64) -> Res
 
     // Copy entries
     conn.execute(
-        "INSERT INTO crafting_project_entries (project_id, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock)
-         SELECT ?1, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock
+        "INSERT INTO crafting_project_entries (project_id, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids)
+         SELECT ?1, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids
          FROM crafting_project_entries
          WHERE project_id = ?2
          ORDER BY sort_order",

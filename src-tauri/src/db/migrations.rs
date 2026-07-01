@@ -317,6 +317,25 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 58)?;
     }
 
+    if current_version < 59 {
+        migration_v59_project_entry_slot_pins(conn)?;
+        super::record_migration(conn, 59)?;
+    }
+
+    Ok(())
+}
+
+/// Migration V59: per-entry variable-slot ingredient pins for crafting projects.
+/// Keyword-slot recipes (e.g. brewing) have "variable" ingredient slots that the
+/// generic material resolver fills from global preferences. To let a single
+/// project entry represent one *specific* combination — such as a chosen Brewery
+/// discovery combo — we store the concrete item IDs picked for those slots, in
+/// slot order. Empty ('[]') means "resolve slots generically", preserving all
+/// existing entries' behavior.
+fn migration_v59_project_entry_slot_pins(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE crafting_project_entries ADD COLUMN slot_item_ids TEXT NOT NULL DEFAULT '[]';",
+    )?;
     Ok(())
 }
 
