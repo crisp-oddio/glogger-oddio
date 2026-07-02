@@ -212,11 +212,17 @@ fn direct_damages(
 /// Generic *direct*-damage attribute tokens that apply to any direct hit of `damage_type`, plus
 /// the universal (all-type) direct modifier — the direct counterpart of [`indirect_tokens`].
 /// `prefix` is `BOOST` (flat) or `MOD` (percent). e.g. ("BOOST", Some("Psychic")) →
-/// ["BOOST_UNIVERSAL_DIRECT", "BOOST_PSYCHIC_DIRECT"].
+/// ["BOOST_UNIVERSAL_DIRECT", "BOOST_PSYCHIC_DIRECT", "BOOST_PSYCHIC"].
+///
+/// The bare `BOOST_<TYPE>` / `MOD_<TYPE>` form is the dual-scope "X Damage (Direct & Per-Tick)"
+/// attribute family (e.g. `{MOD_ELECTRICITY}`, `{BOOST_TRAUMA}`): it moves direct hits *and* DoT
+/// ticks of that type, so both this and [`indirect_tokens`] include it.
 fn direct_tokens(prefix: &str, damage_type: Option<&str>) -> Vec<String> {
     let mut v = vec![format!("{prefix}_UNIVERSAL_DIRECT")];
     if let Some(dt) = damage_type {
-        v.push(format!("{prefix}_{}_DIRECT", dt.to_uppercase()));
+        let up = dt.to_uppercase();
+        v.push(format!("{prefix}_{up}_DIRECT"));
+        v.push(format!("{prefix}_{up}"));
     }
     v
 }
@@ -261,20 +267,26 @@ fn dot_breakdown(dot: &DotEffect, mods: &[ModEffect]) -> DotBreakdown {
 /// Generic indirect-damage attribute tokens that apply to any DoT of `damage_type`, plus
 /// the universal (all-type) indirect modifier. `prefix` is `BOOST` (flat per-tick) or
 /// `MOD` (percent). e.g. ("BOOST", Some("Psychic")) →
-/// ["BOOST_UNIVERSAL_INDIRECT", "BOOST_PSYCHIC_INDIRECT"].
+/// ["BOOST_UNIVERSAL_INDIRECT", "BOOST_PSYCHIC_INDIRECT", "BOOST_PSYCHIC"].
+///
+/// The bare `BOOST_<TYPE>` / `MOD_<TYPE>` form is the dual-scope "X Damage (Direct & Per-Tick)"
+/// family — it applies per tick here and to the up-front hit via [`direct_tokens`].
 fn indirect_tokens(prefix: &str, damage_type: Option<&str>) -> Vec<String> {
     let mut v = vec![format!("{prefix}_UNIVERSAL_INDIRECT")];
     if let Some(dt) = damage_type {
-        v.push(format!("{prefix}_{}_INDIRECT", dt.to_uppercase()));
+        let up = dt.to_uppercase();
+        v.push(format!("{prefix}_{up}_INDIRECT"));
+        v.push(format!("{prefix}_{up}"));
     }
     v
 }
 
 /// Damage-type names whose uppercase form matches the `*_<TYPE>_INDIRECT` attribute tokens.
-const DAMAGE_TYPES: &[&str] = &[
+/// Also used by `cdn_commands` to sniff the damage type of prose-named DoTs ("Poison Slice").
+pub(crate) const DAMAGE_TYPES: &[&str] = &[
     "Acid", "Cold", "Crushing", "Darkness", "Demonic", "Divine", "Electricity", "Fire",
-    "Fungus", "Nature", "Piercing", "Poison", "Psychic", "Seafood", "Slashing", "Sonic",
-    "Trauma",
+    "Fungus", "Nature", "Piercing", "Poison", "Psychic", "Seafood", "Slashing", "Smiting",
+    "Sonic", "Trauma",
 ];
 
 /// True when a special value represents indirect (damage-over-time) damage — detected by a
@@ -690,6 +702,50 @@ mod tests {
         let out = compute(&stats, Some("Psychic".into()), &[m("BOOST_PSYCHIC_INDIRECT", 21.0)]);
         let dot = &out.dots[0];
         assert!((dot.per_tick.effective - 101.0).abs() < 1e-6, "got {}", dot.per_tick.effective);
+    }
+
+    /// Dual-scope "X Damage (Direct & Per-Tick)" tokens ({MOD_ELECTRICITY}, {BOOST_FIRE}, …)
+    /// move BOTH the direct hit (by ability damage type) and each DoT tick (by DoT damage type).
+    #[test]
+    fn dual_scope_type_tokens_hit_direct_and_ticks() {
+        let stats = CombatStats {
+            damage: Some(100.0),
+            dots: vec![DotEffect {
+                damage_per_tick: 20.0,
+                num_ticks: 4.0,
+                damage_type: Some("Fire".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mods = vec![m("MOD_FIRE", 0.10), m("BOOST_FIRE", 2.0)];
+        let out = compute(&stats, Some("Fire".into()), &mods);
+        // direct: 100×1.10 + 2×1.10 = 112.2
+        let dd = &out.direct_damages[0].value;
+        assert!((dd.effective - 112.2).abs() < 1e-6, "got {}", dd.effective);
+        // per tick: (20 + 2) × 1.10 = 24.2
+        let dot = &out.dots[0];
+        assert!((dot.per_tick.effective - 24.2).abs() < 1e-6, "got {}", dot.per_tick.effective);
+        assert!(out.any_modified);
+    }
+
+    /// Dual-scope tokens of a different type must not apply to either component.
+    #[test]
+    fn dual_scope_type_tokens_respect_type() {
+        let stats = CombatStats {
+            damage: Some(100.0),
+            dots: vec![DotEffect {
+                damage_per_tick: 20.0,
+                num_ticks: 4.0,
+                damage_type: Some("Poison".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let out = compute(&stats, Some("Crushing".into()), &[m("MOD_FIRE", 0.50)]);
+        assert!((out.direct_damages[0].value.effective - 100.0).abs() < 1e-6);
+        assert!((out.dots[0].per_tick.effective - 20.0).abs() < 1e-6);
+        assert!(!out.any_modified);
     }
 
     /// Power cost reduction: base 16, -4 delta → 12.

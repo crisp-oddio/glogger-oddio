@@ -1,5 +1,86 @@
 # glogger — Session Handoff
 
+**Date:** 2026-07-01 → 07-02 (Session 26 — Build Planner: prose damage mods + damage-type conversions)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` — committed + pushed on top of `bd348bd` (a parallel session's roulette/brewery/settings
+line; see gotchas). Earlier same-day commits `0b1b7f9` (HSD direct-hit fix) + `b5f9e3b`
+(health/armor-specific damage components, landed via the parallel session) are ancestors.
+**Status:** ✅ `cargo test --lib` **485 pass** (~30 new parser/engine tests this arc), `vue-tsc` clean.
+Verified live in `npm run tauri dev` against in-game tooltips: Mindworm (Mentalism), Headcracker + all
+crushing attacks with Viper Halberd, the six Vanquisher's Blade sword abilities, Icesnake knife bar.
+
+## TL;DR — Session 26 (effective-stats tooltip: the damage model grew up)
+
+User-driven arc: "Mindworm's direct damage missing" → "other skills not converting" → "crush→slash items
+ignored" → item-by-item verification. Everything below is in `cdn_commands.rs` (prose/token resolution) +
+`game_data/ability_stats.rs` (pure formula engine) unless noted.
+
+### 1. Mindworm & the three direct-damage shapes (commits `0b1b7f9`, `b5f9e3b`)
+Up-front damage has **3 CDN shapes**: `Damage`, `HealthSpecificDamage` (armor-bypassing —
+Mentalism/Psychology/Vampirism, ~235 abilities; Mindworm's 369 lives HERE, no `Damage` field at all), and
+`ArmorSpecificDamage` (~188). All share the ability's single set of direct-mod arrays. Parser types all
+three; engine emits `direct_damages: Vec<DirectDamageBreakdown>` (kind `normal`/`health`/`armor`), each
+folded with the same buckets. Frontend renders one line per component.
+
+### 2. Deep-dive audit → prose damage mods (coverage 43% → 65%)
+Audited all ~31k damage-relevant mod/item effect lines (scan tsysclientinfo+items EffectDescs, diff granted
+tokens/prose against ability arrays ∪ injected tokens — scratchpad scripts, method worth repeating after CDN
+updates). tsys tiers have **NO structured attribute data** — EffectDescs (display prose) is all there is, so
+prose parsing is the only route. New resolvers:
+- **`resolve_direct_add`** — named-ability prose (**the biggest gap, ~4,500 lines**: "Many Cuts and
+  Debilitating Blow Damage +39", "Aimed Shot deals +25% damage…", "damage is +45"), family-gated like
+  `resolve_dot_add`, fed through the ability's own bucket token (`pick_bucket_token`); folds trailing
+  "and Power Cost -N". Plus skill/keyword-wide "X attacks deal +N[%] damage" (Hammer/Bomb/Bite/Kick).
+- **`parse_conditional_direct_text`** — "Direct Poison and Acid Damage +9 and Indirect Poison and Acid +5
+  (per tick) while Archery skill active" + the Direct-%-list Hammer form → `BOOST/MOD_<TYPE>_DIRECT`
+  tokens gated on equipped skills (chained into `resolve_mod_effects`).
+- **Engine**: dual-scope bare `BOOST/MOD_<TYPE>` tokens ("X Damage (Direct & Per-Tick)", e.g.
+  `{MOD_ELECTRICITY}`) now injected into BOTH direct buckets and matching-type DoT ticks. `Smiting` added
+  to `DAMAGE_TYPES`. Keyword groups `Kick`/`BardBlast`/`Melee`/`Bite` added to `ATTACK_CATEGORY_KEYWORDS`.
+- **Excluded BY DESIGN (the remaining ~35%)**: conditional/temporal prose — "for N seconds", "when you have
+  N% or less Armor", "+N damage to Elite enemies/Elves/…", pet damage. `conditional_tail()` is the
+  gatekeeper; the tooltip shows **unconditional** numbers only. Don't "fix" these into the tooltip.
+
+### 3. Damage-type conversions (Viper Halberd, Icesnake, Vanquisher's Blade, …)
+`harvest_type_rules` pre-pass collects rules from all mod tiers + equipped items; the converted type feeds
+`compute()` so the typed-token injection flips automatically (Crushing gear stops applying, Slashing gear
+starts) and the tooltip header badge shows "Slashing *(was Crushing)*" (new `damageTypeOverride` prop on
+[AbilityTooltip.vue](src/components/Shared/Ability/AbilityTooltip.vue), passed only by
+[AbilityBarSummary.vue](src/components/Character/BuildPlanner/AbilityBarSummary.vue)).
+- **Skill-scoped** ("Staff abilities that normally deal Crushing damage instead deal Slashing damage" —
+  Viper/Tactician's Halberd, Icesnake, Autofreeze Knife): ⚠️ **applies to EVERY ability of the from-type
+  regardless of skill** — user verified against live in-game tooltips that the second combat skill's
+  crushing attacks convert too. The prose's skill word just names the weapon's own skill. Deliberate
+  deviation from the text; don't re-add the skill gate.
+- **Named forms, all 6 data variants**: "damage type becomes X" / "is changed to X", "direct damage becomes
+  X damage" (Horns of Hate), "its damage becomes X instead of Y" (Pixie Flare), "Damage becomes X instead
+  of Y" (Infuriating Fist), "deals X damage instead of Y" (Embrace of Despair — becomes a *Sonic* ability
+  but deals *Nature*), and the **name-list** form "Sword Slash, Riposte, Windstrike, … deal direct Fire
+  damage" (Vanquisher's Blade / Flaming Gazluk Sword). ⚠️ The list form is matched by **normalized name
+  segments** (`parse_names_deal_direct`, lowercase alphanumerics, tier-stripped) because item text spells
+  "Windstrike" while the ability is "Wind Strike" — index-walking stopped at the first unresolvable name
+  and silently killed the conversion for the WHOLE list. Possessive names ("Fairy Fire's") handled by
+  `'s`-stripping in `extract_leading_abilities_rest`.
+- **DoT riders** ("All slashing abilities apply Poison Slice damage for 10 seconds" / "Sword abilities
+  apply Psychic scream…"): gate on the **converted** type or skill, synthesize a DoT fed by the granting
+  item's own `BOOST_DOT_*` token — "(Per Second)" semantics → one tick/second (`sniff_damage_type` maps
+  "Poison Slice"→Poison, "Flaming"→Fire alias).
+
+### 4. Gotchas hit this session (avoid future hiccups)
+- **Two glogger windows, identical titles**: the user's "conversion stopped working" was them hovering the
+  **portable** build (`A:\PortableApps\GLogger\glogger.exe`) instead of the dev build. Check
+  `Get-Process glogger | select Path,StartTime` before debugging "regressions".
+- **Parallel session moved the branch under the running `tauri dev`**: dev jumped to `bd348bd` mid-session
+  → webview hot-reloaded (frontend = new branch) while the Rust backend stayed the pre-move binary until
+  the next watcher rebuild. Uncommitted work survived (git refuses checkouts that would clobber). If
+  tooltips look inconsistent after a branch move, touch a `src-tauri` file to force a rebuild.
+- The in-game tooltip folds skill-level passives/active buffs too — glogger states this in-tooltip and
+  stays gear-only (~2% off is expected, type/mod-applicability should match exactly).
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-06-25 (Session 25 — Farming Database: SQLite share format)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` — feature committed (`50343e3`) + this `docs(handoff)` commit; pushed to `origin/dev`

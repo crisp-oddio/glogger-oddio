@@ -20,7 +20,9 @@
 
   <!-- Combat details -->
   <div v-if="hasCombatDetails" class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs mb-2">
-    <span v-if="ability.damage_type" class="text-red-400">{{ ability.damage_type }}</span>
+    <span v-if="displayDamageType" class="text-red-400">
+      {{ displayDamageType }}<span v-if="isConverted" class="text-text-dim font-normal"> (was {{ ability.damage_type }})</span>
+    </span>
     <span v-if="ability.target" class="text-text-muted">{{ ability.target }}</span>
     <span v-if="ability.range" class="text-text-muted">Range: {{ ability.range }}m</span>
     <span v-if="ability.reset_time" class="text-text-muted">CD: {{ ability.reset_time }}s</span>
@@ -52,10 +54,23 @@ import type { AbilityInfo } from "../../../types/gameData";
 const props = defineProps<{
   ability: AbilityInfo;
   iconSrc: string | null;
+  /** Build-effective damage type (e.g. a Viper Halberd converting Crushing → Slashing).
+   *  When set and different from the ability's own type, it replaces the type badge. */
+  damageTypeOverride?: string | null;
 }>();
 
+/** Converted type wins over the ability's inherent one. */
+const displayDamageType = computed(() => props.damageTypeOverride ?? props.ability.damage_type);
+
+const isConverted = computed(
+  () =>
+    !!props.damageTypeOverride &&
+    !!props.ability.damage_type &&
+    props.damageTypeOverride !== props.ability.damage_type,
+);
+
 const hasCombatDetails = computed(() =>
-  props.ability.damage_type || props.ability.target || props.ability.range || props.ability.reset_time
+  displayDamageType.value || props.ability.target || props.ability.range || props.ability.reset_time
 );
 
 const hasCosts = computed(() =>

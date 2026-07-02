@@ -51,6 +51,7 @@
                 <AbilityTooltip
                   :ability="resolvedAbilities[getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id]!"
                   :icon-src="null"
+                  :damage-type-override="statsForAbility(getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id)?.damage_type"
                   v-if="resolvedAbilities[getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id]" />
                 <AbilityEffectiveStats
                   :stats="statsForAbility(getAbilityAtSlot(bar.id, slotIdx - 1)!.ability_id)" />
