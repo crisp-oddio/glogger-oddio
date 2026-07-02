@@ -1,22 +1,22 @@
 <template>
   <div class="flex flex-col gap-3 text-sm h-full">
-    <!-- Header: total spins + last number -->
-    <div class="flex items-baseline justify-between gap-2">
-      <span class="text-xs text-text-dim uppercase tracking-wide">Spins recorded</span>
-      <span class="text-base font-semibold text-accent-gold tabular-nums">
-        {{ stats.total.toLocaleString() }}
-      </span>
-    </div>
-
     <div v-if="stats.total === 0" class="text-xs text-text-dim italic">
       No roulette spins recorded yet. Stand near a casino wheel — winning numbers
       are read from the chat log's <span class="font-mono">Roulette ball ended on N!</span> lines.
     </div>
 
     <template v-else>
-      <!-- Recent rolls: last 10 numbers, newest → oldest -->
-      <div class="flex flex-col gap-1">
-        <span class="text-xs text-text-dim uppercase tracking-wide">Last 10 rolls</span>
+      <!-- Recent rolls: last 10 numbers, newest → oldest. Total spins on the right. -->
+      <div class="flex flex-col gap-1.5">
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="text-xs text-text-dim uppercase tracking-wide">Last 10 rolls</span>
+          <span
+            class="text-xs text-text-dim tabular-nums"
+            title="Outcomes only — bets and payouts are never written to the game logs.">
+            <span class="text-sm font-semibold text-accent-gold">{{ stats.total.toLocaleString() }}</span>
+            spins
+          </span>
+        </div>
         <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
           <div
             v-for="(n, i) in stats.recent"
@@ -123,10 +123,6 @@
         </div>
       </div>
     </template>
-
-    <p class="text-[10px] text-text-dim/70 leading-tight mt-auto">
-      Outcomes only — bets and payouts are never written to the game logs.
-    </p>
   </div>
 </template>
 
@@ -170,8 +166,8 @@ function pct(count: number): string {
 }
 
 // ── Donut geometry ────────────────────────────────────────────────────────
-const SIZE = 96
-const THICKNESS = 16
+const SIZE = 84
+const THICKNESS = 14
 const RADIUS = (SIZE - THICKNESS) / 2
 const CIRC = 2 * Math.PI * RADIUS
 
