@@ -34,7 +34,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-const ITEMS_JSON_PATH: &str = "../docs/samples/CDN-full-examples/items.json";
+const ITEMS_JSON_PATH: &str = "../docs/CDN-full-examples/items.json";
 const CHARACTER: &str = "TestZenith";
 const SERVER: &str = "TestDreva";
 
@@ -256,6 +256,118 @@ fn replay_dataset(player_log: &Path, chat_log: &Path) -> Result<Connection, Stri
     while next_chat_idx < resolved_gains.len() {
         let (_, g, internal) = &resolved_gains[next_chat_idx];
         parser.feed_chat_gain(internal.clone(), g.quantity, &g.utc_hms);
+        next_chat_idx += 1;
+    }
+
+    Ok(conn)
+}
+
+/// Replay a dataset simulating a **chat-only** user: Player.log item lines
+/// (`ProcessAddItem` / `ProcessUpdateItemCode`) are dropped — as observed on
+/// machines where PG's verbose item logging never reaches the log — so loot
+/// can only be attributed through the chat-authoritative gate
+/// (`attribute_chat_gain`). Chat gains are fed exactly the way the
+/// coordinator wires them live: gate first, then insert the ledger row
+/// tagged (`survey_chat` + `survey_use_id`) or untagged, letting the
+/// Basic-survey retro-claim pick up rows that beat the DeleteItem across
+/// the two log streams.
+fn replay_dataset_chat_only(player_log: &Path, chat_log: &Path) -> Result<Connection, String> {
+    let game_data = load_game_data_from_cdn()?;
+    let conn = fresh_db();
+    let mut parser = PlayerEventParser::new();
+    let mut aggregator = SurveySessionAggregator::new(game_data.clone());
+    // Fixed base date so player.log HH:MM:SS and chat UTC timestamps land on
+    // the same calendar day (each dataset spans well under 24h).
+    let base_date = chrono::NaiveDate::from_ymd_opt(2026, 4, 13).unwrap();
+    aggregator.set_base_date(base_date);
+    let base_date_str = base_date.format("%Y-%m-%d").to_string();
+
+    let tz = detect_chat_tz_hours(chat_log)?;
+    let mut chat_gains = parse_chat_gains(chat_log, tz)?;
+    chat_gains.sort_by_key(|g| g.utc_secs);
+
+    let resolve_internal = |display: &str| -> Option<String> {
+        let gd = game_data.try_read().ok()?;
+        gd.resolve_item(display)
+            .and_then(|i| i.internal_name.clone())
+    };
+    // Unlike the player-side harness we keep unresolvable items — the live
+    // coordinator feeds those through the gate too (with internal = None).
+    let resolved_gains: Vec<(u32, ChatGain, Option<String>)> = chat_gains
+        .into_iter()
+        .map(|g| {
+            let internal = resolve_internal(&g.item_display);
+            (g.utc_secs as u32, g.clone(), internal)
+        })
+        .collect();
+
+    let feed_gain = |aggregator: &mut SurveySessionAggregator,
+                         g: &ChatGain,
+                         internal: &Option<String>| {
+        let ts = format!("{} {}", base_date_str, g.utc_hms);
+        let attributed =
+            aggregator.attribute_chat_gain(&conn, internal.as_deref(), g.quantity, &ts);
+        let (kind, details): (Option<&str>, Option<String>) = match attributed {
+            Some(id) => (
+                Some("survey_chat"),
+                Some(format!("{{\"survey_use_id\":{id}}}")),
+            ),
+            None => (None, None),
+        };
+        let row_name = internal.as_deref().unwrap_or(&g.item_display);
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, internal_name,
+                 quantity, context, source, source_kind, source_details)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'loot', 'chat_status', ?7, ?8)",
+            params![ts, CHARACTER, SERVER, row_name, row_name, g.quantity, kind, details],
+        )
+        .expect("insert chat row");
+    };
+
+    let mut next_chat_idx = 0usize;
+    let player_content = fs::read_to_string(player_log).map_err(|e| e.to_string())?;
+
+    for line in player_content.lines() {
+        // Simulate the missing verbose item logging: loot AddItem lines never
+        // reach a chat-only user's log. Survey-map item lines are kept — map
+        // craft/consume tracking demonstrably works for such users (their
+        // uses ARE recorded; it's the loot lines that are absent), and the
+        // parser needs the map AddItem to name the instance so the
+        // consumption DeleteItem can be recognized as a survey use.
+        if line.contains("ProcessAddItem(")
+            && !(line.contains("GeologySurvey") || line.contains("MiningSurvey"))
+        {
+            continue;
+        }
+        let line_secs = match player_line_secs(line) {
+            Some(s) => s,
+            None => {
+                let mut events = parser.process_line(line);
+                for ev in events.iter_mut() {
+                    let _ = aggregator.process_event(ev, &conn, CHARACTER, SERVER, None);
+                }
+                continue;
+            }
+        };
+
+        while next_chat_idx < resolved_gains.len()
+            && resolved_gains[next_chat_idx].0 <= line_secs
+        {
+            let (_, g, internal) = &resolved_gains[next_chat_idx];
+            feed_gain(&mut aggregator, g, internal);
+            next_chat_idx += 1;
+        }
+
+        let mut events = parser.process_line(line);
+        for ev in events.iter_mut() {
+            let _ = aggregator.process_event(ev, &conn, CHARACTER, SERVER, None);
+        }
+    }
+
+    while next_chat_idx < resolved_gains.len() {
+        let (_, g, internal) = &resolved_gains[next_chat_idx];
+        feed_gain(&mut aggregator, g, internal);
         next_chat_idx += 1;
     }
 
@@ -913,7 +1025,14 @@ const DATASETS: &[DatasetSpec] = &[
 ];
 
 /// Run a single dataset through the pipeline and compare against results.txt.
-fn evaluate_dataset(spec: &DatasetSpec, game_data: &GameDataState) -> DatasetResult {
+/// `chat_only` replays with Player.log item lines dropped, attributing loot
+/// exclusively through the chat-authoritative gate (see
+/// [`replay_dataset_chat_only`]).
+fn evaluate_dataset(
+    spec: &DatasetSpec,
+    game_data: &GameDataState,
+    chat_only: bool,
+) -> DatasetResult {
     let dir = Path::new(spec.dir);
     let player_log = dir.join(spec.player_log);
     let chat_log = dir.join(spec.chat_log);
@@ -937,7 +1056,12 @@ fn evaluate_dataset(spec: &DatasetSpec, game_data: &GameDataState) -> DatasetRes
     };
 
     // Replay through the pipeline.
-    let conn = match replay_dataset(&player_log, &chat_log) {
+    let replayed = if chat_only {
+        replay_dataset_chat_only(&player_log, &chat_log)
+    } else {
+        replay_dataset(&player_log, &chat_log)
+    };
+    let conn = match replayed {
         Ok(c) => c,
         Err(e) => {
             result.error = Some(e);
@@ -1042,11 +1166,27 @@ fn evaluate_dataset(spec: &DatasetSpec, game_data: &GameDataState) -> DatasetRes
 #[test]
 #[ignore = "slow — replays all survey datasets and produces an accuracy report"]
 fn accuracy_report() {
+    run_accuracy_report(false);
+}
+
+/// Same report, but replayed as a **chat-only** user (Player.log item lines
+/// dropped; loot flows exclusively through `attribute_chat_gain`). Validates
+/// that the chat-loot collection-window gating captures exactly the survey
+/// loot — no kill/forage/craft leakage, no missed survey drops.
+///
+/// Run with: `cargo test --lib survey::replay_tests::chat_only_accuracy_report -- --ignored --nocapture`
+#[test]
+#[ignore = "slow — replays all survey datasets and produces an accuracy report"]
+fn chat_only_accuracy_report() {
+    run_accuracy_report(true);
+}
+
+fn run_accuracy_report(chat_only: bool) {
     let game_data = load_game_data_from_cdn().expect("CDN items.json required for accuracy report");
 
     let results: Vec<DatasetResult> = DATASETS
         .iter()
-        .map(|spec| evaluate_dataset(spec, &game_data))
+        .map(|spec| evaluate_dataset(spec, &game_data, chat_only))
         .collect();
 
     // -----------------------------------------------------------------------
@@ -1054,7 +1194,11 @@ fn accuracy_report() {
     // -----------------------------------------------------------------------
     println!();
     println!("╔══════════════════════════════════════════════════════════════════════════╗");
-    println!("║                    SURVEY ACCURACY REPORT                               ║");
+    if chat_only {
+        println!("║                SURVEY ACCURACY REPORT (chat-only)                       ║");
+    } else {
+        println!("║                    SURVEY ACCURACY REPORT                               ║");
+    }
     println!("╚══════════════════════════════════════════════════════════════════════════╝");
     println!();
 

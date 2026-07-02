@@ -288,21 +288,91 @@ pub fn get_use(conn: &Connection, use_id: i64) -> Result<Option<SurveyUse>> {
     .optional()
 }
 
-/// The most-recently-used survey use belonging to a session, if any.
+/// The most recent Motherlode/Multihit use for a character, no older than
+/// `max_age_secs` before `now_iso`.
 ///
-/// Used by the chat-loot attribution path: a `[Status]` "added to inventory"
-/// line carries no node/map identity, so we attribute it to whichever survey
-/// map the player most recently consumed in the active session. Ordered by
-/// `used_at` then `id` so the latest map wins even when two uses share a
-/// second-resolution timestamp.
-pub fn latest_use_id_for_session(conn: &Connection, session_id: i64) -> Result<Option<i64>> {
+/// Fallback binding for the chat-loot path: when a mining loop starts on a
+/// node whose StartInteraction name marks it as survey-spawned (contains
+/// "FromSurvey") but the originating use's 60s pending window has already
+/// expired (long walk to the node), this recovers the use to attribute to.
+pub fn latest_recent_nonbasic_use(
+    conn: &Connection,
+    character: &str,
+    server: &str,
+    now_iso: &str,
+    max_age_secs: u32,
+) -> Result<Option<(i64, SurveyUseKind)>> {
     conn.query_row(
-        "SELECT id FROM survey_uses WHERE session_id = ?1
+        "SELECT id, kind FROM survey_uses
+         WHERE character_name = ?1 AND server_name = ?2
+           AND kind != 'basic'
+           AND used_at >= datetime(?3, '-' || ?4 || ' seconds')
+           AND used_at <= ?3
          ORDER BY used_at DESC, id DESC LIMIT 1",
-        params![session_id],
-        |row| row.get(0),
+        params![character, server, now_iso, max_age_secs],
+        |row| {
+            let id: i64 = row.get(0)?;
+            let kind: String = row.get(1)?;
+            Ok((id, SurveyUseKind::from_str(&kind).unwrap_or(SurveyUseKind::Multihit)))
+        },
     )
     .optional()
+}
+
+/// Claim untagged chat-status loot rows near a Basic survey use's `used_at`
+/// and link them to the use. Returns the total quantity claimed.
+///
+/// Basic-survey loot lands in the same game tick as the map's DeleteItem,
+/// but the chat and player logs are tailed independently — the chat rows may
+/// already be in `item_transactions` (untagged) by the time the DeleteItem
+/// is processed. This retroactively tags those rows as `survey_chat` so the
+/// loot summary counts them, mirroring what the live gate in
+/// `attribute_chat_gain` does when the ordering goes the other way.
+///
+/// Survey maps themselves are excluded by internal-name prefix — crafting a
+/// map emits the same "added to inventory" chat line as loot, and players
+/// commonly craft the next map within seconds of using one.
+pub fn claim_unlinked_chat_loot_near(
+    conn: &Connection,
+    survey_use_id: i64,
+    character: &str,
+    server: &str,
+    used_at_iso: &str,
+    window_secs: u32,
+) -> Result<u32> {
+    const PREDICATE: &str = "character_name = ?2
+           AND server_name = ?3
+           AND source = 'chat_status'
+           AND context = 'loot'
+           AND source_kind IS NULL
+           AND quantity > 0
+           AND (internal_name IS NULL
+                OR (internal_name NOT LIKE 'GeologySurvey%'
+                    AND internal_name NOT LIKE 'MiningSurvey%'))
+           AND timestamp BETWEEN datetime(?4, '-' || ?5 || ' seconds')
+                             AND datetime(?4, '+' || ?5 || ' seconds')";
+
+    let total: u32 = conn.query_row(
+        &format!(
+            "SELECT COALESCE(SUM(quantity), 0) FROM item_transactions WHERE {PREDICATE}"
+        ),
+        params![survey_use_id, character, server, used_at_iso, window_secs],
+        |row| row.get(0),
+    )?;
+    if total == 0 {
+        return Ok(0);
+    }
+    conn.execute(
+        &format!(
+            "UPDATE item_transactions
+                SET source_kind = 'survey_chat',
+                    source_details = json_set(COALESCE(source_details, '{{}}'),
+                                              '$.survey_use_id', ?1)
+              WHERE {PREDICATE}"
+        ),
+        params![survey_use_id, character, server, used_at_iso, window_secs],
+    )?;
+    Ok(total)
 }
 
 /// All uses belonging to a session, ordered by `used_at` ascending.

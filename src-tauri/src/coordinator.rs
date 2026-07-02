@@ -1027,24 +1027,31 @@ impl DataIngestCoordinator {
                                 // Chat-status rows normally carry no
                                 // ItemProvenance — the correlated player.log
                                 // event is the provenance-bearing row. The one
-                                // exception is *survey* loot: when a survey
-                                // session is active we attribute this gain to
-                                // the most-recent survey use and tag the row
-                                // with `source_kind = 'survey_chat'` +
+                                // exception is *survey* loot: when this gain
+                                // lands inside an active survey collection
+                                // window (same tick as a Basic survey use, or
+                                // during a mining swing on a survey-spawned
+                                // node) we attribute it to that use and tag
+                                // the row with `source_kind = 'survey_chat'` +
                                 // `survey_use_id`. This is the chat-authoritative
                                 // loot path the session summary reads (Player.log
                                 // survey attribution can be absent — see
                                 // SurveySessionAggregator::attribute_chat_gain).
+                                // Gains outside those windows (kill loot,
+                                // foraging, …) are not survey loot.
                                 if let (Some(character), Some(server)) = (
                                     self.game_state.get_active_character().map(String::from),
                                     self.game_state.get_active_server().map(String::from),
                                 ) {
                                     if let Ok(conn) = self.db_pool.get() {
-                                        // Only "loot" gains belong to a survey;
-                                        // summoned items never do.
+                                        // Only "loot" gains can belong to a
+                                        // survey; summoned items never do.
                                         let survey_use_id = if context == "loot" {
                                             self.survey_aggregator.attribute_chat_gain(
-                                                &conn, &character, &server, *quantity, timestamp,
+                                                &conn,
+                                                internal_name.as_deref(),
+                                                *quantity,
+                                                timestamp,
                                             )
                                         } else {
                                             None
