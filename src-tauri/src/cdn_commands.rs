@@ -2128,6 +2128,57 @@ fn parse_conditional_indirect_text(desc: &str) -> Vec<(String, f64, String)> {
         .collect()
 }
 
+/// The *direct* counterparts of [`parse_conditional_indirect_text`], also stored as prose. Two
+/// syntaxes exist in the data:
+/// ```text
+/// Direct Poison and Acid Damage +9 and Indirect Poison and Acid +5 (per tick) while Archery skill active.
+/// Direct Electricity Damage, Direct Fire Damage, and Direct Cold Damage +11% while Hammer skill active
+/// ```
+/// The first grants flat `BOOST_<TYPE>_DIRECT` + `BOOST_<TYPE>_INDIRECT` per named type; the second
+/// grants percent `MOD_<TYPE>_DIRECT` per named type. Returns `(token, value, skill)` triples, each
+/// conditional on the named skill.
+fn parse_conditional_direct_text(desc: &str) -> Vec<(String, f64, String)> {
+    static RE_PAIR: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(
+            r"^Direct (\w+)(?: and (\w+))? [Dd]amage \+(\d+) and Indirect (\w+)(?: and (\w+))? \+(\d+) \(per tick\) while (\w+) skill active",
+        )
+        .unwrap()
+    });
+    static RE_PCT_TAIL: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"\+(\d+)% while (\w+) skill active").unwrap());
+    static RE_DIRECT_TYPE: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"Direct (\w+) [Dd]amage").unwrap());
+
+    let d = desc.trim();
+    let mut out = Vec::new();
+    if let Some(caps) = RE_PAIR.captures(d) {
+        let flat_direct: f64 = caps[3].parse().unwrap_or(0.0);
+        let flat_indirect: f64 = caps[6].parse().unwrap_or(0.0);
+        let skill = caps[7].to_string();
+        for i in [1usize, 2] {
+            if let Some(t) = caps.get(i) {
+                out.push((format!("BOOST_{}_DIRECT", t.as_str().to_uppercase()), flat_direct, skill.clone()));
+            }
+        }
+        for i in [4usize, 5] {
+            if let Some(t) = caps.get(i) {
+                out.push((format!("BOOST_{}_INDIRECT", t.as_str().to_uppercase()), flat_indirect, skill.clone()));
+            }
+        }
+        return out;
+    }
+    if d.starts_with("Direct ") {
+        if let Some(tail) = RE_PCT_TAIL.captures(d) {
+            let pct = tail[1].parse::<f64>().unwrap_or(0.0) / 100.0;
+            let skill = tail[2].to_string();
+            for t in RE_DIRECT_TYPE.captures_iter(d) {
+                out.push((format!("MOD_{}_DIRECT", t[1].to_uppercase()), pct, skill.clone()));
+            }
+        }
+    }
+    out
+}
+
 /// Pure regex extraction of a DoT-add prose mod's clause: the stated total damage, the damage type
 /// (None when the prose omits it), and the duration in seconds. Handles the `+N` / `N` /
 /// `an additional N` value forms and the optional `to health` / `to armor` qualifier. Deliberately
@@ -2154,6 +2205,13 @@ fn parse_dot_clause(desc: &str) -> Option<(f64, Option<String>, f64)> {
 /// of a known ability name, so descriptive verbs ("…coats the target in insects that deal…") end the
 /// list. Returns empty for skill-wide prose that names no ability ("Archery attacks that crit…").
 fn extract_leading_abilities(desc: &str, data: &GameData) -> Vec<u32> {
+    extract_leading_abilities_rest(desc, data).0
+}
+
+/// Like [`extract_leading_abilities`], but also returns the text remaining after the consumed
+/// ability names (whitespace-normalized), so callers can parse the clause that follows them
+/// (e.g. `"Damage +39"` in "Many Cuts and Debilitating Blow Damage +39").
+fn extract_leading_abilities_rest(desc: &str, data: &GameData) -> (Vec<u32>, String) {
     static ICON: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?:<icon=\d+>)+").unwrap());
     let body = ICON.replace(desc.trim(), "");
     let words: Vec<&str> = body.split_whitespace().collect();
@@ -2165,7 +2223,12 @@ fn extract_leading_abilities(desc: &str, data: &GameData) -> Vec<u32> {
         for len in (1..=max).rev() {
             let cand = words[i..i + len].join(" ");
             let cand = cand.trim_end_matches([',', '.', ':']).trim();
-            if let Some(&id) = data.ability_name_index.get(cand) {
+            // Possessive form too ("Fairy Fire's damage type becomes Fire").
+            let id = data
+                .ability_name_index
+                .get(cand)
+                .or_else(|| cand.strip_suffix("'s").and_then(|c| data.ability_name_index.get(c)));
+            if let Some(&id) = id {
                 matched = Some((len, id));
                 break;
             }
@@ -2185,7 +2248,245 @@ fn extract_leading_abilities(desc: &str, data: &GameData) -> Vec<u32> {
             i += 1;
         }
     }
-    ids
+    (ids, words[i.min(words.len())..].join(" "))
+}
+
+/// True when the text immediately following a parsed damage clause makes it conditional or
+/// temporal ("… when you have low Armor", "… for 10 seconds", "… after a 3-second delay",
+/// "… to Elite enemies") — such bonuses are excluded from the unconditional tooltip numbers.
+/// Riders that don't qualify the damage itself ("and taunts +40", ". Non-Elite targets …",
+/// ", and there's a 30% chance …") are fine.
+fn conditional_tail(rest: &str) -> bool {
+    static RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"^\s*(?:when|if|while|for \d|after|versus|vs\.?|against|to |per )")
+            .unwrap()
+    });
+    RE.is_match(rest)
+}
+
+/// Parse the damage-amount clause that follows the leading ability names of a named-ability
+/// direct-damage prose mod. Syntaxes in the data:
+/// ```text
+/// Damage +39            ("Many Cuts and Debilitating Blow Damage +39 …")
+/// damage is +45         ("Pixie Flare's damage is +45 and its damage becomes Fire …")
+/// deals +25% damage     ("Aimed Shot deals +25% damage and boosts …")
+/// deal 30 armor damage  (bare value allowed only with an explicit type word)
+/// ```
+/// Returns `(value, is_percent)`, or `None` when the clause is absent or conditional/temporal.
+fn parse_named_damage_rest(rest: &str) -> Option<(f64, bool)> {
+    static RE_DAMAGE: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"^[Dd]amage (?:is )?\+(\d+)(%)?").unwrap());
+    static RE_DEAL: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"^deals? (\+)?(\d+)(%)?(?: ([A-Za-z]+))? [Dd]amage( to (?:[Aa]rmor|[Hh]ealth))?")
+            .unwrap()
+    });
+    if let Some(caps) = RE_DAMAGE.captures(rest) {
+        let value: f64 = caps[1].parse().ok()?;
+        let pct = caps.get(2).is_some();
+        if conditional_tail(&rest[caps.get(0).unwrap().end()..]) {
+            return None;
+        }
+        return Some(if pct { (value / 100.0, true) } else { (value, false) });
+    }
+    if let Some(caps) = RE_DEAL.captures(rest) {
+        let has_plus = caps.get(1).is_some();
+        let value: f64 = caps[2].parse().ok()?;
+        let pct = caps.get(3).is_some();
+        let type_word = caps.get(4).map(|m| m.as_str());
+        // A bare value ("deal 30 armor damage") is only additive when a type word is present;
+        // otherwise require the explicit "+".
+        if !has_plus && type_word.is_none() {
+            return None;
+        }
+        if conditional_tail(&rest[caps.get(0).unwrap().end()..]) {
+            return None;
+        }
+        return Some(if pct { (value / 100.0, true) } else { (value, false) });
+    }
+    None
+}
+
+/// Parse a skill- or keyword-wide "X attacks deal +N[%] damage" prose mod (e.g. "Hammer attacks
+/// deal +33% damage but generate +25% Rage", "Bite attacks deal +11% damage and hasten …").
+/// Returns `(subject_word, value, is_percent)`; the caller gates the subject against the target
+/// ability's skill and keywords. Conditional variants ("… when you have …", "… damage to Elite
+/// enemies") are rejected.
+fn parse_attacks_deal(body: &str) -> Option<(String, f64, bool)> {
+    static RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"^(?:Your )?([A-Za-z]+) attacks deal \+(\d+)(%)? damage").unwrap()
+    });
+    let caps = RE.captures(body)?;
+    let value: f64 = caps[2].parse().ok()?;
+    let pct = caps.get(3).is_some();
+    let tail = &body[caps.get(0).unwrap().end()..];
+    if conditional_tail(tail) {
+        return None;
+    }
+    let value = if pct { value / 100.0 } else { value };
+    Some((caps[1].to_string(), value, pct))
+}
+
+/// Pick the token to feed a prose-granted damage bonus through: prefer the ability-specific
+/// token (`*_ABILITY_*`) so the breakdown label reads naturally, falling back to the bucket's
+/// first entry. Any token from the bucket is arithmetically equivalent — the effects list is
+/// computed per ability, so the grant can't leak to other abilities.
+fn pick_bucket_token(arr: &[String]) -> Option<&String> {
+    arr.iter().find(|t| t.contains("_ABILITY_")).or_else(|| arr.first())
+}
+
+/// Parse a skill-scoped damage-type conversion ("Staff abilities that normally deal Crushing
+/// damage instead deal Slashing damage"). Returns `(skill, from_type, to_type)`.
+fn parse_skill_type_conversion(body: &str) -> Option<(String, String, String)> {
+    static RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"^(\w+) abilities that normally deal (\w+) damage instead deal (\w+) damage")
+            .unwrap()
+    });
+    let caps = RE.captures(body)?;
+    Some((caps[1].to_string(), caps[2].to_string(), caps[3].to_string()))
+}
+
+/// Parse a named-ability damage-type conversion from the text remaining after the leading
+/// ability names. The data phrases these several ways:
+/// ```text
+/// deals +30 damage, and the damage type becomes Fire.
+/// deals +45 damage, and damage type is changed to Electricity
+/// direct damage becomes Darkness damage.                       (Horns of Hate / Deadly Emission)
+/// damage is +45 and its damage becomes Fire instead of Electricity   (Pixie Flare)
+/// damage +19. Damage becomes Trauma instead of Crushing              (Infuriating Fist)
+/// becomes a Sonic ability and deals Nature damage instead of Psychic (Embrace of Despair)
+/// ```
+/// The "X, Y and Z deal direct Fire damage" item form is handled separately by
+/// [`parse_names_deal_direct`] — its name lists use spellings the ability index can't always
+/// resolve.
+fn parse_named_type_conversion(rest: &str) -> Option<String> {
+    static RE_BECOMES: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"[Dd]amage (?:type )?(?:becomes|is changed to) (\w+)").unwrap()
+    });
+    static RE_DEALS_INSTEAD: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"deals? (\w+) damage instead of").unwrap());
+    if let Some(caps) = RE_BECOMES.captures(rest) {
+        return Some(caps[1].to_string());
+    }
+    RE_DEALS_INSTEAD.captures(rest).map(|caps| caps[1].to_string())
+}
+
+/// Parse the "X, Y and Z deal direct Fire damage" conversion form (Vanquisher's Blade, Flaming
+/// Gazluk Sword). The item texts spell some ability names without spaces ("Windstrike" for
+/// "Wind Strike"), which breaks index-based leading-name extraction — one unresolvable name
+/// stops the walk and hides the clause from every ability in the list. So instead the comma /
+/// "and"-separated name segments before the clause are compared against the target ability's
+/// tier-stripped name, both normalized to lowercase alphanumerics (spacing-insensitive).
+/// Conditional prose ("… causes your next attack to deal +50 damage if it deals direct Psychic
+/// …") can't match: its pre-clause text is not a bare name segment.
+fn parse_names_deal_direct(body: &str, ability_name: &str) -> Option<String> {
+    static RE: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"^(.{0,200}?) deals? direct (\w+) damage").unwrap());
+    let caps = RE.captures(body)?;
+    let to = caps[2].to_string();
+    fn norm(s: &str) -> String {
+        s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
+    }
+    let want = norm(ability_name.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end());
+    if want.is_empty() {
+        return None;
+    }
+    caps.get(1)?
+        .as_str()
+        .split(',')
+        .flat_map(|seg| seg.split(" and "))
+        .any(|seg| norm(seg) == want)
+        .then_some(to)
+}
+
+/// Parse a type- or skill-scoped DoT rider ("All slashing abilities apply Poison Slice damage
+/// for 10 seconds", "Sword abilities apply Psychic scream damage for 10 seconds"). Unanchored —
+/// these often follow a conversion sentence in the same desc. Returns
+/// `(subject_word, dot_name, seconds)`; the subject is matched against the ability's (possibly
+/// converted) damage type or its skill.
+fn parse_dot_apply(body: &str) -> Option<(String, String, f64)> {
+    static RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"(?:All )?([A-Za-z]+) abilities apply (.+?) damage for (\d+) seconds")
+            .unwrap()
+    });
+    let caps = RE.captures(body)?;
+    Some((caps[1].to_string(), caps[2].to_string(), caps[3].parse().ok()?))
+}
+
+/// Best-effort damage type of a prose-named DoT ("Poison Slice", "Psychic scream", "Flaming
+/// Sword") from its name and granting attribute's label, using the engine's damage-type table
+/// plus common flavor aliases. `None` → the DoT gets universal indirect modifiers only.
+fn sniff_damage_type(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    for t in crate::game_data::ability_stats::DAMAGE_TYPES {
+        if lower.contains(&t.to_lowercase()) {
+            return Some((*t).to_string());
+        }
+    }
+    if lower.contains("flaming") || lower.contains("burning") {
+        return Some("Fire".to_string());
+    }
+    if lower.contains("freezing") || lower.contains("frost") {
+        return Some("Cold".to_string());
+    }
+    None
+}
+
+/// One "apply <DoT> damage for N seconds" rider, paired with the `BOOST_DOT_*` token(s) its
+/// granting source also carries (which state the per-second damage).
+struct DotApplyRule {
+    subject: String,
+    dot_name: String,
+    seconds: f64,
+    tokens: Vec<String>,
+}
+
+/// Harvest damage-type conversions and DoT riders from one effect desc. Token-form descs only
+/// contribute their `BOOST_DOT_*` token (stashed per source so it can be paired with a rider
+/// from the same mod/item); prose descs contribute conversion rules (evaluated against this
+/// ability immediately) and pending DoT riders.
+fn harvest_type_rules(
+    desc: &str,
+    ability: &crate::game_data::AbilityInfo,
+    target_family: Option<&str>,
+    data: &GameData,
+    conversions: &mut Vec<String>,
+    src_rules: &mut Vec<(String, String, f64)>,
+    src_tokens: &mut Vec<String>,
+) {
+    static ICON: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?:<icon=\d+>)+").unwrap());
+    if let Some((token, _, _)) = parse_token_value(desc) {
+        if token.starts_with("BOOST_DOT_") {
+            src_tokens.push(token);
+        }
+        return;
+    }
+    let body = ICON.replace(desc.trim(), "").to_string();
+
+    if let Some((_skill, from, to)) = parse_skill_type_conversion(&body) {
+        // Despite the prose naming the weapon's skill ("Staff abilities that normally deal
+        // Crushing damage…"), in-game these equip conversions apply to EVERY ability of the
+        // from-type regardless of skill (verified against live tooltips with a Viper Halberd:
+        // the second combat skill's Crushing attacks convert too). Gate on damage type only.
+        let from_match = ability.damage_type.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(&from));
+        if from_match {
+            conversions.push(to);
+        }
+    } else if let Some(to) = parse_names_deal_direct(&body, &ability.name) {
+        conversions.push(to);
+    } else if let Some(tf) = target_family {
+        let (ids, rest) = extract_leading_abilities_rest(desc, data);
+        if !ids.is_empty()
+            && ids.iter().any(|id| data.ability_to_family.get(id).map(|s| s.as_str()) == Some(tf))
+        {
+            if let Some(to) = parse_named_type_conversion(&rest) {
+                conversions.push(to);
+            }
+        }
+    }
+
+    if let Some((subject, dot_name, seconds)) = parse_dot_apply(&body) {
+        src_rules.push((subject, dot_name, seconds));
+    }
 }
 
 /// Look up an attribute's display label + display type for the breakdown UI, falling back to the
@@ -2215,10 +2516,16 @@ fn resolve_mod_effects(
 ) {
     let candidates: Vec<(String, f64, Option<String>)> = match parse_token_value(desc) {
         Some(t) => vec![t],
-        None => parse_conditional_indirect_text(desc)
-            .into_iter()
-            .map(|(token, value, skill)| (token, value, Some(skill)))
-            .collect(),
+        None => {
+            let mut prose = parse_conditional_indirect_text(desc);
+            if prose.is_empty() {
+                prose = parse_conditional_direct_text(desc);
+            }
+            prose
+                .into_iter()
+                .map(|(token, value, skill)| (token, value, Some(skill)))
+                .collect()
+        }
     };
 
     for (token, value, condition) in candidates {
@@ -2315,6 +2622,93 @@ fn resolve_dot_add(
     }
 }
 
+/// Target-aware handling of direct-damage prose mods, the counterpart of [`resolve_dot_add`] for
+/// up-front hits. Covers the two big prose families the tsys data stores without tokens:
+///
+/// 1. **Named-ability**: "Many Cuts and Debilitating Blow Damage +39", "Aimed Shot deals +25%
+///    damage and boosts …" — applies when a named ability shares the target's family. The bonus is
+///    fed through one of the target's own direct-damage bucket tokens (flat → delta bucket,
+///    percent → all-damage mod bucket). A trailing "and Power Cost -N" clause is folded too.
+/// 2. **Skill/keyword-wide**: "Hammer attacks deal +33% damage but generate …", "Bite attacks deal
+///    +11% damage and hasten …" — applies when the subject word matches the target's skill or one
+///    of its keywords.
+///
+/// Conditional/temporal bonuses are rejected by the parsers. A no-op for token-form descs and for
+/// DoT-add prose (owned by [`resolve_dot_add`]).
+fn resolve_direct_add(
+    desc: &str,
+    source: &str,
+    target_family: Option<&str>,
+    ability: &crate::game_data::AbilityInfo,
+    stats: &crate::game_data::CombatStats,
+    data: &GameData,
+    effects: &mut Vec<crate::game_data::ability_stats::ModEffect>,
+) {
+    static ICON: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?:<icon=\d+>)+").unwrap());
+    static RE_POWER_COST: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"(?:[Aa]nd |, )Power Cost -(\d+)").unwrap());
+
+    if desc.contains('{') {
+        return; // token form — handled by resolve_mod_effects
+    }
+    if parse_dot_clause(desc).is_some() {
+        return; // DoT-add prose — owned by resolve_dot_add
+    }
+
+    let push = |token: &String, value: f64, effects: &mut Vec<crate::game_data::ability_stats::ModEffect>| {
+        let (label, display_type) = attr_label(data, token);
+        effects.push(crate::game_data::ability_stats::ModEffect {
+            token: token.clone(),
+            value,
+            source: source.to_string(),
+            label,
+            display_type,
+        });
+    };
+
+    let body = ICON.replace(desc.trim(), "").to_string();
+
+    // Skill/keyword-wide form first ("Kick attacks deal …" would otherwise be consumed as the
+    // ability name "Kick" by the named path).
+    if let Some((subject, value, pct)) = parse_attacks_deal(&body) {
+        let subj = subject.to_lowercase();
+        let applies = ability.skill.as_deref().is_some_and(|s| s.to_lowercase() == subj)
+            || ability.keywords.iter().any(|k| k.to_lowercase() == subj);
+        if applies {
+            let bucket = if pct { &stats.attributes_that_mod_damage } else { &stats.attributes_that_delta_damage };
+            if let Some(token) = pick_bucket_token(bucket) {
+                push(&token.clone(), value, effects);
+            }
+        }
+        return;
+    }
+
+    // Named-ability form, gated on the target's family like resolve_dot_add.
+    let Some(target_family) = target_family else { return };
+    let (ids, rest) = extract_leading_abilities_rest(desc, data);
+    if ids.is_empty() {
+        return;
+    }
+    let affected = ids
+        .iter()
+        .any(|id| data.ability_to_family.get(id).map(|s| s.as_str()) == Some(target_family));
+    if !affected {
+        return;
+    }
+
+    if let Some((value, pct)) = parse_named_damage_rest(&rest) {
+        let bucket = if pct { &stats.attributes_that_mod_damage } else { &stats.attributes_that_delta_damage };
+        if let Some(token) = pick_bucket_token(bucket) {
+            push(&token.clone(), value, effects);
+        }
+    }
+    if let Some(caps) = RE_POWER_COST.captures(&rest) {
+        if let (Ok(v), Some(token)) = (caps[1].parse::<f64>(), stats.attributes_that_delta_power_cost.first()) {
+            push(&token.clone(), -v, effects);
+        }
+    }
+}
+
 /// One assigned build mod, as the frontend knows it (preset mods + slot label).
 #[derive(serde::Deserialize)]
 pub struct AbilityModRef {
@@ -2346,6 +2740,13 @@ const ATTACK_CATEGORY_KEYWORDS: &[&str] = &[
     "CorePoisonAttack",
     "NiceAcidAttack",
     "NicePoisonAttack",
+    // Attack-shape keyword groups whose BOOST_/MOD_ABILITY_<KW> tokens gear actually grants
+    // ("Kick Damage +5", "Bard Blast-Ability Damage +76", "Melee Attack Damage +87",
+    // "Animal Bite-Attack Damage +26%"):
+    "Kick",
+    "BardBlast",
+    "Melee",
+    "Bite",
 ];
 
 /// Build the direct-damage delta/mod tokens an ability inherits from its attack-category keywords
@@ -2402,6 +2803,11 @@ pub async fn compute_ability_build_stats(
     // DoTs that a prose mod creates on an ability with no base DoT (e.g. "Poison Arrow deals +600
     // Poison damage over 12 seconds"). Appended to the ability's DoT list before the formula runs.
     let mut synthetic_dots: Vec<crate::game_data::DotEffect> = Vec::new();
+    // Damage-type conversions that apply to this ability ("Staff abilities that normally deal
+    // Crushing damage instead deal Slashing damage", "… damage type becomes Fire") and pending
+    // "apply <DoT> damage for N seconds" riders, harvested from all sources below.
+    let mut conversions: Vec<String> = Vec::new();
+    let mut dot_apply_rules: Vec<DotApplyRule> = Vec::new();
     let target_family = data.ability_to_family.get(&ability_id).map(|s| s.as_str());
 
     // Gear mods assigned to slots (tsys powers).
@@ -2422,9 +2828,16 @@ pub async fn compute_ability_build_stats(
 
         let tier_key = format!("id_{}", mref.tier);
         let Some(tier_info) = info.tiers.get(&tier_key) else { continue };
+        let mut src_rules: Vec<(String, String, f64)> = Vec::new();
+        let mut src_tokens: Vec<String> = Vec::new();
         for desc in &tier_info.effect_descs {
             resolve_mod_effects(desc, &source, &data, &equipped, &mut effects);
             resolve_dot_add(desc, &source, target_family, stats, &data, &mut effects, &mut synthetic_dots);
+            resolve_direct_add(desc, &source, target_family, ability, stats, &data, &mut effects);
+            harvest_type_rules(desc, ability, target_family, &data, &mut conversions, &mut src_rules, &mut src_tokens);
+        }
+        for (subject, dot_name, seconds) in src_rules {
+            dot_apply_rules.push(DotApplyRule { subject, dot_name, seconds, tokens: src_tokens.clone() });
         }
     }
 
@@ -2433,10 +2846,49 @@ pub async fn compute_ability_build_stats(
     for iref in &items {
         let Some(item) = data.items.get(&iref.item_id) else { continue };
         let source = format!("{} ({})", item.name, iref.slot_label);
+        let mut src_rules: Vec<(String, String, f64)> = Vec::new();
+        let mut src_tokens: Vec<String> = Vec::new();
         for desc in &item.effect_descs {
             resolve_mod_effects(desc, &source, &data, &equipped, &mut effects);
             resolve_dot_add(desc, &source, target_family, stats, &data, &mut effects, &mut synthetic_dots);
+            resolve_direct_add(desc, &source, target_family, ability, stats, &data, &mut effects);
+            harvest_type_rules(desc, ability, target_family, &data, &mut conversions, &mut src_rules, &mut src_tokens);
         }
+        for (subject, dot_name, seconds) in src_rules {
+            dot_apply_rules.push(DotApplyRule { subject, dot_name, seconds, tokens: src_tokens.clone() });
+        }
+    }
+
+    // Damage-type conversion: the first applicable rule wins. This changes both the displayed
+    // type and which generic typed tokens the engine injects — e.g. with a Viper Halberd
+    // (Staff Crushing → Slashing), "Direct Crushing Damage" gear stops applying to Headcracker
+    // and Slashing-typed gear starts.
+    let damage_type = conversions.into_iter().next().or_else(|| ability.damage_type.clone());
+
+    // "Apply <DoT> damage for N seconds" riders: gate on the (converted) damage type or the
+    // ability's skill, then synthesize a DoT fed by the granting source's own BOOST_DOT_* token
+    // (labeled "(Per Second)" — so one tick per second at the token's value).
+    for rule in &dot_apply_rules {
+        let applies = damage_type.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(&rule.subject))
+            || ability.skill.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&rule.subject));
+        if !applies || rule.tokens.is_empty() {
+            continue;
+        }
+        let label_text = rule
+            .tokens
+            .iter()
+            .map(|t| attr_label(&data, t).0)
+            .collect::<Vec<_>>()
+            .join(" ");
+        synthetic_dots.push(crate::game_data::DotEffect {
+            damage_per_tick: 0.0,
+            num_ticks: rule.seconds as f32,
+            duration: Some(rule.seconds as f32),
+            damage_type: sniff_damage_type(&format!("{} {label_text}", rule.dot_name)),
+            preface: None,
+            attributes_that_delta: rule.tokens.clone(),
+            attributes_that_mod: Vec::new(),
+        });
     }
 
     // Attack-category damage tokens (Core/Nice/Epic/Signature) the ability inherits from its
@@ -2446,13 +2898,13 @@ pub async fn compute_ability_build_stats(
     // Fold the synthesized DoTs and category tokens into the ability's stats so the formula sees
     // them. Cloning is cheap (one ability) and keeps the cached game data immutable.
     if synthetic_dots.is_empty() && cat_delta.is_empty() {
-        Ok(Some(compute(stats, ability.damage_type.clone(), &effects)))
+        Ok(Some(compute(stats, damage_type, &effects)))
     } else {
         let mut stats = stats.clone();
         stats.dots.extend(synthetic_dots);
         stats.attributes_that_delta_damage.extend(cat_delta);
         stats.attributes_that_mod_damage.extend(cat_mods);
-        Ok(Some(compute(&stats, ability.damage_type.clone(), &effects)))
+        Ok(Some(compute(&stats, damage_type, &effects)))
     }
 }
 
@@ -4476,8 +4928,10 @@ pub async fn get_gardening_product_chain(
 #[cfg(test)]
 mod build_stats_parsing_tests {
     use super::{
-        category_attack_tokens, parse_conditional_indirect_text, parse_dot_clause,
-        parse_token_value,
+        category_attack_tokens, parse_attacks_deal, parse_conditional_direct_text,
+        parse_conditional_indirect_text, parse_dot_apply, parse_dot_clause,
+        parse_named_damage_rest, parse_named_type_conversion, parse_names_deal_direct,
+        parse_skill_type_conversion, parse_token_value, sniff_damage_type,
     };
 
     #[test]
@@ -4496,9 +4950,269 @@ mod build_stats_parsing_tests {
             vec!["BOOST_ABILITY_NICEATTACK", "BOOST_ABILITY_NICEPOISONATTACK"]
         );
 
+        // Attack-shape keyword groups (gear grants e.g. "Kick Damage +5" / "Melee Attack Damage").
+        let (delta, mods) = category_attack_tokens(&["Kick".to_string(), "Melee".to_string()]);
+        assert_eq!(delta, vec!["BOOST_ABILITY_KICK", "BOOST_ABILITY_MELEE"]);
+        assert_eq!(mods, vec!["MOD_ABILITY_KICK", "MOD_ABILITY_MELEE"]);
+
         // Non-category keywords contribute nothing.
-        let (delta, mods) = category_attack_tokens(&["Melee".to_string(), "Ranged".to_string()]);
+        let (delta, mods) = category_attack_tokens(&["Ranged".to_string(), "Attack".to_string()]);
         assert!(delta.is_empty() && mods.is_empty());
+    }
+
+    #[test]
+    fn parse_conditional_direct_pair_form() {
+        // Archery's flat direct+indirect typed pair.
+        let out = parse_conditional_direct_text(
+            "Direct Poison and Acid Damage +9 and Indirect Poison and Acid +5 (per tick) while Archery skill active.",
+        );
+        assert_eq!(
+            out,
+            vec![
+                ("BOOST_POISON_DIRECT".to_string(), 9.0, "Archery".to_string()),
+                ("BOOST_ACID_DIRECT".to_string(), 9.0, "Archery".to_string()),
+                ("BOOST_POISON_INDIRECT".to_string(), 5.0, "Archery".to_string()),
+                ("BOOST_ACID_INDIRECT".to_string(), 5.0, "Archery".to_string()),
+            ]
+        );
+        // Single-type variant.
+        let out = parse_conditional_direct_text(
+            "Direct Fire Damage +12 and Indirect Fire +6 (per tick) while Archery skill active.",
+        );
+        assert_eq!(
+            out,
+            vec![
+                ("BOOST_FIRE_DIRECT".to_string(), 12.0, "Archery".to_string()),
+                ("BOOST_FIRE_INDIRECT".to_string(), 6.0, "Archery".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_conditional_direct_percent_list_form() {
+        // Hammer's percent list form.
+        let out = parse_conditional_direct_text(
+            "Direct Electricity Damage, Direct Fire Damage, and Direct Cold Damage +11% while Hammer skill active",
+        );
+        assert_eq!(
+            out,
+            vec![
+                ("MOD_ELECTRICITY_DIRECT".to_string(), 0.11, "Hammer".to_string()),
+                ("MOD_FIRE_DIRECT".to_string(), 0.11, "Hammer".to_string()),
+                ("MOD_COLD_DIRECT".to_string(), 0.11, "Hammer".to_string()),
+            ]
+        );
+        // Unrelated prose stays empty.
+        assert!(parse_conditional_direct_text("Max Armor +75 while Shield skill active").is_empty());
+        assert!(parse_conditional_direct_text(
+            "Indirect Psychic damage is +53% per tick while Vampirism skill active"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn parse_named_damage_rest_flat_and_percent() {
+        // "Many Cuts and Debilitating Blow Damage +39" → rest after names.
+        assert_eq!(parse_named_damage_rest("Damage +39"), Some((39.0, false)));
+        // Lowercase variant ("Finishing Blow and Decapitate damage +47").
+        assert_eq!(parse_named_damage_rest("damage +47"), Some((47.0, false)));
+        // Percent with rider ("Parry and Riposte Damage +25% and Power Cost -3").
+        assert_eq!(parse_named_damage_rest("Damage +25% and Power Cost -3"), Some((0.25, true)));
+        // "damage is +N" phrasing (Pixie Flare).
+        assert_eq!(
+            parse_named_damage_rest("damage is +45 and its damage becomes Fire instead of Electricity"),
+            Some((45.0, false))
+        );
+        // "deals +N% damage" with a benign rider.
+        assert_eq!(
+            parse_named_damage_rest("deals +25% damage and boosts your Accuracy +5 for 10 seconds"),
+            Some((0.25, true))
+        );
+        // "deals +N damage" with a sentence rider ("Seismic Impact deals +55 Damage. If target …" —
+        // the conditional part is a separate clause and must not block the unconditional bonus).
+        assert_eq!(
+            parse_named_damage_rest("deals +55 Damage. If target is Knocked Down it deals a further +10% damage"),
+            Some((55.0, false))
+        );
+        // Bare value allowed with an explicit type word ("Wind Strike and Heart Piercer deal 30 armor damage").
+        assert_eq!(parse_named_damage_rest("deal 30 armor damage"), Some((30.0, false)));
+        // "to Armor" qualifier is part of the hit ("Acid Arrow deals +20 damage to Armor").
+        assert_eq!(parse_named_damage_rest("deals +20 damage to Armor"), Some((20.0, false)));
+    }
+
+    #[test]
+    fn parse_named_damage_rest_rejects_conditional_and_nondamage() {
+        // Delayed bonus damage is not part of the up-front hit.
+        assert_eq!(parse_named_damage_rest("deals 60 Poison damage after a 3-second delay"), None);
+        // Bare value without a type word is ambiguous.
+        assert_eq!(parse_named_damage_rest("deals 60 damage"), None);
+        // Temporal buff.
+        assert_eq!(parse_named_damage_rest("Damage +30 for 10 seconds"), None);
+        // Target-conditional.
+        assert_eq!(parse_named_damage_rest("Damage +25 versus Elite enemies"), None);
+        // Not a damage clause at all.
+        assert_eq!(parse_named_damage_rest("boosts your Nice Attack Damage +30 for 10 seconds"), None);
+        assert_eq!(parse_named_damage_rest("hastens the current reuse timer by 1 second"), None);
+    }
+
+    #[test]
+    fn parse_attacks_deal_skill_and_keyword_wide() {
+        // Skill-wide with a benign rider.
+        assert_eq!(
+            parse_attacks_deal("Hammer attacks deal +33% damage but generate +25% Rage"),
+            Some(("Hammer".to_string(), 0.33, true))
+        );
+        // Keyword-wide flat.
+        assert_eq!(
+            parse_attacks_deal("Bomb attacks deal +50 damage and hasten the current reuse timer of Healing Mist by 1 second"),
+            Some(("Bomb".to_string(), 50.0, false))
+        );
+        // "Your" prefix.
+        assert_eq!(
+            parse_attacks_deal("Your Unarmed attacks deal +7 damage and have +5 Accuracy"),
+            Some(("Unarmed".to_string(), 7.0, false))
+        );
+    }
+
+    #[test]
+    fn parse_skill_type_conversion_matches_instead_deal() {
+        // Viper Halberd / Tactician's Halberd (with and without the trailing DoT-rider sentence).
+        assert_eq!(
+            parse_skill_type_conversion(
+                "Staff abilities that normally deal Crushing damage instead deal Slashing damage. All slashing abilities apply Poison Slice damage for 10 seconds."
+            ),
+            Some(("Staff".to_string(), "Crushing".to_string(), "Slashing".to_string()))
+        );
+        assert_eq!(
+            parse_skill_type_conversion("Knife abilities that normally deal Slashing damage instead deal Cold damage"),
+            Some(("Knife".to_string(), "Slashing".to_string(), "Cold".to_string()))
+        );
+        assert_eq!(parse_skill_type_conversion("Staff Base Damage % +13"), None);
+    }
+
+    #[test]
+    fn parse_named_type_conversion_variants() {
+        // Rests after the leading ability names, across all data variants.
+        assert_eq!(
+            parse_named_type_conversion("deals +30 damage, and the damage type becomes Fire."),
+            Some("Fire".to_string())
+        );
+        assert_eq!(
+            parse_named_type_conversion("deals +45 damage, and damage type is changed to Electricity"),
+            Some("Electricity".to_string())
+        );
+        // Sentence-start variant ("Lethal Force deals +N damage. Damage type becomes Fire").
+        assert_eq!(
+            parse_named_type_conversion("deals +40 damage. Damage type becomes Fire"),
+            Some("Fire".to_string())
+        );
+        // Possessive form rest ("Fairy Fire's damage type becomes Fire, and it deals …").
+        assert_eq!(
+            parse_named_type_conversion("damage type becomes Fire, and it deals an additional 100 Fire damage over 10 seconds"),
+            Some("Fire".to_string())
+        );
+        // "direct damage becomes <Type> damage" (Horns of Hate → Deadly Emission).
+        assert_eq!(
+            parse_named_type_conversion("direct damage becomes Darkness damage."),
+            Some("Darkness".to_string())
+        );
+        // "its damage becomes <Type> instead of <Type>" (Pixie Flare).
+        assert_eq!(
+            parse_named_type_conversion("damage is +45 and its damage becomes Fire instead of Electricity"),
+            Some("Fire".to_string())
+        );
+        // Sentence-start "Damage becomes <Type>" (Infuriating Fist).
+        assert_eq!(
+            parse_named_type_conversion("damage +19. Damage becomes Trauma instead of Crushing"),
+            Some("Trauma".to_string())
+        );
+        // "deals <Type> damage instead of <Type>" (Embrace of Despair — becomes a Sonic ability
+        // but its DAMAGE type is Nature).
+        assert_eq!(
+            parse_named_type_conversion("becomes a Sonic ability and deals Nature damage instead of Psychic. Sonic Ability Damage +15% while Vampirism skill active"),
+            Some("Nature".to_string())
+        );
+        // Keyword changes are NOT damage-type conversions ("Delerium becomes a 15m Burst attack
+        // that deals +30% damage to targets that are not focused on you").
+        assert_eq!(
+            parse_named_type_conversion("becomes a 15m Burst attack that deals +30% damage to targets that are not focused on you"),
+            None
+        );
+        // The "deal direct <Type> damage" item form is handled by parse_names_deal_direct, not here.
+        assert_eq!(
+            parse_named_type_conversion("causes your next attack to deal +50 damage if it deals direct Psychic, Trauma, or Poison damage"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_names_deal_direct_matches_listed_abilities() {
+        // Vanquisher's Blade / Flaming Gazluk Sword text — note "Windstrike" is spelled without
+        // the space the ability name ("Wind Strike") has, so matching must be spacing-insensitive.
+        const DESC: &str = "Sword Slash, Riposte, Windstrike, Finishing Blow, Debilitating Blow and Heart Piercer deal direct Fire damage. All Sword abilities apply Flaming Sword damage for 10 seconds.";
+        for name in [
+            "Sword Slash 6", // tier suffixes are stripped
+            "Riposte",
+            "Wind Strike 4", // spelled "Windstrike" in the item text
+            "Finishing Blow 8",
+            "Debilitating Blow 3",
+            "Heart Piercer 5",
+        ] {
+            assert_eq!(parse_names_deal_direct(DESC, name), Some("Fire".to_string()), "{name}");
+        }
+        // Sword abilities NOT in the list stay unconverted.
+        assert_eq!(parse_names_deal_direct(DESC, "Parry 4"), None);
+        assert_eq!(parse_names_deal_direct(DESC, "Many Cuts 5"), None);
+        // "Slash" must not substring-match "Sword Slash".
+        assert_eq!(parse_names_deal_direct(DESC, "Slash"), None);
+    }
+
+    #[test]
+    fn parse_names_deal_direct_rejects_conditional_prose() {
+        // "Finishing Blow causes your next attack to deal +50 damage if it deals direct Psychic,
+        // Trauma, or Poison damage" — the pre-clause text isn't a bare name segment.
+        const DESC: &str = "Finishing Blow causes your next attack to deal +50 damage if it deals direct Psychic, Trauma, or Poison damage";
+        assert_eq!(parse_names_deal_direct(DESC, "Finishing Blow 8"), None);
+    }
+
+    #[test]
+    fn parse_dot_apply_type_and_skill_scoped() {
+        // Type-scoped rider following a conversion sentence in the same desc.
+        assert_eq!(
+            parse_dot_apply(
+                "Staff abilities that normally deal Crushing damage instead deal Slashing damage. All slashing abilities apply Poison Slice damage for 10 seconds."
+            ),
+            Some(("slashing".to_string(), "Poison Slice".to_string(), 10.0))
+        );
+        // Skill-scoped rider (Rapier Wit).
+        assert_eq!(
+            parse_dot_apply("Sword abilities apply Psychic scream damage for 10 seconds."),
+            Some(("Sword".to_string(), "Psychic scream".to_string(), 10.0))
+        );
+        assert_eq!(parse_dot_apply("Staff Base Damage % +13"), None);
+    }
+
+    #[test]
+    fn sniff_damage_type_from_dot_names() {
+        assert_eq!(sniff_damage_type("Poison Slice Poison Slice Damage over Time (Per Second)"), Some("Poison".to_string()));
+        assert_eq!(sniff_damage_type("Psychic scream"), Some("Psychic".to_string()));
+        // Flavor alias: "Flaming Sword" carries no literal type name.
+        assert_eq!(sniff_damage_type("Flaming Sword Flaming Sword Damage over Time (Per Second)"), Some("Fire".to_string()));
+        assert_eq!(sniff_damage_type("Mystery Goo"), None);
+    }
+
+    #[test]
+    fn parse_attacks_deal_rejects_conditionals() {
+        // Armor-gated.
+        assert_eq!(
+            parse_attacks_deal("Kick attacks deal +30% damage when you have 33% or less of your Armor left"),
+            None
+        );
+        // Target-species/Elite conditional (Gourmand food buffs).
+        assert_eq!(parse_attacks_deal("Your melee attacks deal +45 damage to Elite enemies"), None);
+        assert_eq!(parse_attacks_deal("Your attacks deal +12 damage to Elves"), None);
+        // Not an attacks-deal clause.
+        assert_eq!(parse_attacks_deal("Many Cuts and Debilitating Blow Damage +39"), None);
     }
 
     #[test]
