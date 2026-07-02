@@ -1,5 +1,75 @@
 # glogger — Session Handoff
 
+**Date:** 2026-07-02 (Session 27 — Surveying tab: only track items actually collected from surveys)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` — committed `9a8d59c` on top of `610b63c`.
+**Status:** ✅ `cargo test --lib` **489 pass** (+8 aggregator tests, net +4). Both ignored accuracy
+replays run locally again and are **100.0%**: `accuracy_report` (player.log path, unchanged) and the
+new **`chat_only_accuracy_report`** — 103/103 items exact, 2400/2400 qty, **zero extra items** across
+all six ground-truth datasets. No frontend changes (`vue-tsc` untouched surface).
+
+## TL;DR — Session 27 (survey chat-loot gating)
+
+**User request:** the Surveying tab counted *every* drop during a session — kill loot, foraging,
+even freshly-crafted survey maps. Root cause: Session 9's chat-authoritative path
+(`attribute_chat_gain`) attributed ANY `[Status] "X added to inventory"` line to the session's
+latest use whenever a session was active. Now only items actually collected from surveys count.
+
+### The gate — per-kind collection windows ([survey/aggregator.rs](src-tauri/src/survey/aggregator.rs))
+- **Basic** (loot lands same game tick as the map's DeleteItem): chat gains attribute only within
+  ±5s (`CHAT_BASIC_WINDOW_SECS`) of a recently-consumed Basic use (`recent_basic_uses` queue).
+  Because Chat.log and Player.log are tailed independently, either stream can be processed first —
+  `claim_unlinked_chat_loot_near` ([survey/persistence.rs](src-tauri/src/survey/persistence.rs))
+  retroactively tags untagged `chat_status` rows in the window at DeleteItem time (live gate covers
+  the other ordering). First chat attribution also marks the use Completed (helps crafting-session
+  auto-end for chat-only users, whose uses previously lingered `pending_loot`).
+- **Motherlode/Multihit** (loot lands at mining-swing completion on the spawned node): a `Mining...`
+  delay loop opens/refreshes a **swing window** `[loop start, start + ceil(duration) + 5s]`
+  (`ChatMiningState`); gains attribute only inside it. Node identity comes from the most recent
+  `InteractionStarted` (≤10s before the loop — mirrors the parser's `pending_interaction`).
+  Engagement opens from: a pending use within the existing 60s walk grace (skipping uses already
+  chat-adopted — `chat_adopted_uses`), a previously-bound node (`known_survey_nodes`, multihit
+  resume after mining something else), or a **"FromSurvey"-named** interaction (grace expired on a
+  long walk; motherlodes are often nameless so grace is their main path). A swing on a provably
+  different node closes the engagement (+marks the use Completed).
+- **Foreign-interaction clip** (the last leak, found via ground truth): corpse loot collected
+  seconds after a swing completes fell inside the trailing slack (3 single items leaked in the
+  50x-povus capture — Ratkin corpse searches at swing+8..10s). An `InteractionStarted` on a
+  different entity while a window is open **clips** it (same-second gains count as the
+  interaction's). Real swing loot lands exactly at start+duration, so nothing legitimate is lost.
+- **Survey maps are never loot** — crafting a map emits the identical chat line; excluded by
+  `lookup_survey_kind` in the live gate and by `internal_name NOT LIKE 'GeologySurvey%'/'MiningSurvey%'`
+  in the retro-claim SQL.
+- `attribute_chat_gain` signature changed: takes `internal_name: Option<&str>` instead of
+  character/server (no longer session-scoped — the window state is the gate);
+  [coordinator.rs](src-tauri/src/coordinator.rs) passes the already-resolved internal name.
+  `persistence::latest_use_id_for_session` removed (was only used by the old ungated path).
+
+### Validation — new chat-only replay harness ([survey/replay_tests.rs](src-tauri/src/survey/replay_tests.rs))
+`chat_only_accuracy_report` (ignored, like the others) replays all six datasets as a **chat-only
+user**: non-survey-map `ProcessAddItem` lines dropped (map lines kept — real chat-only users do get
+uses recorded; it's loot lines that vanish), every chat gain routed through the gate exactly as the
+coordinator wires it (gate → insert tagged/untagged row → retro-claim can pick it up). Result:
+**100.0%, zero extra items** — the fix captures exactly the survey loot. Also fixed the stale CDN
+fixture path (`docs/samples/CDN-full-examples` → [docs/CDN-full-examples](docs/CDN-full-examples)) —
+the Session-9 note "survey-test can't run locally" no longer applies:
+`cargo test --lib survey::replay_tests::accuracy_report -- --ignored --nocapture` (and the
+`chat_only_` variant) both work on this checkout.
+
+### Notes / caveats
+- The **Player.log gain-attribution path is untouched** (Case 0/1/2 in `maybe_inject_survey_use_id`,
+  pending-use pops, multihit rows) — chat gating is parallel state, so verbose-logging users keep
+  their provenance pipeline; the loot summary's chat-wins-per-use dedup is unchanged.
+- Historical sessions keep their previously over-attributed rows (no retroactive cleanup).
+- Speed-bonus flags on the chat path remain lost (`bonus_qty = 0`, Session-9 caveat) — unchanged.
+- Not yet click-tested in `npm run tauri dev` (needs a live surveying run in-game); the ground-truth
+  replays are the strongest available offline verification.
+- The `src-tauri/Cargo.toml` LF↔CRLF artifact persists — intentionally left uncommitted, as usual.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-07-01 → 07-02 (Session 26 — Build Planner: prose damage mods + damage-type conversions)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` — committed + pushed on top of `bd348bd` (a parallel session's roulette/brewery/settings
