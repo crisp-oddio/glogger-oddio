@@ -1692,6 +1692,8 @@ mod tests {
                 craft_points: None,
                 crafting_target_level: None,
                 tsys_profile: None,
+                equip_appearance: None,
+                equip_appearance2: None,
                 raw_json: json!({}),
             }
         }

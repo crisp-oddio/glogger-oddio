@@ -1,5 +1,49 @@
 # glogger — Session Handoff
 
+**Date:** 2026-07-08 (Session 31 — 3D Model Viewer: extract & render real PG item models w/ live dye, drop sources, slot loadout UI)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` — committed on top of `8f34810`, pushed to `origin/dev`. NOTE: `dev` is *behind* `origin/main` by the v0.11.28/29 release bumps; this work reaches `main` via the usual **dev → PR → main** flow (like PR #75), not a direct push.
+**Status:** ✅ `vue-tsc --noEmit` clean; `cargo build --lib` clean; `cargo test --lib appearance` 15/15. Verified live in `npm run tauri dev` (oddio@Arisetsu): armor, weapons, and **helmets** render with live 1/2/3-channel dye; drop-sources panel populates. `Cargo.toml` CRLF noise left uncommitted as usual.
+
+## TL;DR — Session 31
+
+Brand-new **3D Model Viewer** (Character → **Model Viewer** sub-tab): renders the *actual* Project: Gorgon 3D item models, extracted from the user's own local install, with the game's live dye system, per-item drop sources, and a slot-based loadout picker. This is the whole feature end-to-end. There's a companion auto-memory `project_model_viewer.md` with the deep facts — **read it first** next session.
+
+### The data chain (the spine)
+PG art = **unencrypted Unity 6.3 Addressable bundles** at `…/Project Gorgon/WindowsPlayer_Data/StreamingAssets/aa/StandaloneWindows64/`. glogger's own CDN item data already maps an item to its model via the **`EquipAppearance2`** field (modern) / `EquipAppearance` (old), e.g. `@Chest=@eq-{sex}2-chest-leather-01(^Armor=m2-body-leather-01%DYE%)` → mesh key + dye-material key + `%DYE%`. Chain: `item → parse EquipAppearance → mesh(glb) + dye material(textures) → three.js render w/ the Gorgon/Character 3-mask dye shader`.
+
+### What was built
+- **Extractor** `tools/model_extractor/extract.py` (UnityPy+pygltflib+numpy+Pillow): reads bundles → cache `{appdata}/models/` = `meshes/<key>.glb` (geometry-only, UV V-flipped) + deduped `textures/*.png` + `catalog.json` {appearances, materials, weapons}. Run: `python tools/model_extractor/extract.py --game-dir <StandaloneWindows64> --out <dir>` (~75s, ~669MB).
+- **Backend** `src-tauri/src/model_assets.rs` (Steam-install detection via appid 342940, cache, commands: `model_viewer_status`, `get_model_catalog`, `resolve_item_appearance`, `list_appearance_items` [flags `has_model`], `start_model_extraction`, `model_cache_root`) + `src-tauri/src/game_data/appearance.rs` (`EquipAppearance` parser, **15 unit tests**; promoted `equip_appearance`/`equip_appearance2` onto `ItemInfo` in `items.rs`). Registered in `lib.rs`.
+- **Frontend** `src/components/Character/ModelViewer/` (`ModelViewerScreen`, `TurntableViewer` [three.js], `DyeControls`), `src/composables/useGorgonDyeMaterial.ts` (the dye ShaderMaterial), `src/stores/modelViewerStore.ts`, `src/types/modelViewer.ts`. Added `three` dep. Nav = Character sub-tab in `MenuBar.vue` + `CharacterView.vue`. Reuses `ItemDropBreakdownTable.vue` (Farming) for drop sources.
+
+### UI shape (current)
+Slot-based **loadout** layout: a slot column (Head/Chest/Legs/Hands/Feet/MainHand/OffHand — "model slots only") drives a per-slot item list (filtered via `list_appearance_items(slot)`; OffHand also matches OffHandShield). Choosing an item records it in a per-slot `loadout` and views it. Center viewport has an **Item / Character** toggle (Character = paper-doll **placeholder**). Right pane split 50/50: dye customization (top) + **Drop Sources** (bottom). Item list defaults to **only items with a 3D model** (toggle to show all; no-model items greyed).
+
+### Coverage + the gotchas fixed
+- **~91%** of equippable items render (Legs/Hands/Feet ~100%, Chest 93%, **Head ~60%** — the head gap is almost entirely **cosmetics with no game mesh**: Venetian masks, Santa hats, FloatingGem, CasinoCrown; those can't be extracted).
+- **Weapons** live mostly in one bundle `myfg-weapon-pack` (184 `eq-x-*` GameObjects, mesh on *children* → subtree traversal). Key meshes by **addressable name** (root `eq-x-*` GO / bundle filename), NOT the internal child-mesh name.
+- **Orientation**: PG **body** art is Z-up → viewer rotates body meshes `rotation.x=-π/2`; **weapons** are oriented per-mesh so `orientProp()` puts the longest bbox axis up / thinnest toward camera. OrbitControls clamped to a turntable (`minPolarAngle=0.3π`, `maxPolarAngle=0.5π`) so it can't cartwheel.
+- **"Helmets render blank" bug** (fixed): the dye shader samples `vMapUv`, which three.js only defines when `material.map` is set. Helmets/full-plate have **no skin `_MainTex`** → shader failed to compile → blank. Fix: `useGorgonDyeMaterial` always assigns a `map` (1×1 white fallback).
+- **Dev gotcha**: the Microsoft-Store `python.exe` is sandboxed and **cannot write `%APPDATA%\Roaming`**, so the in-app "Extract models" button fails in dev. The cache was **pre-seeded by hand** to `%APPDATA%\Roaming\glogger.Dev\models` (v2). Release will ship a frozen sidecar; for dev, pre-seed or use a non-Store Python.
+
+### Phase 2 — the paper doll (next session) — with a key simplification
+Goal: the **Character** toggle renders the full loadout on a race/sex base body. **Spike result: you do NOT need the skeleton for a static pose.** Skinned-mesh vertices are stored in **bind-pose character space** (mesh world-centers stack along Z: feet 0.3 → legs 0.65 → chest 1.26 → head 1.85). So the paper doll = **load every loadout piece's geometry *uncentered* into one group, add the base body, rotate the whole group `-π/2` X, frame the camera** — the pieces auto-assemble into a standing figure. (Full rigging is a rabbit hole: the 122-bone Avatar exists + `m_BindPose` [122] is readable, but the bone Transform hierarchy is NOT in the bundle [bones deref to null] and per-vertex weights need vertex-stream decoding. Skip it for a static doll.)
+- **Base body mesh**: skin-body materials are `x/f/o/r-{m2,f2}-skin-body-1` (the letter = race group). Need to find the base-body **GameObject/mesh** in `newmodel` and extract it (so exposed skin shows on arms/neck under partial armor). `eq-x-m2-*` GOs are the base/"real" parts (e.g. `eq-x-m2-chest-0`, plus beards/eyes/facialhair).
+- **Race/sex**: swap the base-body **skin texture** per race (per-race skin bundles `h/e/f/d/o × m/f` from recon; note `newmodel` uses `x/f/o/r` skin-body material prefixes — reconcile the race-letter mapping). Sexes m2/f2 already both extract.
+- **TODO**: extract base body + skin variants; assemble uncentered geometry in `TurntableViewer` (a "character" mode next to the turntable); weapons → parent to a fixed hand location; **persist loadouts** (new `model_viewer_presets` migration, mirror `build_planner_commands.rs`); appearance flags (`Hair=Off`, `Ears=off`, `Bra=off`, `Beard=Off`).
+- Also worth: a few weapons show a stray sliver of geometry (a crest/mount vertex merged in) — could filter in the extractor.
+
+### Key files
+| Concern | File |
+|---|---|
+| Extractor (→ sidecar) | `tools/model_extractor/extract.py` |
+| Backend + appearance parser | `src-tauri/src/model_assets.rs`, `src-tauri/src/game_data/appearance.rs` |
+| Dye shader | `src/composables/useGorgonDyeMaterial.ts` |
+| Viewer / UI | `src/components/Character/ModelViewer/*`, `src/stores/modelViewerStore.ts` |
+
+---
+
 **Date:** 2026-07-07 (Session 30 — Quest tabs, uncompleted work-order backlog + board tracking, crafting delete fix)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` — committed `6e99705`, pushed to `origin/dev` (on top of `31c23be`).

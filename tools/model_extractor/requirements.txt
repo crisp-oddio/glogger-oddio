@@ -1,0 +1,4 @@
+UnityPy==1.25.0
+pygltflib>=1.16
+numpy>=1.26
+Pillow>=10.0
