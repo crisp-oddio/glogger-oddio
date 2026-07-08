@@ -65,6 +65,15 @@ pub struct ItemInfo {
     pub crafting_target_level: Option<u32>,
     pub tsys_profile: Option<String>,
 
+    // ── Equipped 3D appearance (for the Model Viewer) ───────────────────
+    // Raw PG appearance directives, e.g.
+    //   "@Chest=@eq-{sex}-mage-chest-01(^Armor=mage-body%DYE%);Bra=off"
+    // `equip_appearance2` is the modern (m2/f2) model set; prefer it when
+    // present, falling back to `equip_appearance`. Parsed by
+    // `game_data::appearance::parse_equip_appearance`.
+    pub equip_appearance: Option<String>,
+    pub equip_appearance2: Option<String>,
+
     // ── Full raw JSON (source of truth) ─────────────────────────────────
     pub raw_json: Value,
 }
@@ -186,6 +195,9 @@ pub fn parse(json: &str) -> Result<HashMap<u32, ItemInfo>, String> {
             crafting_target_level: u32_field(&value, "CraftingTargetLevel"),
             tsys_profile: str_field(&value, "TSysProfile"),
 
+            equip_appearance: str_field(&value, "EquipAppearance"),
+            equip_appearance2: str_field(&value, "EquipAppearance2"),
+
             raw_json: value,
         };
 
@@ -252,6 +264,8 @@ mod tests {
             craft_points: None,
             crafting_target_level: None,
             tsys_profile: None,
+            equip_appearance: None,
+            equip_appearance2: None,
             raw_json: Value::Null,
         }
     }

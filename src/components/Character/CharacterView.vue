@@ -130,6 +130,11 @@
       <BuildPlannerScreen />
     </template>
 
+    <!-- 3D Model Viewer -->
+    <template v-else-if="activeTab === 'model-viewer'">
+      <ModelViewerScreen />
+    </template>
+
     <!-- Account Overview -->
     <template v-else-if="activeTab === 'account'">
       <AggregateView />
@@ -152,6 +157,7 @@ import StatsTable from './StatsTable.vue'
 import CurrencyTable from './CurrencyTable.vue'
 import GourmandView from '../Gourmand/GourmandView.vue'
 import BuildPlannerScreen from './BuildPlanner/BuildPlannerScreen.vue'
+import ModelViewerScreen from './ModelViewer/ModelViewerScreen.vue'
 import DeathsView from './DeathsView.vue'
 import StatehelmView from './StatehelmView.vue'
 import AggregateView from '../Dashboard/AggregateView.vue'

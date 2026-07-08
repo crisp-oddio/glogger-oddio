@@ -13,6 +13,7 @@ mod db;
 mod game_data;
 mod game_state;
 mod log_watchers;
+mod model_assets;
 mod parsers;
 mod player_event_parser;
 mod replay;
@@ -35,6 +36,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
+
+use model_assets::{
+    get_model_catalog, list_appearance_items, model_cache_root, model_viewer_status,
+    resolve_item_appearance, start_model_extraction,
+};
 
 use cdn_commands::{
     check_cdn_version,
@@ -721,6 +727,13 @@ pub fn run() {
             get_storage_vaults_in_area,
             // Icons
             get_icon_path,
+            // Model Viewer (3D)
+            model_viewer_status,
+            model_cache_root,
+            get_model_catalog,
+            resolve_item_appearance,
+            list_appearance_items,
+            start_model_extraction,
             // Source queries
             get_ability_sources,
             get_item_sources,
