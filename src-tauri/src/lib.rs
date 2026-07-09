@@ -39,7 +39,7 @@ use tokio::sync::RwLock;
 
 use model_assets::{
     get_model_catalog, list_appearance_items, model_cache_root, model_viewer_status,
-    resolve_item_appearance, start_model_extraction,
+    resolve_base_body, resolve_item_appearance, start_model_extraction,
 };
 
 use cdn_commands::{
@@ -732,6 +732,7 @@ pub fn run() {
             model_cache_root,
             get_model_catalog,
             resolve_item_appearance,
+            resolve_base_body,
             list_appearance_items,
             start_model_extraction,
             // Source queries

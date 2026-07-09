@@ -334,6 +334,95 @@ pub async fn resolve_item_appearance(
     }))
 }
 
+// ── Base body (Phase 2 paper doll) ────────────────────────────────────────────
+
+/// Race prefixes to try when picking a base-body skin material, most-complete
+/// first. `f` is the only prefix in `newmodel` with a full skin set including
+/// `skin-face`; the others fill body/hands/feet. Eyes fall back to `x`.
+const SKIN_RACE_ORDER: &[&str] = &["f", "x", "o", "r", "h", "e", "d"];
+
+/// First candidate material key that actually exists in the catalog.
+fn first_present_material(
+    materials: Option<&serde_json::Map<String, serde_json::Value>>,
+    candidates: &[String],
+) -> Option<String> {
+    let m = materials?;
+    candidates.iter().find(|k| m.contains_key(*k)).cloned()
+}
+
+/// Synthesize the naked base-body parts for a sex as appearance directives:
+/// torso/legs/hands/feet/head + eyes/teeth, each keyed to its `eq-x-{sex}2-*-0`
+/// mesh and the best available skin material. `materials` is the catalog's
+/// `materials` map (used to pick a present skin per body region). Pure — no I/O.
+fn base_body_directives(
+    sex: char,
+    materials: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<AppearanceDirective> {
+    let skin = |region: &str| -> Vec<String> {
+        SKIN_RACE_ORDER
+            .iter()
+            .map(|r| format!("{r}-{sex}2-skin-{region}-1"))
+            .collect()
+    };
+    let eyes = || -> Vec<String> {
+        let mut v: Vec<String> = SKIN_RACE_ORDER
+            .iter()
+            .flat_map(|r| [format!("{r}-{sex}2-eyes-1"), format!("{r}-x2-eyes-1")])
+            .collect();
+        v.push("x-m2-eyes-1".to_string());
+        v
+    };
+    let teeth = || vec!["x-x2-teeth-1".to_string(), format!("x-{sex}2-teeth-1")];
+
+    // (mesh suffix, slot name, skin-material candidates). Slot names Chest/Legs/
+    // Hands/Feet match the equipment slots so the viewer can hide a base part
+    // when armor covers it; Head/Eyes/Teeth are always shown (the face).
+    let spec: [(&str, &str, Vec<String>); 7] = [
+        ("chest-0", "Chest", skin("body")),
+        ("legs-0", "Legs", skin("body")),
+        ("hands-0", "Hands", skin("hands")),
+        ("feet-0", "Feet", skin("feet")),
+        ("head-0", "Head", skin("face")),
+        ("eyes-0", "Eyes", eyes()),
+        ("teeth-0", "Teeth", teeth()),
+    ];
+
+    spec.into_iter()
+        .map(|(mesh_suffix, slot, mat_candidates)| AppearanceDirective {
+            slot: slot.to_string(),
+            mesh_key: Some(format!("eq-x-{sex}2-{mesh_suffix}")),
+            material_key: first_present_material(materials, &mat_candidates),
+            dye_order: None,
+            // Base skin renders with its natural texture (no player dye channels).
+            dyeable: false,
+            props: Default::default(),
+        })
+        .collect()
+}
+
+/// Resolve the naked base body for a sex into renderable slots (mesh + skin
+/// material), joined against the local asset catalog. Drives the Model Viewer's
+/// "Character" paper-doll mode: the body onto which equipped gear is layered.
+#[tauri::command]
+pub async fn resolve_base_body(
+    sex: Option<String>,
+    app: AppHandle,
+) -> Result<Vec<ResolvedSlot>, String> {
+    let sex_ch = sex
+        .as_deref()
+        .and_then(|s| s.chars().next())
+        .filter(|c| *c == 'm' || *c == 'f')
+        .unwrap_or('m');
+
+    let cat = load_catalog(&app)?;
+    let materials = cat.get("materials").and_then(|v| v.as_object());
+    let slots = base_body_directives(sex_ch, materials)
+        .iter()
+        .map(|d| join_catalog(&cat, d))
+        .collect();
+    Ok(slots)
+}
+
 /// A single browsable dyeable/equippable item for the Model Viewer picker.
 #[derive(Serialize)]
 pub struct BrowsableItem {
@@ -414,15 +503,34 @@ struct ExtractionProgress {
 
 /// Locate the extractor script. In dev this is the repo's
 /// `tools/model_extractor/extract.py`; release builds ship a sidecar (TODO).
-fn extractor_script() -> Option<PathBuf> {
-    // Dev: resolve relative to the crate manifest dir captured at build time.
+/// How to launch the extractor: a bundled frozen binary (release) or the raw
+/// Python script (dev).
+enum Extractor {
+    /// PyInstaller-frozen sidecar shipped next to the app exe (`externalBin`).
+    Sidecar(PathBuf),
+    /// Dev: `python <repo>/tools/model_extractor/extract.py`.
+    PythonScript(PathBuf),
+}
+
+fn resolve_extractor() -> Option<Extractor> {
+    // Release: Tauri places the `externalBin` sidecar next to the main exe.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let name = if cfg!(windows) { "model-extractor.exe" } else { "model-extractor" };
+            let p = dir.join(name);
+            if p.is_file() {
+                return Some(Extractor::Sidecar(p));
+            }
+        }
+    }
+    // Dev: the repo script, resolved from the crate manifest dir at build time.
     if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
         let p = Path::new(manifest)
             .parent() // repo root (manifest is src-tauri)
             .map(|r| r.join("tools").join("model_extractor").join("extract.py"));
         if let Some(p) = p {
             if p.is_file() {
-                return Some(p);
+                return Some(Extractor::PythonScript(p));
             }
         }
     }
@@ -439,8 +547,9 @@ pub async fn start_model_extraction(
     let bundles = locate_bundles_dir(game_dir.as_deref())
         .ok_or_else(|| "Could not locate a Project: Gorgon install".to_string())?;
     let out = model_cache_dir(&app)?;
-    let script = extractor_script()
-        .ok_or_else(|| "Extractor script not found (dev: tools/model_extractor/extract.py)".to_string())?;
+    let extractor = resolve_extractor().ok_or_else(|| {
+        "Model extractor not found — no bundled sidecar and no dev script".to_string()
+    })?;
 
     let emit = |app: &AppHandle, stage: &str, message: &str, done: bool, ok: bool| {
         let _ = app.emit(
@@ -455,16 +564,23 @@ pub async fn start_model_extraction(
     };
     emit(&app, "start", &format!("Extracting from {}", bundles.display()), false, true);
 
-    let py = if cfg!(windows) { "python" } else { "python3" };
-    let output = tokio::process::Command::new(py)
-        .arg(&script)
-        .arg("--game-dir")
-        .arg(&bundles)
-        .arg("--out")
-        .arg(&out)
+    // Sidecar runs directly; the dev script runs under the system Python.
+    let mut cmd = match &extractor {
+        Extractor::Sidecar(bin) => tokio::process::Command::new(bin),
+        Extractor::PythonScript(script) => {
+            let py = if cfg!(windows) { "python" } else { "python3" };
+            let mut c = tokio::process::Command::new(py);
+            c.arg(script);
+            c
+        }
+    };
+    cmd.arg("--game-dir").arg(&bundles).arg("--out").arg(&out);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no console flash
+    let output = cmd
         .output()
         .await
-        .map_err(|e| format!("Failed to launch extractor ({py}): {e}"))?;
+        .map_err(|e| format!("Failed to launch extractor: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -478,4 +594,64 @@ pub async fn start_model_extraction(
     let summary = stdout.lines().last().unwrap_or("done").to_string();
     emit(&app, "done", &summary, true, true);
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    fn mats(keys: &[&str]) -> Map<String, Value> {
+        keys.iter().map(|k| ((*k).to_string(), json!({}))).collect()
+    }
+
+    #[test]
+    fn base_body_uses_expected_meshes_and_slots() {
+        let m = mats(&["f-m2-skin-body-1", "f-m2-skin-hands-1"]);
+        let d = base_body_directives('m', Some(&m));
+        let slots: Vec<&str> = d.iter().map(|x| x.slot.as_str()).collect();
+        assert_eq!(slots, ["Chest", "Legs", "Hands", "Feet", "Head", "Eyes", "Teeth"]);
+        // Meshes are the sex-specific naked base parts.
+        assert_eq!(
+            d[0].mesh_key.as_deref(),
+            Some("eq-x-m2-chest-0"),
+            "chest mesh key"
+        );
+        assert_eq!(d[3].mesh_key.as_deref(), Some("eq-x-m2-feet-0"));
+        // Never player-dyeable — base skin renders with its own texture.
+        assert!(d.iter().all(|x| !x.dyeable));
+    }
+
+    #[test]
+    fn skin_material_prefers_present_race_and_falls_back() {
+        // `f` skin-body present → picked first (top of SKIN_RACE_ORDER).
+        let m = mats(&["f-m2-skin-body-1", "x-m2-skin-body-1"]);
+        let d = base_body_directives('m', Some(&m));
+        assert_eq!(d[0].material_key.as_deref(), Some("f-m2-skin-body-1"));
+
+        // No `f` body skin → fall through to the next present race (`x`).
+        let m2 = mats(&["x-m2-skin-body-1"]);
+        let d2 = base_body_directives('m', Some(&m2));
+        assert_eq!(d2[0].material_key.as_deref(), Some("x-m2-skin-body-1"));
+    }
+
+    #[test]
+    fn eyes_fall_back_across_sexes_and_teeth_shared() {
+        // Only an `x-m2-eyes-1` exists — eyes candidates must still find it for male.
+        let m = mats(&["x-m2-eyes-1", "x-x2-teeth-1"]);
+        let d = base_body_directives('m', Some(&m));
+        let eyes = d.iter().find(|x| x.slot == "Eyes").unwrap();
+        assert_eq!(eyes.material_key.as_deref(), Some("x-m2-eyes-1"));
+        let teeth = d.iter().find(|x| x.slot == "Teeth").unwrap();
+        assert_eq!(teeth.material_key.as_deref(), Some("x-x2-teeth-1"));
+    }
+
+    #[test]
+    fn female_meshes_use_f2_keys() {
+        let d = base_body_directives('f', None);
+        assert_eq!(d[0].mesh_key.as_deref(), Some("eq-x-f2-chest-0"));
+        assert_eq!(d[4].mesh_key.as_deref(), Some("eq-x-f2-head-0"));
+        // No catalog → no materials matched, but directives still enumerate.
+        assert!(d.iter().all(|x| x.material_key.is_none()));
+    }
 }

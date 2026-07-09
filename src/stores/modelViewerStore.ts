@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ModelViewerStatus,
   ResolvedItemAppearance,
+  ResolvedSlot,
   BrowsableItem,
   ExtractionProgress,
   LoadoutEntry,
@@ -24,11 +25,17 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
   const resolving = ref(false);
 
   // Loadout: which equipment slot is being browsed, and the item chosen per
-  // slot. The slot column fills in as items are chosen; a future "Character"
-  // view will render the whole loadout on the body.
+  // slot. The slot column fills in as items are chosen; the "Character" view
+  // renders the whole loadout on the base body.
   const activeSlot = ref<string>("Chest");
   const loadout = ref<Record<string, LoadoutEntry>>({});
   const viewMode = ref<"item" | "character">("item");
+
+  // Paper-doll data (Character mode): the naked base body for the current sex,
+  // plus the resolved appearance of every equipped slot (so the whole loadout
+  // can be assembled at once, not just the active item).
+  const baseBody = ref<ResolvedSlot[]>([]);
+  const resolvedLoadout = ref<Record<string, ResolvedItemAppearance>>({});
 
   // Extraction
   const extracting = ref(false);
@@ -59,11 +66,13 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
             extractionMessage.value = e.payload.message;
             if (e.payload.done) {
               extracting.value = false;
-              if (e.payload.ok) refreshStatus();
+              if (e.payload.ok) refreshStatus().then(fetchBaseBody);
             }
           },
         );
       }
+      // Once the cache is ready, load the paper-doll base body for Character mode.
+      await fetchBaseBody();
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -87,6 +96,27 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
       error.value = String(e);
       extracting.value = false;
     }
+  }
+
+  /** Fetch the naked base body (mesh + skin per region) for the current sex. */
+  async function fetchBaseBody() {
+    if (!cacheReady.value) return;
+    try {
+      baseBody.value = await invoke<ResolvedSlot[]>("resolve_base_body", {
+        sex: sex.value,
+      });
+    } catch (e) {
+      error.value = String(e);
+      baseBody.value = [];
+    }
+  }
+
+  /** Resolve a single item reference to its full appearance (no side effects). */
+  async function resolveRef(reference: string): Promise<ResolvedItemAppearance | null> {
+    return await invoke<ResolvedItemAppearance | null>("resolve_item_appearance", {
+      reference,
+      sex: sex.value,
+    });
   }
 
   async function loadItems(slot?: string) {
@@ -123,17 +153,23 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
 
   /** Choose an item for the active slot (records it in the loadout + views it). */
   async function chooseItem(item: BrowsableItem) {
-    loadout.value[activeSlot.value] = {
+    const slot = activeSlot.value;
+    loadout.value[slot] = {
       ref: String(item.id),
       name: item.name,
       icon_id: item.icon_id,
     };
     selectedRef.value = String(item.id);
     await resolveCurrent();
+    // Cache the resolved appearance so Character mode can assemble the whole
+    // loadout without re-resolving each slot on every rebuild.
+    if (resolved.value) resolvedLoadout.value[slot] = resolved.value;
+    else delete resolvedLoadout.value[slot];
   }
 
   function clearSlot(slot: string) {
     delete loadout.value[slot];
+    delete resolvedLoadout.value[slot];
     if (activeSlot.value === slot) {
       selectedRef.value = null;
       resolved.value = null;
@@ -147,6 +183,14 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
   async function setSex(next: "m" | "f") {
     if (sex.value === next) return;
     sex.value = next;
+    // Every mesh key is sex-specific: re-resolve the base body and the whole
+    // loadout (and the active item) so the paper doll rebuilds for the new sex.
+    await fetchBaseBody();
+    for (const [slot, entry] of Object.entries(loadout.value)) {
+      const r = await resolveRef(entry.ref);
+      if (r) resolvedLoadout.value[slot] = r;
+      else delete resolvedLoadout.value[slot];
+    }
     if (selectedRef.value) await resolveCurrent();
   }
 
@@ -154,10 +198,7 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
     if (!selectedRef.value) return;
     resolving.value = true;
     try {
-      resolved.value = await invoke<ResolvedItemAppearance | null>(
-        "resolve_item_appearance",
-        { reference: selectedRef.value, sex: sex.value },
-      );
+      resolved.value = await resolveRef(selectedRef.value);
     } catch (e) {
       error.value = String(e);
       resolved.value = null;
@@ -180,6 +221,8 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
     activeSlot,
     loadout,
     viewMode,
+    baseBody,
+    resolvedLoadout,
     extracting,
     extractionMessage,
     cacheReady,
@@ -188,6 +231,7 @@ export const useModelViewerStore = defineStore("modelViewer", () => {
     init,
     refreshStatus,
     runExtraction,
+    fetchBaseBody,
     loadItems,
     selectItem,
     selectSlot,

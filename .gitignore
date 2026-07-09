@@ -36,3 +36,9 @@ CLAUDE.md
 .flatpak-builder/
 flatpak/generated-cargo-sources.json
 flatpak/generated-node-sources.json
+
+# Model-viewer extractor sidecar (built by CI / build_sidecar.sh)
+/src-tauri/binaries/
+/.pyi-out/
+/.pyi-build/
+/.pyi-tmp/

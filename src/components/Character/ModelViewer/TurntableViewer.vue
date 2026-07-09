@@ -56,14 +56,23 @@ const texLoader = new THREE.TextureLoader();
 let homeTarget = new THREE.Vector3();
 let homeDistance = 3;
 
-const empty = computed(() => !store.resolved?.renderable);
-const emptyMessage = computed(() =>
-  store.resolving
+const empty = computed(() =>
+  store.viewMode === "character"
+    ? store.baseBody.length === 0
+    : !store.resolved?.renderable,
+);
+const emptyMessage = computed(() => {
+  if (store.viewMode === "character") {
+    return store.baseBody.length === 0
+      ? "Base body not available — re-extract models"
+      : "";
+  }
+  return store.resolving
     ? "Loading model…"
     : store.resolved && !store.resolved.renderable
       ? "No 3D model available for this item"
-      : "Select an item to preview",
-);
+      : "Select an item to preview";
+});
 
 function initThree() {
   const el = container.value!;
@@ -188,9 +197,19 @@ function orientProp(mesh: THREE.Mesh) {
   mesh.quaternion.setFromRotationMatrix(rInv.invert());
 }
 
-async function buildSlot(slot: ResolvedSlot) {
+/**
+ * Load one resolved slot's geometry, apply its Gorgon/Character dye material,
+ * and add it to the model group. Body meshes carry their world offset in the
+ * vertices (bind-pose character space) so multiple pieces auto-assemble into a
+ * standing figure; weapons are oriented by bounding box instead. `dyeKey` names
+ * the material in `dyeMaterials` for live recoloring (defaults to the slot).
+ */
+async function addMesh(slot: ResolvedSlot, seq: number, dyeKey = slot.slot): Promise<void> {
   if (!slot.mesh_file) return;
   const gltf = await gltfLoader.loadAsync(store.assetUrl(slot.mesh_file));
+  // A newer rebuild may have started (and cleared the scene) while this mesh
+  // was loading — if so, drop it instead of appending into the fresh scene.
+  if (seq !== buildSeq) return;
   let found: THREE.Mesh | null = null;
   gltf.scene.traverse((o) => {
     if ((o as THREE.Mesh).isMesh && !found) found = o as THREE.Mesh;
@@ -222,25 +241,78 @@ async function buildSlot(slot: ResolvedSlot) {
     dyeInitFor(slot),
   );
   mesh.material = dm.material;
-  dyeMaterials.set(slot.slot, dm);
+  dyeMaterials.set(dyeKey, dm);
   modelGroup.add(mesh);
+}
+
+// Base-body regions covered (replaced) by equipped armor in the same slot —
+// hidden so the naked part doesn't poke through the gear that supersedes it.
+// Head/Eyes/Teeth (the face) are always shown.
+const HIDE_BASE_WHEN_EQUIPPED = new Set(["Chest", "Legs", "Hands", "Feet"]);
+
+// Monotonic build token: a rebuild that started before a newer one aborts its
+// remaining appends so overlapping async loads never double-populate the scene.
+let buildSeq = 0;
+
+async function buildItem(seq: number): Promise<void> {
+  const res = store.resolved;
+  if (!res || !res.renderable) return;
+  for (const slot of res.slots) {
+    if (!slot.mesh_file) continue;
+    try {
+      await addMesh(slot, seq);
+    } catch (e) {
+      console.warn(`Failed to load slot ${slot.slot}:`, e);
+    }
+    if (seq !== buildSeq) return;
+  }
+}
+
+async function buildCharacter(seq: number): Promise<void> {
+  // Which equipment slots have a renderable item on the doll right now.
+  const equipped = store.resolvedLoadout;
+  const covered = new Set(
+    Object.entries(equipped)
+      .filter(([, a]) => a.renderable)
+      .map(([slot]) => slot),
+  );
+
+  // Naked base body first (skip a region that armor fully replaces).
+  for (const part of store.baseBody) {
+    if (HIDE_BASE_WHEN_EQUIPPED.has(part.slot) && covered.has(part.slot)) continue;
+    try {
+      await addMesh(part, seq, `base:${part.slot}`);
+    } catch (e) {
+      console.warn(`Failed to load base part ${part.slot}:`, e);
+    }
+    if (seq !== buildSeq) return;
+  }
+
+  // Equipped gear layered on top. Weapons are skipped in the paper doll for now
+  // (they need hand placement — a follow-up); worn armor/appearance renders.
+  // Keyed by directive slot (same as item mode) so DyeControls, which emits the
+  // active item's directive slot, recolors the matching piece on the body.
+  for (const [equipSlot, appr] of Object.entries(equipped)) {
+    if (!appr.renderable) continue;
+    for (const rs of appr.slots) {
+      if (!rs.mesh_file || rs.is_weapon) continue;
+      try {
+        await addMesh(rs, seq);
+      } catch (e) {
+        console.warn(`Failed to load ${equipSlot}/${rs.slot}:`, e);
+      }
+      if (seq !== buildSeq) return;
+    }
+  }
 }
 
 async function rebuild() {
   if (!scene) return;
+  const seq = ++buildSeq;
   clearModel();
-  const res = store.resolved;
-  if (!res || !res.renderable) return;
-
-  for (const slot of res.slots) {
-    if (slot.mesh_file) {
-      try {
-        await buildSlot(slot);
-      } catch (e) {
-        console.warn(`Failed to load slot ${slot.slot}:`, e);
-      }
-    }
-  }
+  if (store.viewMode === "character") await buildCharacter(seq);
+  else await buildItem(seq);
+  if (seq !== buildSeq) return; // superseded — a newer rebuild owns the scene
   frameCamera();
 }
 
@@ -279,9 +351,25 @@ function setDye(slot: string, channel: number, hex: string) {
 
 defineExpose({ setDye });
 
+// Rebuild when the active item changes (item mode), the mode toggles, or the
+// paper-doll inputs change (base body / equipped loadout, incl. dye-less
+// structural edits). Dye recolors go through setDye and don't rebuild.
 watch(
   () => store.resolved,
+  () => {
+    if (store.viewMode === "item") void rebuild();
+  },
+);
+watch(
+  () => store.viewMode,
   () => void rebuild(),
+);
+watch(
+  [() => store.baseBody, () => store.resolvedLoadout],
+  () => {
+    if (store.viewMode === "character") void rebuild();
+  },
+  { deep: true },
 );
 
 onMounted(initThree);

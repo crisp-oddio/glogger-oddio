@@ -160,19 +160,9 @@
           </div>
 
           <div class="flex-1 min-h-0 relative">
-            <TurntableViewer
-              v-show="store.viewMode === 'item'"
-              ref="turntable"
-              class="absolute inset-0" />
-            <div
-              v-show="store.viewMode === 'character'"
-              class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">
-              <div class="text-sm text-text-secondary">Paper doll — coming soon</div>
-              <p class="text-xs text-text-dim max-w-xs">
-                This will render your character wearing the whole loadout you build
-                slot by slot.
-              </p>
-            </div>
+            <!-- One viewer, both modes: Item = single-piece turntable,
+                 Character = the full assembled paper doll. -->
+            <TurntableViewer ref="turntable" class="absolute inset-0" />
           </div>
         </div>
       </div>
