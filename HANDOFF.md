@@ -2,8 +2,10 @@
 
 **Date:** 2026-07-08 (Session 31 — 3D Model Viewer: extract & render real PG item models w/ live dye, drop sources, slot loadout UI)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `dev` — committed on top of `8f34810`, pushed to `origin/dev`. NOTE: `dev` is *behind* `origin/main` by the v0.11.28/29 release bumps; this work reaches `main` via the usual **dev → PR → main** flow (like PR #75), not a direct push.
-**Status:** ✅ `vue-tsc --noEmit` clean; `cargo build --lib` clean; `cargo test --lib appearance` 15/15. Verified live in `npm run tauri dev` (oddio@Arisetsu): armor, weapons, and **helmets** render with live 1/2/3-channel dye; drop-sources panel populates. `Cargo.toml` CRLF noise left uncommitted as usual.
+**Branch:** `dev` — two commits on top of `8f34810`, both pushed to `origin/dev`: `89c207f` (the feature) + `ce5a7b8` (release sidecar packaging). NOTE: `dev` is *behind* `origin/main` by the v0.11.28/29 release bumps; this work reaches `main` via the usual **dev → PR → main** flow (like PR #75), not a direct push — **PR not yet opened**, and merging will hit a small version conflict (dev's package.json/Cargo.toml at 0.11.20 vs main's 0.11.29).
+**Status:** ✅ `vue-tsc --noEmit` clean; `cargo build --lib` clean; `cargo test --lib appearance` 15/15. Verified live in `npm run tauri dev` (oddio@Arisetsu): armor, weapons, and **helmets** render with live 1/2/3-channel dye; drop-sources panel populates. Windows sidecar freeze verified locally (43MB exe extracts + decodes textures); **mac/linux freeze unverified until the first release run**.
+
+**Next session = Phase 2 (paper doll).** Start by reading auto-memory `project_model_viewer.md` + the "Phase 2" section below. The static-doll simplification (no skeleton needed) is already spiked and recorded.
 
 ## TL;DR — Session 31
 
