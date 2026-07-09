@@ -1,10 +1,7 @@
-## What's Changed since v0.11.27
+## What's Changed since v0.11.29
 
 ### Features
-- feat(build-planner): add "Import Equipped" gear loadout picker (`8f34810`)
-
-### Fixes
-- fix(build-planner): apply skill-wide "<Skill> Base Damage +N%" prose mods (`42813aa`)
+- feat(model-viewer): 3D item model viewer with live dye + drop sources (`89c207f`)
 
 ---
-*6 commits since v0.11.27*
+*2 commits since v0.11.29*
