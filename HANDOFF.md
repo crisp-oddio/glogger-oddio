@@ -1,5 +1,27 @@
 # glogger — Session Handoff
 
+**Date:** 2026-07-08 (Session 32 — hotfix: Flatpak GNOME 47 runtime EOL)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `dev` at `9db9bb6` (pushed). Same fix cherry-picked to `hotfix/flatpak-gnome-50` (`78328ef`, off `origin/main`) → **PR #81 open, not yet merged** — this is the release path; dev's model-viewer PR is separate and unaffected (identical commit on both branches, no conflict).
+**Status:** ✅ Fix committed + pushed on both branches; **CI-unverified** — the GNOME 50 build is only provable by the Flatpak workflow on the next release run.
+
+## TL;DR — Session 32
+
+A user reported the v0.11.29 Flatpak warning `runtime org.gnome.Platform branch 47 is end-of-life` (EOL'd 2025-10-15; GNOME **48** also died 2026-03-24 — we were two bumps behind; EOL runtimes can even fail to install for new users). Bumped to **GNOME 50** (current, supported ~March 2027; 49 EOLs ~Sept 2026):
+
+- [flatpak/io.github.crisp_oddio.glogger.yml](flatpak/io.github.crisp_oddio.glogger.yml) — `runtime-version: '50'`.
+- [.github/workflows/flatpak.yml](.github/workflows/flatpak.yml) — builder image → `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50`; the old `bilelmoussaoui/…` registry path is dead (no new runtime tags) — the rename was mandatory.
+- [docs/flatpak-build.md](docs/flatpak-build.md) — local-build runtime `//50`, SDK extensions `//25.08` (freedesktop base under GNOME 49/50), + note on the yearly EOL cadence: next bump must touch all three files together. Manifest `sdk-extensions` are unversioned — flatpak-builder resolves the matching branch automatically.
+
+### Gotchas / open ends
+- **v0.11.29 was NOT actually removed from GitHub** — release still exists, marked *Latest*, still serving the GNOME-47 flatpak; tag still on origin. (**v0.11.28** is the one that's missing.) Deliberately left untouched. To remove: `gh release delete v0.11.29 --repo crisp-oddio/glogger-oddio` + `git push origin :refs/tags/v0.11.29`.
+- **Re-running the Flatpak workflow against v0.11.29 cannot fix it** — the workflow checks out the *tag*, which contains the old manifest. The fix only ships via a new tag: **merge PR #81 → trigger Release workflow (patch → v0.11.30)**.
+- If GNOME 50's webkitgtk misbehaves in CI, the fallback is `runtime-version: '49'` + the `gnome-49` image.
+
+**Next session:** merge #81 + release aside, the plan is still **Phase 2 (paper doll)** — see Session 31 below + auto-memory `project_model_viewer.md`.
+
+---
+
 **Date:** 2026-07-08 (Session 31 — 3D Model Viewer: extract & render real PG item models w/ live dye, drop sources, slot loadout UI)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` — two commits on top of `8f34810`, both pushed to `origin/dev`: `89c207f` (the feature) + `ce5a7b8` (release sidecar packaging). NOTE: `dev` is *behind* `origin/main` by the v0.11.28/29 release bumps; this work reaches `main` via the usual **dev → PR → main** flow (like PR #75), not a direct push — **PR not yet opened**, and merging will hit a small version conflict (dev's package.json/Cargo.toml at 0.11.20 vs main's 0.11.29).
