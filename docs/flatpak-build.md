@@ -11,7 +11,10 @@ CI builds and attaches the bundle to releases via
 
 The app is built from source inside the Flatpak sandbox:
 
-- **Runtime / SDK:** `org.gnome.Platform` / `org.gnome.Sdk` `47`
+- **Runtime / SDK:** `org.gnome.Platform` / `org.gnome.Sdk` `50`
+  (GNOME runtimes EOL ~a year after release — 47 died 2025-10-15, 48 died
+  2026-03-24; when the current one EOLs, bump the manifest, the CI container
+  image in `flatpak.yml`, and the SDK-extension branches below together)
 - **SDK extensions:** `rust-stable`, `node22`
 - **Frontend:** Vue built with `npm run build` → `dist/`
 - **Backend:** Tauri/Rust binary built with `cargo build --release`
@@ -49,9 +52,9 @@ Add Flathub and install the runtime + SDKs:
 ```bash
 flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install --user -y flathub \
-  org.gnome.Platform//47 org.gnome.Sdk//47 \
-  org.freedesktop.Sdk.Extension.rust-stable//24.08 \
-  org.freedesktop.Sdk.Extension.node22//24.08
+  org.gnome.Platform//50 org.gnome.Sdk//50 \
+  org.freedesktop.Sdk.Extension.rust-stable//25.08 \
+  org.freedesktop.Sdk.Extension.node22//25.08
 ```
 
 Generate the offline caches and build:
