@@ -1,83 +1,96 @@
 <template>
   <div class="flex flex-col gap-3 h-[calc(100vh-200px)]">
-    <!-- Top bar: skill selector + level info + XP buff -->
-    <div class="flex items-end gap-4 shrink-0">
-      <!-- Skill selector -->
-      <div class="flex flex-col gap-1">
-        <label class="text-text-dim text-xs">Skill</label>
-        <select v-model="state.selectedSkill" class="input text-xs w-48" @change="onSkillChange">
-          <option value="">Select a skill...</option>
-          <option v-for="skill in craftingSkills" :key="skill" :value="skill">
-            {{ skill }}
-          </option>
-        </select>
+    <!-- Top bar: mirrors the content columns below — the skill/level/XP controls
+         span the recipe-list panel's width, and the plan header lines up with the
+         center plan box (spacer matches the resize handle). -->
+    <div class="flex items-end shrink-0">
+      <!-- Left column: same width as the recipe panel below -->
+      <div
+        class="flex items-end gap-4 flex-wrap shrink-0 pr-1"
+        :style="{ width: `${recipePanelWidth}px` }">
+        <!-- Skill selector -->
+        <div class="flex flex-col gap-1">
+          <label class="text-text-dim text-xs">Skill</label>
+          <select v-model="state.selectedSkill" class="input text-xs w-48" @change="onSkillChange">
+            <option value="">Select a skill...</option>
+            <option v-for="skill in craftingSkills" :key="skill" :value="skill">
+              {{ skill }}
+            </option>
+          </select>
+        </div>
+
+        <template v-if="state.selectedSkill">
+          <!-- Current level (editable, shows total level) -->
+          <div class="flex flex-col gap-1">
+            <label class="text-text-dim text-xs">Level</label>
+            <div class="flex items-center gap-1.5">
+              <input
+                v-model.number="state.currentLevel"
+                type="number"
+                min="0"
+                class="input w-16 text-center text-xs" />
+              <button
+                v-if="state.snapshotLevel !== null && state.snapshotLevel !== state.currentLevel"
+                class="text-text-muted text-[0.6rem] cursor-pointer bg-transparent border-none hover:text-accent-gold underline"
+                @click="state.currentLevel = state.snapshotLevel!">
+                reset ({{ state.snapshotLevel }})
+              </button>
+            </div>
+          </div>
+
+          <!-- Starting XP (XP already earned toward current level) -->
+          <div class="flex flex-col gap-1">
+            <label class="text-text-dim text-xs">Starting XP</label>
+            <div class="flex items-center gap-1.5">
+              <input
+                v-model.number="state.startingXp"
+                type="number"
+                min="0"
+                :max="state.xpTable[baseLevel] ?? 99999"
+                class="input w-20 text-center text-xs"
+                :disabled="state.planLevels.length > 0"
+                :title="state.planLevels.length > 0 ? 'Clear your plan to change starting XP' : 'XP already earned toward current level'" />
+              <button
+                v-if="gameStateXp !== null && state.startingXp !== gameStateXp && state.planLevels.length === 0"
+                class="text-text-muted text-[0.6rem] cursor-pointer bg-transparent border-none hover:text-accent-gold underline whitespace-nowrap"
+                @click="state.startingXp = gameStateXp!">
+                use current ({{ gameStateXp!.toLocaleString() }})
+              </button>
+            </div>
+          </div>
+
+          <!-- XP buff -->
+          <div class="flex flex-col gap-1">
+            <label class="text-text-dim text-xs">XP Buff</label>
+            <div class="flex items-center gap-1">
+              <input
+                v-model.number="state.xpBuffPercent"
+                type="number"
+                min="0"
+                max="500"
+                step="1"
+                class="input w-16 text-center text-xs"
+                placeholder="0" />
+              <span class="text-text-muted text-[0.65rem]">%</span>
+              <span class="text-accent-gold text-[0.65rem] font-semibold ml-1">({{ effectiveMultiplier }}×)</span>
+            </div>
+          </div>
+        </template>
       </div>
 
-      <template v-if="state.selectedSkill">
-        <!-- Current level (editable, shows total level) -->
-        <div class="flex flex-col gap-1">
-          <label class="text-text-dim text-xs">Level</label>
-          <div class="flex items-center gap-1.5">
-            <input
-              v-model.number="state.currentLevel"
-              type="number"
-              min="0"
-              class="input w-16 text-center text-xs" />
-            <button
-              v-if="state.snapshotLevel !== null && state.snapshotLevel !== state.currentLevel"
-              class="text-text-muted text-[0.6rem] cursor-pointer bg-transparent border-none hover:text-accent-gold underline"
-              @click="state.currentLevel = state.snapshotLevel!">
-              reset ({{ state.snapshotLevel }})
-            </button>
-          </div>
-        </div>
+      <!-- Spacer matching the resize handle below, so the plan header aligns with
+           the center plan box -->
+      <div class="w-1.5 mx-1 shrink-0" aria-hidden="true" />
 
-        <!-- Starting XP (XP already earned toward current level) -->
-        <div class="flex flex-col gap-1">
-          <label class="text-text-dim text-xs">Starting XP</label>
-          <div class="flex items-center gap-1.5">
-            <input
-              v-model.number="state.startingXp"
-              type="number"
-              min="0"
-              :max="state.xpTable[baseLevel] ?? 99999"
-              class="input w-20 text-center text-xs"
-              :disabled="state.planLevels.length > 0"
-              :title="state.planLevels.length > 0 ? 'Clear your plan to change starting XP' : 'XP already earned toward current level'" />
-            <button
-              v-if="gameStateXp !== null && state.startingXp !== gameStateXp && state.planLevels.length === 0"
-              class="text-text-muted text-[0.6rem] cursor-pointer bg-transparent border-none hover:text-accent-gold underline whitespace-nowrap"
-              @click="state.startingXp = gameStateXp!">
-              use current ({{ gameStateXp!.toLocaleString() }})
-            </button>
-          </div>
-        </div>
-
-        <!-- XP buff -->
-        <div class="flex flex-col gap-1">
-          <label class="text-text-dim text-xs">XP Buff</label>
-          <div class="flex items-center gap-1">
-            <input
-              v-model.number="state.xpBuffPercent"
-              type="number"
-              min="0"
-              max="500"
-              step="1"
-              class="input w-16 text-center text-xs"
-              placeholder="0" />
-            <span class="text-text-muted text-[0.65rem]">%</span>
-            <span class="text-accent-gold text-[0.65rem] font-semibold ml-1">({{ effectiveMultiplier }}×)</span>
-          </div>
-        </div>
-
-        <!-- Current plan level info -->
-        <div v-if="state.xpTable.length > 0" class="flex flex-col gap-0.5 ml-2">
-          <span class="text-text-dim text-xs">Planning: Lv {{ planningLevel }} → {{ planningLevel + 1 }}</span>
-          <span class="text-text-primary text-xs font-semibold">
-            {{ currentLevelXpAccumulated.toLocaleString() }} / {{ currentLevelXpNeeded.toLocaleString() }} XP
-          </span>
-        </div>
-      </template>
+      <!-- Plan header: lines up with the center plan box -->
+      <div
+        v-if="state.selectedSkill && state.xpTable.length > 0"
+        class="flex-1 flex flex-col gap-0.5">
+        <span class="text-text-dim text-xs">Planning: Lv {{ planningLevel }} → {{ planningLevel + 1 }}</span>
+        <span class="text-text-primary text-xs font-semibold">
+          {{ currentLevelXpAccumulated.toLocaleString() }} / {{ currentLevelXpNeeded.toLocaleString() }} XP
+        </span>
+      </div>
     </div>
 
     <!-- Main content -->
@@ -388,8 +401,10 @@ const materialsLoading = ref(false);
 // Shared quantity input for "+N" button
 const addQuantity = ref<number>(1);
 
-// Recipe panel resize
-const recipePanelWidth = ref(384); // 24rem default (w-96)
+// Recipe panel resize. Default sized so the filter toolbar (Hide unknown …
+// Min lvl) fits on one line without the checkbox labels wrapping or the Min-lvl
+// input spilling past the panel's right edge.
+const recipePanelWidth = ref(600);
 
 function onResizeStart(e: MouseEvent) {
   const startX = e.clientX;

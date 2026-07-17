@@ -1,66 +1,74 @@
 <template>
   <div class="bg-surface-base border border-surface-elevated rounded text-xs">
-    <!-- Header row (always visible) -->
+    <!-- Header (always visible): name on its own line, controls beneath -->
     <div
-      class="flex items-center gap-3 px-3 py-2 cursor-pointer select-none hover:bg-surface-elevated/30"
+      class="px-3 py-2 cursor-pointer select-none hover:bg-surface-elevated/30"
       @click="expanded = !expanded">
-      <span class="text-text-secondary w-3 text-center text-xs">
-        {{ expanded ? '&#9662;' : '&#9656;' }}
-      </span>
-      <RecipeInline :reference="entry.recipe_name" />
-
-      <!-- Quantity / target display -->
-      <template v-if="isTargetMode">
-        <span class="text-accent-gold font-mono text-[0.65rem]" title="Stock target mode">
-          target {{ entry.target_stock }}
+      <div class="flex items-start gap-2">
+        <span class="text-text-secondary w-3 text-center text-xs shrink-0">
+          {{ expanded ? '&#9662;' : '&#9656;' }}
         </span>
-        <span v-if="stockTarget" class="text-text-muted text-[0.65rem]">
-          <template v-if="stockTarget.effectiveQty <= 0">
-            <span class="text-green-400">met</span>
-          </template>
-          <template v-else>
-            have {{ stockTarget.currentStock }}, craft {{ stockTarget.effectiveQty }}
-          </template>
-        </span>
-      </template>
-      <template v-else>
-        <span class="text-text-primary font-mono">&times;{{ entry.quantity }}</span>
-      </template>
+        <div class="flex-1 min-w-0">
+          <RecipeInline :reference="entry.recipe_name" />
+        </div>
+      </div>
 
-      <span v-if="estimatedTotalCost" class="text-text-muted text-[0.65rem]">~{{ estimatedTotalCost.toLocaleString() }}g</span>
+      <div class="flex items-start gap-3 pl-5 mt-1">
+        <!-- Quantity / target display -->
+        <template v-if="isTargetMode">
+          <span class="text-accent-gold font-mono text-[0.65rem] py-0.5" title="Stock target mode">
+            target {{ entry.target_stock }}
+          </span>
+          <span v-if="stockTarget" class="text-text-muted text-[0.65rem] py-0.5">
+            <template v-if="stockTarget.effectiveQty <= 0">
+              <span class="text-green-400">met</span>
+            </template>
+            <template v-else>
+              have {{ stockTarget.currentStock }}, craft {{ stockTarget.effectiveQty }}
+            </template>
+          </span>
+        </template>
+        <template v-else>
+          <span class="text-text-primary font-mono py-0.5">&times;{{ entry.quantity }}</span>
+        </template>
 
-      <div class="ml-auto flex items-center gap-2" @click.stop>
-        <!-- Mode toggle -->
-        <button
-          class="text-[0.6rem] cursor-pointer bg-transparent border border-border-light rounded px-1.5 py-0.5 hover:border-border-default"
-          :class="isTargetMode ? 'text-accent-gold border-accent-gold/30' : 'text-text-muted'"
-          :title="isTargetMode ? 'Switch to manual quantity' : 'Switch to stock target mode'"
-          @click="toggleTargetMode">
-          {{ isTargetMode ? 'target' : 'manual' }}
-        </button>
+        <div class="ml-auto flex flex-col items-end gap-0.5" @click.stop>
+          <div class="flex items-center gap-2">
+            <!-- Mode toggle -->
+            <button
+              class="text-[0.6rem] cursor-pointer bg-transparent border border-border-light rounded px-1.5 py-0.5 hover:border-border-default"
+              :class="isTargetMode ? 'text-accent-gold border-accent-gold/30' : 'text-text-muted'"
+              :title="isTargetMode ? 'Switch to manual quantity' : 'Switch to stock target mode'"
+              @click="toggleTargetMode">
+              {{ isTargetMode ? 'target' : 'manual' }}
+            </button>
 
-        <!-- Quantity/target input -->
-        <input
-          v-if="isTargetMode"
-          :value="entry.target_stock"
-          type="number"
-          min="0"
-          class="input w-14 text-xs text-center"
-          title="Target stock count"
-          @change="onTargetStockChange" />
-        <input
-          v-else
-          :value="entry.quantity"
-          type="number"
-          min="1"
-          class="input w-14 text-xs text-center"
-          @change="(e: Event) => $emit('update-qty', entry.id, (e.target as HTMLInputElement).valueAsNumber)" />
+            <!-- Quantity/target input -->
+            <input
+              v-if="isTargetMode"
+              :value="entry.target_stock"
+              type="number"
+              min="0"
+              class="input w-14 text-xs text-center"
+              title="Target stock count"
+              @change="onTargetStockChange" />
+            <input
+              v-else
+              :value="entry.quantity"
+              type="number"
+              min="1"
+              class="input w-14 text-xs text-center"
+              @change="(e: Event) => $emit('update-qty', entry.id, (e.target as HTMLInputElement).valueAsNumber)" />
 
-        <button
-          class="text-accent-red/60 text-xs cursor-pointer bg-transparent border-none hover:text-accent-red"
-          @click="$emit('remove', entry.id)">
-          &#10005;
-        </button>
+            <button
+              class="text-accent-red/60 text-xs cursor-pointer bg-transparent border-none hover:text-accent-red"
+              @click="$emit('remove', entry.id)">
+              &#10005;
+            </button>
+          </div>
+
+          <span v-if="estimatedTotalCost" class="text-text-muted text-[0.65rem]" title="Estimated material cost">~{{ estimatedTotalCost.toLocaleString() }}g</span>
+        </div>
       </div>
     </div>
 
