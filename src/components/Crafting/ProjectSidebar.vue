@@ -6,7 +6,14 @@
         @click="showNewProject = true">
         + New
       </button>
+      <button
+        class="text-text-muted text-xs cursor-pointer bg-transparent border border-border-light rounded px-2 py-0.5 hover:text-text-primary hover:border-border-default"
+        title="Import a project from a shared project code"
+        @click="showImport = true">
+        Import
+      </button>
     </div>
+    <span v-if="importError" class="text-[0.65rem] text-red-400">{{ importError }}</span>
 
     <!-- New project inline form -->
     <div v-if="showNewProject" class="flex gap-1">
@@ -85,6 +92,14 @@
         </div>
       </li>
     </ul>
+
+    <ModalDialog
+      :show="showImport"
+      title="Import Project"
+      placeholder="Paste project code here..."
+      confirm-label="Import"
+      @update:show="showImport = $event"
+      @confirm="handleImport" />
   </div>
 </template>
 
@@ -93,10 +108,13 @@ import { ref, reactive, computed, onMounted, nextTick, watch } from "vue";
 import { useCraftingStore } from "../../stores/craftingStore";
 import type { CraftingProjectSummary } from "../../types/crafting";
 import EmptyState from "../Shared/EmptyState.vue";
+import ModalDialog from "../Shared/ModalDialog.vue";
 
 const store = useCraftingStore();
 
 const showNewProject = ref(false);
+const showImport = ref(false);
+const importError = ref("");
 const newProjectName = ref("");
 const newProjectInput = ref<HTMLInputElement | null>(null);
 const sortMode = ref<'recent' | 'az' | 'za'>('recent');
@@ -169,5 +187,16 @@ async function createProject() {
   newProjectName.value = "";
   showNewProject.value = false;
   await store.loadProject(id);
+}
+
+async function handleImport(code: string) {
+  importError.value = "";
+  try {
+    const newId = await store.importProject(code);
+    await store.loadProject(newId);
+  } catch (e) {
+    importError.value = `${e}`;
+    setTimeout(() => { importError.value = ""; }, 5000);
+  }
 }
 </script>

@@ -175,9 +175,9 @@ use db::resuscitate_commands::get_character_resuscitations;
 use db::crafting_commands::{
     add_project_entry, batch_update_entry_expansions, check_material_availability,
     create_crafting_project, delete_crafting_project, duplicate_crafting_project,
-    get_crafting_project, get_crafting_projects, get_work_orders_from_snapshot,
-    remove_project_entry, reorder_project_entries, update_crafting_project,
-    update_project_entry,
+    export_crafting_project, get_crafting_project, get_crafting_projects,
+    get_work_orders_from_snapshot, import_crafting_project, remove_project_entry,
+    reorder_project_entries, update_crafting_project, update_project_entry,
 };
 use db::farming_commands::{
     delete_farming_session, get_farming_sessions, save_farming_session, update_farming_session,
@@ -897,6 +897,8 @@ pub fn run() {
             remove_project_entry,
             reorder_project_entries,
             duplicate_crafting_project,
+            export_crafting_project,
+            import_crafting_project,
             check_material_availability,
             get_work_orders_from_snapshot,
             // CDN - XP tables

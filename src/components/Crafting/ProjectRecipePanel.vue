@@ -13,7 +13,14 @@
             edit
           </button>
         </div>
-        <div class="flex gap-2">
+        <div class="flex items-center gap-2">
+          <span v-if="exportMessage" class="text-xs" :class="exportFailed ? 'text-red-400' : 'text-accent-gold'">{{ exportMessage }}</span>
+          <button
+            class="text-text-muted text-xs cursor-pointer bg-transparent border border-border-light rounded px-2 py-0.5 hover:text-text-primary hover:border-border-default"
+            title="Copy a shareable project code to the clipboard"
+            @click="exportProject">
+            Export
+          </button>
           <button
             class="text-text-muted text-xs cursor-pointer bg-transparent border border-border-light rounded px-2 py-0.5 hover:text-text-primary hover:border-border-default"
             @click="$emit('duplicate')">
@@ -278,6 +285,25 @@ function editProjectName() {
   if (name && name.trim()) {
     store.updateProject(props.activeProject.id, name.trim(), props.activeProject.notes, props.activeProject.group_name);
   }
+}
+
+const exportMessage = ref("");
+const exportFailed = ref(false);
+let exportMessageTimeout: ReturnType<typeof setTimeout> | null = null;
+
+async function exportProject() {
+  if (!props.activeProject) return;
+  try {
+    const code = await store.exportProject(props.activeProject.id);
+    await navigator.clipboard.writeText(code);
+    exportFailed.value = false;
+    exportMessage.value = "Copied to clipboard!";
+  } catch (e) {
+    exportFailed.value = true;
+    exportMessage.value = `Export failed: ${e}`;
+  }
+  if (exportMessageTimeout) clearTimeout(exportMessageTimeout);
+  exportMessageTimeout = setTimeout(() => { exportMessage.value = ""; }, 3000);
 }
 
 function debouncedRecipeSearch() {

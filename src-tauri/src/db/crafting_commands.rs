@@ -1,4 +1,5 @@
 use super::DbPool;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 /// Crafting helper project persistence commands
 use std::collections::HashMap;
@@ -441,6 +442,156 @@ pub fn duplicate_crafting_project(db: State<'_, DbPool>, project_id: i64) -> Res
     Ok(new_id)
 }
 
+// ── Import/Export ───────────────────────────────────────────────────────────
+
+/// Portable project format for sharing between players
+#[derive(Serialize, Deserialize)]
+struct ExportedProject {
+    version: u32,
+    name: String,
+    notes: String,
+    group_name: Option<String>,
+    fee_config: Option<String>,
+    customer_provides: Option<String>,
+    entries: Vec<ExportedProjectEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExportedProjectEntry {
+    recipe_id: i64,
+    recipe_name: String,
+    quantity: i32,
+    sort_order: i32,
+    #[serde(default)]
+    expanded_ingredient_ids: Vec<i64>,
+    #[serde(default)]
+    target_stock: Option<i32>,
+    #[serde(default)]
+    slot_item_ids: Vec<i64>,
+}
+
+#[tauri::command]
+pub fn export_crafting_project(db: State<'_, DbPool>, project_id: i64) -> Result<String, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    export_crafting_project_impl(&conn, project_id)
+}
+
+fn export_crafting_project_impl(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+) -> Result<String, String> {
+    let (name, notes, group_name, fee_config, customer_provides): (String, String, Option<String>, String, String) = conn
+        .query_row(
+            "SELECT name, notes, group_name, fee_config, customer_provides FROM crafting_projects WHERE id = ?1",
+            [project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .map_err(|e| format!("Project not found: {e}"))?;
+
+    let mut stmt = conn
+        .prepare("SELECT recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids FROM crafting_project_entries WHERE project_id = ?1 ORDER BY sort_order")
+        .map_err(|e| format!("Failed to query entries: {e}"))?;
+    let entries: Vec<ExportedProjectEntry> = stmt
+        .query_map([project_id], |row| {
+            let expanded_json: String = row.get(4)?;
+            let slot_json: String = row.get(6)?;
+            Ok(ExportedProjectEntry {
+                recipe_id: row.get(0)?,
+                recipe_name: row.get(1)?,
+                quantity: row.get(2)?,
+                sort_order: row.get(3)?,
+                expanded_ingredient_ids: serde_json::from_str(&expanded_json).unwrap_or_default(),
+                target_stock: row.get(5)?,
+                slot_item_ids: serde_json::from_str(&slot_json).unwrap_or_default(),
+            })
+        })
+        .map_err(|e| format!("Entry query failed: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Entry parse error: {e}"))?;
+
+    let exported = ExportedProject {
+        version: 1,
+        name,
+        notes,
+        group_name,
+        fee_config: Some(fee_config),
+        customer_provides: Some(customer_provides),
+        entries,
+    };
+
+    let json = serde_json::to_string(&exported).map_err(|e| format!("Serialization error: {e}"))?;
+    Ok(BASE64.encode(json.as_bytes()))
+}
+
+#[tauri::command]
+pub fn import_crafting_project(db: State<'_, DbPool>, encoded: String) -> Result<i64, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    import_crafting_project_impl(&conn, &encoded)
+}
+
+fn import_crafting_project_impl(
+    conn: &rusqlite::Connection,
+    encoded: &str,
+) -> Result<i64, String> {
+    let json_bytes = BASE64
+        .decode(encoded.trim())
+        .map_err(|e| format!("Invalid project code: {e}"))?;
+    let json_str = String::from_utf8(json_bytes).map_err(|e| format!("Invalid UTF-8: {e}"))?;
+    let project: ExportedProject =
+        serde_json::from_str(&json_str).map_err(|e| format!("Invalid project data: {e}"))?;
+
+    if project.version != 1 {
+        return Err(format!(
+            "Unsupported project version {} (this app supports version 1)",
+            project.version
+        ));
+    }
+
+    let default_fee = r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
+    conn.execute(
+        "INSERT INTO crafting_projects (name, notes, group_name, fee_config, customer_provides) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            project.name,
+            project.notes,
+            project.group_name,
+            project.fee_config.as_deref().unwrap_or(default_fee),
+            project.customer_provides.as_deref().unwrap_or("{}"),
+        ],
+    )
+    .map_err(|e| format!("Failed to create project: {e}"))?;
+
+    let new_id = conn.last_insert_rowid();
+
+    {
+        let mut stmt = conn
+            .prepare("INSERT INTO crafting_project_entries (project_id, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+            .map_err(|e| format!("Failed to prepare entry insert: {e}"))?;
+        for entry in &project.entries {
+            let expanded = serde_json::to_string(&entry.expanded_ingredient_ids)
+                .unwrap_or_else(|_| "[]".to_string());
+            let slots = serde_json::to_string(&entry.slot_item_ids)
+                .unwrap_or_else(|_| "[]".to_string());
+            stmt.execute(rusqlite::params![
+                new_id,
+                entry.recipe_id,
+                entry.recipe_name,
+                entry.quantity,
+                entry.sort_order,
+                expanded,
+                entry.target_stock,
+                slots,
+            ])
+            .map_err(|e| format!("Failed to insert entry: {e}"))?;
+        }
+    }
+
+    Ok(new_id)
+}
+
 // ── Material availability ───────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -724,4 +875,150 @@ pub fn get_work_orders_from_snapshot(
         completed,
         inventory_item_ids,
     })
+}
+
+#[cfg(test)]
+mod import_export_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Current shape of the crafting project tables (post-migrations).
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE crafting_projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                group_name TEXT DEFAULT NULL,
+                fee_config TEXT NOT NULL DEFAULT '{\"per_craft_fee\":0,\"material_pct\":0,\"material_pct_basis\":\"total\",\"flat_fee\":0}',
+                customer_provides TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE crafting_project_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                recipe_id INTEGER NOT NULL,
+                recipe_name TEXT NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                expanded_ingredient_ids TEXT NOT NULL DEFAULT '[]',
+                target_stock INTEGER DEFAULT NULL,
+                slot_item_ids TEXT NOT NULL DEFAULT '[]',
+                FOREIGN KEY (project_id) REFERENCES crafting_projects(id) ON DELETE CASCADE
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_sample_project(conn: &Connection) -> i64 {
+        conn.execute(
+            "INSERT INTO crafting_projects (name, notes, group_name, fee_config, customer_provides)
+             VALUES ('Brew Batch', 'for the guild', 'Orders', '{\"per_craft_fee\":5,\"material_pct\":10,\"material_pct_basis\":\"total\",\"flat_fee\":0}', '{\"item:123\":4}')",
+            [],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO crafting_project_entries (project_id, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids)
+             VALUES (?1, 7001, 'Orcish Bock', 3, 0, '[55,66]', 12, '[901,902]')",
+            [id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO crafting_project_entries (project_id, recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids)
+             VALUES (?1, 7002, 'Oat Bread', 10, 1, '[]', NULL, '[]')",
+            [id],
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn export_import_round_trips_all_fields() {
+        let conn = setup();
+        let original_id = insert_sample_project(&conn);
+
+        let code = export_crafting_project_impl(&conn, original_id).unwrap();
+        let new_id = import_crafting_project_impl(&conn, &code).unwrap();
+        assert_ne!(new_id, original_id);
+
+        // Re-exporting the imported project must produce an identical payload.
+        let round_tripped = export_crafting_project_impl(&conn, new_id).unwrap();
+        assert_eq!(code, round_tripped);
+
+        // Spot-check the imported rows directly.
+        let (name, notes, group_name, fee_config, customer_provides): (String, String, Option<String>, String, String) = conn
+            .query_row(
+                "SELECT name, notes, group_name, fee_config, customer_provides FROM crafting_projects WHERE id = ?1",
+                [new_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Brew Batch");
+        assert_eq!(notes, "for the guild");
+        assert_eq!(group_name.as_deref(), Some("Orders"));
+        assert!(fee_config.contains("\"per_craft_fee\":5"));
+        assert_eq!(customer_provides, "{\"item:123\":4}");
+
+        let entries: Vec<(i64, String, i32, i32, String, Option<i32>, String)> = conn
+            .prepare("SELECT recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids FROM crafting_project_entries WHERE project_id = ?1 ORDER BY sort_order")
+            .unwrap()
+            .query_map([new_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], (7001, "Orcish Bock".to_string(), 3, 0, "[55,66]".to_string(), Some(12), "[901,902]".to_string()));
+        assert_eq!(entries[1], (7002, "Oat Bread".to_string(), 10, 1, "[]".to_string(), None, "[]".to_string()));
+    }
+
+    #[test]
+    fn import_rejects_garbage_and_future_versions() {
+        let conn = setup();
+
+        assert!(import_crafting_project_impl(&conn, "not base64!!!").is_err());
+        assert!(import_crafting_project_impl(&conn, &BASE64.encode(b"not json")).is_err());
+
+        let future = BASE64.encode(
+            br#"{"version":99,"name":"x","notes":"","group_name":null,"fee_config":null,"customer_provides":null,"entries":[]}"#,
+        );
+        let err = import_crafting_project_impl(&conn, &future).unwrap_err();
+        assert!(err.contains("Unsupported project version 99"), "got: {err}");
+    }
+
+    /// Older/minimal exports without optional fields must still import.
+    #[test]
+    fn import_defaults_missing_optional_fields() {
+        let conn = setup();
+        let minimal = BASE64.encode(
+            br#"{"version":1,"name":"Bare","notes":"","group_name":null,"fee_config":null,"customer_provides":null,"entries":[{"recipe_id":1,"recipe_name":"Pine Board","quantity":2,"sort_order":0}]}"#,
+        );
+        let id = import_crafting_project_impl(&conn, &minimal).unwrap();
+
+        let (fee_config, customer_provides): (String, String) = conn
+            .query_row(
+                "SELECT fee_config, customer_provides FROM crafting_projects WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(fee_config.contains("per_craft_fee"));
+        assert_eq!(customer_provides, "{}");
+
+        let (expanded, target, slots): (String, Option<i32>, String) = conn
+            .query_row(
+                "SELECT expanded_ingredient_ids, target_stock, slot_item_ids FROM crafting_project_entries WHERE project_id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(expanded, "[]");
+        assert_eq!(target, None);
+        assert_eq!(slots, "[]");
+    }
 }
