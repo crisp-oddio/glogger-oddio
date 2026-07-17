@@ -234,6 +234,17 @@ export const useCraftingStore = defineStore("crafting", () => {
     return newId;
   }
 
+  async function exportProject(id: number): Promise<string> {
+    return await invoke<string>("export_crafting_project", { projectId: id });
+  }
+
+  async function importProject(encoded: string): Promise<number> {
+    const newId = await invoke<number>("import_crafting_project", { encoded });
+    await loadProjects();
+    invalidateProjectNeedsIndex();
+    return newId;
+  }
+
   async function addEntry(projectId: number, recipeId: number, recipeName: string, quantity: number, targetStock?: number | null, slotItemIds?: number[]) {
     await invoke("add_project_entry", {
       input: { project_id: projectId, recipe_id: recipeId, recipe_name: recipeName, quantity, target_stock: targetStock ?? null, slot_item_ids: slotItemIds ?? null },
@@ -1663,6 +1674,8 @@ export const useCraftingStore = defineStore("crafting", () => {
     updateProject,
     deleteProject,
     duplicateProject,
+    exportProject,
+    importProject,
     addEntry,
     addComboEntries,
     pinRecipeSlots,
