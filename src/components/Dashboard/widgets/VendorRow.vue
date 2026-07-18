@@ -1,5 +1,8 @@
 <template>
-  <div class="flex flex-col gap-0 px-1.5 py-0.5 text-xs rounded hover:bg-surface-inset">
+  <div
+    class="flex flex-col gap-0 px-1.5 py-0.5 text-xs rounded hover:bg-surface-inset"
+    @contextmenu="onContextMenu"
+  >
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
         <NpcInline :reference="entry.npcKey" class="shrink-0" />
@@ -116,7 +119,16 @@ const emit = defineEmits<{
   saveQuickEdit: [entry: VendorEntry]
   cancelQuickEdit: []
   'update:quickEditValue': [value: number]
+  openContextMenu: [payload: { entry: VendorEntry; x: number; y: number }]
 }>()
+
+// Right-click menu is only meaningful in single-character mode, since edits
+// always target the active character (in aggregate mode a row is a sum).
+function onContextMenu(e: MouseEvent) {
+  if (props.viewMode !== 'character') return
+  e.preventDefault()
+  emit('openContextMenu', { entry: props.entry, x: e.clientX, y: e.clientY })
+}
 
 const goldColorClass = computed(() => {
   const v = props.entry

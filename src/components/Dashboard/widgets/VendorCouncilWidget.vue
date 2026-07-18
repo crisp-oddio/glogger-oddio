@@ -98,6 +98,7 @@
             @save-quick-edit="saveQuickEdit"
             @cancel-quick-edit="quickEditKey = null"
             @update:quick-edit-value="quickEditValue = $event"
+            @open-context-menu="openContextMenu"
           />
         </div>
       </template>
@@ -145,6 +146,7 @@
               @save-quick-edit="saveQuickEdit"
               @cancel-quick-edit="quickEditKey = null"
               @update:quick-edit-value="quickEditValue = $event"
+              @open-context-menu="openContextMenu"
             />
           </div>
         </div>
@@ -216,11 +218,50 @@
         </div>
       </template>
     </template>
+
+    <!-- Right-click context menu (single instance, teleported to escape widget clipping) -->
+    <Teleport to="body">
+      <div
+        v-if="ctxMenu.visible"
+        class="fixed inset-0 z-50"
+        @click="closeContextMenu"
+        @contextmenu.prevent="closeContextMenu"
+      />
+      <div
+        v-if="ctxMenu.visible && ctxMenu.entry"
+        class="fixed z-50 min-w-[150px] rounded border border-border-default bg-surface-elevated shadow-lg py-0.5"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+      >
+        <div class="px-2.5 py-1 text-[10px] text-text-dim truncate border-b border-border-default/60">
+          {{ ctxMenu.entry.npcName }}
+        </div>
+        <button
+          class="w-full text-left px-2.5 py-1 text-xs text-text-primary hover:bg-surface-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="!ctxMenu.entry.goldMax"
+          @click="setToZeroFromMenu"
+        >
+          Set councils to 0
+        </button>
+        <button
+          class="w-full text-left px-2.5 py-1 text-xs text-text-primary hover:bg-surface-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="ctxMenu.entry.goldMax == null"
+          @click="setToCapFromMenu"
+        >
+          Set to full cap
+        </button>
+        <button
+          class="w-full text-left px-2.5 py-1 text-xs text-text-primary hover:bg-surface-hover cursor-pointer"
+          @click="startQuickEditFromMenu"
+        >
+          Set custom&hellip;
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useGameStateStore } from '../../../stores/gameStateStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
@@ -354,6 +395,12 @@ async function setToCap(v: VendorEntry) {
   await saveVendorGold(v.npcKey, v.goldMax, v.goldMax)
 }
 
+async function setToZero(v: VendorEntry) {
+  if (!v.goldMax) return
+  // available=0 with a known cap → backend starts a fresh 168h reset timer.
+  await saveVendorGold(v.npcKey, 0, v.goldMax)
+}
+
 async function saveQuickEdit(v: VendorEntry) {
   const max = v.goldMax ?? quickEditValue.value
   await saveVendorGold(v.npcKey, quickEditValue.value, max)
@@ -372,12 +419,79 @@ async function saveVendorGold(npcKey: string, goldAvailable: number, goldMax: nu
   }
 }
 
+// ── Right-click context menu ────────────────────────────────────
+
+const ctxMenu = ref<{ visible: boolean; x: number; y: number; entry: VendorEntry | null }>({
+  visible: false,
+  x: 0,
+  y: 0,
+  entry: null,
+})
+
+function openContextMenu(payload: { entry: VendorEntry; x: number; y: number }) {
+  // Clamp so the menu never spills off the right/bottom edge.
+  const menuW = 170
+  const menuH = 116
+  ctxMenu.value = {
+    visible: true,
+    x: Math.min(payload.x, window.innerWidth - menuW),
+    y: Math.min(payload.y, window.innerHeight - menuH),
+    entry: payload.entry,
+  }
+  window.addEventListener('keydown', onCtxKeydown)
+  window.addEventListener('scroll', closeContextMenu, true)
+}
+
+function closeContextMenu() {
+  if (!ctxMenu.value.visible) return
+  ctxMenu.value.visible = false
+  ctxMenu.value.entry = null
+  window.removeEventListener('keydown', onCtxKeydown)
+  window.removeEventListener('scroll', closeContextMenu, true)
+}
+
+function onCtxKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeContextMenu()
+}
+
+async function setToZeroFromMenu() {
+  const entry = ctxMenu.value.entry
+  closeContextMenu()
+  if (entry) await setToZero(entry)
+}
+
+async function setToCapFromMenu() {
+  const entry = ctxMenu.value.entry
+  closeContextMenu()
+  if (entry) await setToCap(entry)
+}
+
+function startQuickEditFromMenu() {
+  const entry = ctxMenu.value.entry
+  closeContextMenu()
+  if (entry) startQuickEdit(entry)
+}
+
+onBeforeUnmount(closeContextMenu)
+
 // ── Reset detection ─────────────────────────────────────────────
+
+/**
+ * Parse a stored vendor timer_start as UTC. The DB holds two formats:
+ * the live tailer writes "YYYY-MM-DD HH:MM:SS" (space-separated, no zone),
+ * while set_manual_vendor_gold writes ISO "YYYY-MM-DDTHH:MM:SSZ" (already
+ * zoned). Normalize both to valid ISO-UTC so neither double-appends 'Z'.
+ */
+function parseVendorTimestamp(timerStart: string): Date {
+  let s = timerStart.trim().replace(' ', 'T')
+  if (!/[zZ]$/.test(s)) s += 'Z'
+  return new Date(s)
+}
 
 /** Check if timer has expired (>168h since timer started), meaning gold has reset to cap. */
 function hasTimerExpired(timerStart: string | null): boolean {
   if (!timerStart) return false
-  const start = new Date(timerStart + 'Z')
+  const start = parseVendorTimestamp(timerStart)
   if (isNaN(start.getTime())) return false
   const resetAt = start.getTime() + VENDOR_RESET_HOURS * 60 * 60 * 1000
   return Date.now() >= resetAt
@@ -414,7 +528,8 @@ function resolvePlayerTier(npcKey: string): string {
 
 function computeTimerLabel(timerStart: string | null): string | null {
   if (!timerStart) return null
-  const start = new Date(timerStart + 'Z')
+  const start = parseVendorTimestamp(timerStart)
+  if (isNaN(start.getTime())) return null
   const resetAt = new Date(start.getTime() + VENDOR_RESET_HOURS * 60 * 60 * 1000)
   const now = new Date()
   const remaining = resetAt.getTime() - now.getTime()
