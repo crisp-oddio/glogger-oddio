@@ -1,7 +1,11 @@
-## What's Changed since v0.12.1
+## What's Changed since v0.12.2
+
+### Features
+- feat(build-planner): add Racial jewelry equipment slot (`958d4c7`)
+- feat(build-planner): fold Fairy Magic abilities and mods into Mentalism (`684fcd5`)
 
 ### Fixes
-- fix(dashboard): categorize vendors that buy equipment/armor and other gear (`774c806`)
+- fix(ability-tooltip): show cost, cooldown, range, and Special effect text (`11750af`)
 
 ---
-*2 commits since v0.12.1*
+*4 commits since v0.12.2*
