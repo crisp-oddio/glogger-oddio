@@ -2271,6 +2271,7 @@ fn conditional_tail(rest: &str) -> bool {
 /// damage is +45         ("Pixie Flare's damage is +45 and its damage becomes Fire …")
 /// deals +25% damage     ("Aimed Shot deals +25% damage and boosts …")
 /// deal 30 armor damage  (bare value allowed only with an explicit type word)
+/// deals Fire damage (instead of Darkness) and damage is +2   (conversion clause first)
 /// ```
 /// Returns `(value, is_percent)`, or `None` when the clause is absent or conditional/temporal.
 fn parse_named_damage_rest(rest: &str) -> Option<(f64, bool)> {
@@ -2280,6 +2281,14 @@ fn parse_named_damage_rest(rest: &str) -> Option<(f64, bool)> {
         regex::Regex::new(r"^deals? (\+)?(\d+)(%)?(?: ([A-Za-z]+))? [Dd]amage( to (?:[Aa]rmor|[Hh]ealth))?")
             .unwrap()
     });
+    // A leading type-conversion clause ("deals Fire damage (instead of Darkness) and damage is
+    // +2") hides the damage clause from the anchored patterns below — skip past it. The
+    // conversion itself is harvested separately by `harvest_type_rules`.
+    static RE_CONV_LEAD: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"^deals? \w+ damage \(instead of \w+\),? and (?:its )?").unwrap()
+    });
+    let stripped = RE_CONV_LEAD.replace(rest, "");
+    let rest: &str = &stripped;
     if let Some(caps) = RE_DAMAGE.captures(rest) {
         let value: f64 = caps[1].parse().ok()?;
         let pct = caps.get(2).is_some();
@@ -2375,6 +2384,7 @@ fn parse_skill_type_conversion(body: &str) -> Option<(String, String, String)> {
 /// damage is +45 and its damage becomes Fire instead of Electricity   (Pixie Flare)
 /// damage +19. Damage becomes Trauma instead of Crushing              (Infuriating Fist)
 /// becomes a Sonic ability and deals Nature damage instead of Psychic (Embrace of Despair)
+/// deals Fire damage (instead of Darkness) and ignites the target …   (SpiritFox fire mods)
 /// ```
 /// The "X, Y and Z deal direct Fire damage" item form is handled separately by
 /// [`parse_names_deal_direct`] — its name lists use spellings the ability index can't always
@@ -2384,7 +2394,7 @@ fn parse_named_type_conversion(rest: &str) -> Option<String> {
         regex::Regex::new(r"[Dd]amage (?:type )?(?:becomes|is changed to) (\w+)").unwrap()
     });
     static RE_DEALS_INSTEAD: Lazy<regex::Regex> =
-        Lazy::new(|| regex::Regex::new(r"deals? (\w+) damage instead of").unwrap());
+        Lazy::new(|| regex::Regex::new(r"deals? (\w+) damage \(?instead of").unwrap());
     if let Some(caps) = RE_BECOMES.captures(rest) {
         return Some(caps[1].to_string());
     }
@@ -5085,6 +5095,20 @@ mod build_stats_parsing_tests {
         assert_eq!(parse_named_damage_rest("deal 30 armor damage"), Some((30.0, false)));
         // "to Armor" qualifier is part of the hit ("Acid Arrow deals +20 damage to Armor").
         assert_eq!(parse_named_damage_rest("deals +20 damage to Armor"), Some((20.0, false)));
+        // Conversion clause first (SoulBiteFire: "Soul Bite deals Fire damage (instead of
+        // Darkness) and damage is +2") — the damage clause behind it must still parse.
+        assert_eq!(
+            parse_named_damage_rest("deals Fire damage (instead of Darkness) and damage is +2"),
+            Some((2.0, false))
+        );
+        // Same conversion clause followed by a DoT rider (SpiritBoltFireDoT /
+        // DimensionalSnareDoT) has no direct-damage clause — must NOT parse as one.
+        assert_eq!(
+            parse_named_damage_rest(
+                "deals Fire damage (instead of Darkness) and ignites the target, dealing 54 Fire damage over 12 seconds"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -5202,6 +5226,18 @@ mod build_stats_parsing_tests {
         assert_eq!(
             parse_named_type_conversion("becomes a Sonic ability and deals Nature damage instead of Psychic. Sonic Ability Damage +15% while Vampirism skill active"),
             Some("Nature".to_string())
+        );
+        // Parenthesized "deals <Type> damage (instead of <Type>)" (SpiritFox's SoulBiteFire /
+        // SpiritBoltFireDoT / DimensionalSnareDoT).
+        assert_eq!(
+            parse_named_type_conversion("deals Fire damage (instead of Darkness) and damage is +2"),
+            Some("Fire".to_string())
+        );
+        assert_eq!(
+            parse_named_type_conversion(
+                "deals Fire damage (instead of Darkness) and ignites the target, dealing 54 Fire damage over 12 seconds"
+            ),
+            Some("Fire".to_string())
         );
         // Keyword changes are NOT damage-type conversions ("Delerium becomes a 15m Burst attack
         // that deals +30% damage to targets that are not focused on you").
