@@ -97,6 +97,7 @@ import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import type { AbilityInfo, AbilityFamily } from '../../../types/gameData'
+import { expandBuildSkill } from '../../../types/buildPlanner'
 import AbilityInline from '../../Shared/Ability/AbilityInline.vue'
 import AbilityFamilyOption from './AbilityFamilyOption.vue'
 
@@ -223,7 +224,14 @@ async function loadAbilities() {
         : null
 
     if (skill) {
-      skillFamilyEntries.value = await resolveFamilies(skill, false)
+      // Fold child skills (e.g. Fairy Magic under Mentalism) into the bar's skill.
+      const results: FamilyEntry[] = []
+      for (const s of expandBuildSkill(skill)) {
+        try {
+          results.push(...await resolveFamilies(s, false))
+        } catch { /* skill might not exist */ }
+      }
+      skillFamilyEntries.value = results
     } else {
       skillFamilyEntries.value = []
     }

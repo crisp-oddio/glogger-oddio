@@ -340,6 +340,28 @@ export const ABILITY_BARS = [
 /** Maximum number of sidebar slots a user can configure */
 export const MAX_SIDEBAR_SLOTS = 12
 
+/**
+ * Combat sub-skills whose abilities and gear mods fold into a parent combat
+ * skill in the build planner. Fairy Magic is a Mentalism sub-skill flagged
+ * `AuxCombat`/`Combat: false` in the CDN, so it never appears in the standalone
+ * combat-skill list — but it has its own abilities and mods that Mentalism
+ * builds use. Surfacing them under the parent's selection keeps them reachable
+ * without adding a skill the game doesn't let you pick as a bar skill.
+ *
+ * Keys and values are display names (matching preset skill_primary/secondary
+ * and the resolved `skill` on abilities and mods).
+ */
+export const CHILD_COMBAT_SKILLS: Record<string, string[]> = {
+  Mentalism: ['Fairy Magic'],
+}
+
+/** Expand a build-planner combat skill into itself plus any folded child skills. */
+export function expandBuildSkill(skill: string | null | undefined): string[] {
+  if (!skill) return []
+  const children = CHILD_COMBAT_SKILLS[skill]
+  return children ? [skill, ...children] : [skill]
+}
+
 export function getRarityDef(rarity: string): RarityDef {
   return RARITY_DEFS.find(r => r.id === rarity) ?? RARITY_DEFS[4] // default to Epic
 }
