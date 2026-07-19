@@ -168,6 +168,10 @@ export interface EquipSlotDef {
   maxRarityIndex?: number
   /** Default rarity for this slot (overrides the preset's target rarity). */
   defaultRarity?: string
+  /** Slot holds fixed-effect items only — no TSys mods, no rarity/level/CP
+   *  (e.g. Racial jewelry: the item's innate EffectDescs are its whole stat
+   *  contribution). Drives the simplified slot detail UI. */
+  noMods?: boolean
 }
 
 /** Rarity levels with their mod slot distributions.
@@ -196,6 +200,10 @@ export const EQUIPMENT_SLOTS: EquipSlotDef[] = [
   { id: 'Ring', label: 'Ring', group: 'jewelry' },
   { id: 'Necklace', label: 'Necklace', group: 'jewelry' },
   { id: 'Belt', label: 'Belt', group: 'extra', maxRarityIndex: 1, defaultRarity: 'Uncommon' },
+  // Racial jewelry (tail/nose/navel rings, earrings): fixed-effect items with no
+  // TSys mod rolls — zero powers list the Racial slot — so it contributes only
+  // its innate EffectDescs.
+  { id: 'Racial', label: 'Racial', group: 'extra', maxRarityIndex: 0, defaultRarity: 'Common', noMods: true },
 ]
 
 export const RARITY_DEFS: RarityDef[] = [
@@ -410,12 +418,13 @@ export function getRarityBorderColor(rarity: string): string {
 export const AUGMENT_CP_COST = 100
 
 /** Calculate total crafting points budget for a slot based on its properties.
- *  Belts get 0 CP regardless of crafted/masterwork status.
+ *  Belts and fixed-effect slots (Racial) get 0 CP regardless of status.
  *  Mastercrafted/foretold legendaries are a flat 160 CP.
  *  Otherwise: crafted = 120, dropped = 100. */
 export function getSlotCraftingPoints(slotItem: BuildPresetSlotItem | undefined): number {
   if (!slotItem) return 0
   if (slotItem.equip_slot === 'Belt') return 0
+  if (EQUIPMENT_SLOTS.find(s => s.id === slotItem.equip_slot)?.noMods) return 0
   if (slotItem.is_masterwork) return 160
   return slotItem.is_crafted ? 120 : 100
 }

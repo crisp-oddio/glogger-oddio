@@ -4,6 +4,12 @@
     <div class="flex items-center gap-3 px-1 shrink-0">
       <h3 class="text-sm font-semibold text-text-primary">{{ slotLabel }}</h3>
       <span
+        v-if="isFixedSlot"
+        class="text-xs font-semibold px-1.5 py-0.5 rounded bg-surface-hover text-text-muted">
+        fixed effects — no mods
+      </span>
+      <span
+        v-else
         class="text-xs font-semibold px-1.5 py-0.5 rounded"
         :class="totalModCount >= store.maxModsPerSlot
           ? 'bg-green-900/30 text-value-positive'
@@ -20,7 +26,7 @@
     </div>
 
     <!-- Per-slot skill overrides -->
-    <div class="flex items-center gap-2 px-1 shrink-0">
+    <div v-if="!isFixedSlot" class="flex items-center gap-2 px-1 shrink-0">
       <label class="text-[10px] text-text-muted uppercase tracking-wider shrink-0">Item Skills:</label>
       <StyledSelect
         :model-value="store.getSlotSkillPrimary(store.selectedSlot!) ?? ''"
@@ -51,7 +57,7 @@
               <div class="flex items-baseline justify-between gap-2">
                 <span class="text-sm font-semibold text-entity-item truncate">{{ resolvedItem.name }}</span>
                 <div class="flex items-center gap-2 shrink-0 text-[10px] text-text-dim">
-                  <div class="flex items-center gap-0.5">
+                  <div v-if="!isFixedSlot" class="flex items-center gap-0.5">
                     <span>Lv</span>
                     <input
                       type="number"
@@ -66,7 +72,7 @@
               </div>
 
               <!-- Row 2: Rarity + Crafted + MW/Foretold -->
-              <div class="flex items-center justify-between gap-2">
+              <div v-if="!isFixedSlot" class="flex items-center justify-between gap-2">
                 <StyledSelect
                   :model-value="store.getSlotRarity(store.selectedSlot!)"
                   :options="rarityOptions"
@@ -123,13 +129,18 @@
         </button>
 
         <!-- Mod slots -->
-        <div class="flex-1 min-h-0 overflow-y-auto">
+        <div v-if="!isFixedSlot" class="flex-1 min-h-0 overflow-y-auto">
           <ModSlotList />
         </div>
       </div>
 
+      <!-- Right side: fixed-effect slots browse items directly (no mods/CP) -->
+      <div v-if="isFixedSlot" class="flex-1 min-w-0 min-h-0 border-l border-border-default/50 pl-3 flex flex-col">
+        <SlotItemPicker />
+      </div>
+
       <!-- Right side: tabbed Mods / Craft Points -->
-      <div class="flex-1 min-w-0 min-h-0 border-l border-border-default/50 pl-3 flex flex-col">
+      <div v-else class="flex-1 min-w-0 min-h-0 border-l border-border-default/50 pl-3 flex flex-col">
         <div class="flex items-center gap-0 shrink-0 border-b border-border-default/50 mb-2">
           <button
             class="px-3 py-1.5 text-xs font-medium cursor-pointer transition-colors border-b-2"
@@ -174,6 +185,7 @@ import ModSlotList from './ModSlotList.vue'
 import ModBrowser from './ModBrowser.vue'
 import CpRecipePanel from './CpRecipePanel.vue'
 import ItemPickerDialog from './ItemPickerDialog.vue'
+import SlotItemPicker from './SlotItemPicker.vue'
 
 const store = useBuildPlannerStore()
 const showItemPicker = ref(false)
@@ -190,6 +202,9 @@ const slotDef = computed(() =>
 )
 
 const slotLabel = computed(() => slotDef.value?.label ?? store.selectedSlot ?? '')
+
+/** Fixed-effect slot (Racial): item pick only — no mods, rarity, level, or CP. */
+const isFixedSlot = computed(() => slotDef.value?.noMods === true)
 
 const resolvedItem = computed((): ItemInfo | null => {
   if (!store.selectedSlot) return null
