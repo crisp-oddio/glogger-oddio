@@ -66,7 +66,7 @@
 import { ref, computed, watch } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import type { SlotTsysPower } from '../../../types/buildPlanner'
-import { computeSlotConstraints } from '../../../types/buildPlanner'
+import { computeSlotConstraints, expandBuildSkill } from '../../../types/buildPlanner'
 import { useBuildCrossRef } from '../../../composables/useBuildCrossRef'
 import StyledSelect from '../../Shared/StyledSelect.vue'
 import ModBrowserItem from './ModBrowserItem.vue'
@@ -89,8 +89,16 @@ const skillFilterOptions = computed(() => {
     { value: '__generic__', label: 'Generic Only' },
     { value: 'Endurance', label: 'Endurance Only' },
   ]
-  if (primary) options.push({ value: primary, label: `${primary} Only` })
-  if (secondary && secondary !== primary) options.push({ value: secondary, label: `${secondary} Only` })
+  const seen = new Set<string>()
+  for (const skill of [primary, secondary]) {
+    // Include each build skill plus any folded child skills (e.g. Fairy Magic
+    // under Mentalism) as their own "X Only" filter.
+    for (const s of expandBuildSkill(skill)) {
+      if (seen.has(s)) continue
+      seen.add(s)
+      options.push({ value: s, label: `${s} Only` })
+    }
+  }
   return options
 })
 
@@ -110,11 +118,13 @@ const filteredPowers = computed(() => {
   if (skillFilter.value === '__build__') {
     const primary = store.selectedSlot ? store.getSlotSkillPrimary(store.selectedSlot) : store.activePreset?.skill_primary
     const secondary = store.selectedSlot ? store.getSlotSkillSecondary(store.selectedSlot) : store.activePreset?.skill_secondary
+    // Expand each build skill to include folded child skills (e.g. Fairy Magic
+    // mods surface under a Mentalism build).
+    const buildSkills = new Set([...expandBuildSkill(primary), ...expandBuildSkill(secondary)])
     powers = powers.filter(p =>
       isGenericPower(p) ||
       p.skill === 'Endurance' ||
-      p.skill === primary ||
-      p.skill === secondary
+      (p.skill != null && buildSkills.has(p.skill))
     )
   } else if (skillFilter.value === '__generic__') {
     powers = powers.filter(p => isGenericPower(p))

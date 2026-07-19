@@ -101,7 +101,7 @@
 import { ref, watch, onMounted } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
-import { ABILITY_BARS, MAX_SIDEBAR_SLOTS } from '../../../types/buildPlanner'
+import { ABILITY_BARS, MAX_SIDEBAR_SLOTS, expandBuildSkill } from '../../../types/buildPlanner'
 import type { AbilityInfo } from '../../../types/gameData'
 import type { BuildPresetAbility } from '../../../types/buildPlanner'
 import GameIcon from '../../Shared/GameIcon.vue'
@@ -207,8 +207,10 @@ async function resolveAbilityIcons() {
   }
 
   const skills = new Set<string>()
-  if (store.activePreset?.skill_primary) skills.add(store.activePreset.skill_primary)
-  if (store.activePreset?.skill_secondary) skills.add(store.activePreset.skill_secondary)
+  // Include folded child skills (e.g. Fairy Magic under Mentalism) so their
+  // abilities resolve to a name/icon/tooltip instead of a bare "?" placeholder.
+  for (const s of expandBuildSkill(store.activePreset?.skill_primary)) skills.add(s)
+  for (const s of expandBuildSkill(store.activePreset?.skill_secondary)) skills.add(s)
   for (const s of ['FirstAid', 'ArmorPatching', 'SurvivalInstincts']) {
     skills.add(s)
   }

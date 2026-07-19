@@ -168,6 +168,10 @@ export interface EquipSlotDef {
   maxRarityIndex?: number
   /** Default rarity for this slot (overrides the preset's target rarity). */
   defaultRarity?: string
+  /** Slot holds fixed-effect items only — no TSys mods, no rarity/level/CP
+   *  (e.g. Racial jewelry: the item's innate EffectDescs are its whole stat
+   *  contribution). Drives the simplified slot detail UI. */
+  noMods?: boolean
 }
 
 /** Rarity levels with their mod slot distributions.
@@ -196,6 +200,10 @@ export const EQUIPMENT_SLOTS: EquipSlotDef[] = [
   { id: 'Ring', label: 'Ring', group: 'jewelry' },
   { id: 'Necklace', label: 'Necklace', group: 'jewelry' },
   { id: 'Belt', label: 'Belt', group: 'extra', maxRarityIndex: 1, defaultRarity: 'Uncommon' },
+  // Racial jewelry (tail/nose/navel rings, earrings): fixed-effect items with no
+  // TSys mod rolls — zero powers list the Racial slot — so it contributes only
+  // its innate EffectDescs.
+  { id: 'Racial', label: 'Racial', group: 'extra', maxRarityIndex: 0, defaultRarity: 'Common', noMods: true },
 ]
 
 export const RARITY_DEFS: RarityDef[] = [
@@ -340,6 +348,28 @@ export const ABILITY_BARS = [
 /** Maximum number of sidebar slots a user can configure */
 export const MAX_SIDEBAR_SLOTS = 12
 
+/**
+ * Combat sub-skills whose abilities and gear mods fold into a parent combat
+ * skill in the build planner. Fairy Magic is a Mentalism sub-skill flagged
+ * `AuxCombat`/`Combat: false` in the CDN, so it never appears in the standalone
+ * combat-skill list — but it has its own abilities and mods that Mentalism
+ * builds use. Surfacing them under the parent's selection keeps them reachable
+ * without adding a skill the game doesn't let you pick as a bar skill.
+ *
+ * Keys and values are display names (matching preset skill_primary/secondary
+ * and the resolved `skill` on abilities and mods).
+ */
+export const CHILD_COMBAT_SKILLS: Record<string, string[]> = {
+  Mentalism: ['Fairy Magic'],
+}
+
+/** Expand a build-planner combat skill into itself plus any folded child skills. */
+export function expandBuildSkill(skill: string | null | undefined): string[] {
+  if (!skill) return []
+  const children = CHILD_COMBAT_SKILLS[skill]
+  return children ? [skill, ...children] : [skill]
+}
+
 export function getRarityDef(rarity: string): RarityDef {
   return RARITY_DEFS.find(r => r.id === rarity) ?? RARITY_DEFS[4] // default to Epic
 }
@@ -388,12 +418,13 @@ export function getRarityBorderColor(rarity: string): string {
 export const AUGMENT_CP_COST = 100
 
 /** Calculate total crafting points budget for a slot based on its properties.
- *  Belts get 0 CP regardless of crafted/masterwork status.
+ *  Belts and fixed-effect slots (Racial) get 0 CP regardless of status.
  *  Mastercrafted/foretold legendaries are a flat 160 CP.
  *  Otherwise: crafted = 120, dropped = 100. */
 export function getSlotCraftingPoints(slotItem: BuildPresetSlotItem | undefined): number {
   if (!slotItem) return 0
   if (slotItem.equip_slot === 'Belt') return 0
+  if (EQUIPMENT_SLOTS.find(s => s.id === slotItem.equip_slot)?.noMods) return 0
   if (slotItem.is_masterwork) return 160
   return slotItem.is_crafted ? 120 : 100
 }

@@ -29,7 +29,10 @@ const totalSlots = EQUIPMENT_SLOTS.length
 const slotsConfigured = computed(() => {
   let count = 0
   for (const slot of EQUIPMENT_SLOTS) {
-    if ((store.slotModCounts[slot.id] ?? 0) > 0 || store.slotHasAugment[slot.id]) {
+    // Fixed-effect slots (Racial) can't take mods — an assigned item counts.
+    if (slot.noMods) {
+      if ((store.getSlotItem(slot.id)?.item_id ?? 0) !== 0) count++
+    } else if ((store.slotModCounts[slot.id] ?? 0) > 0 || store.slotHasAugment[slot.id]) {
       count++
     }
   }

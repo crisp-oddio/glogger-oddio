@@ -101,6 +101,8 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
 
   /** Max mods for a specific slot based on its rarity (per-slot) */
   function getMaxModsForSlot(slotId: string): number {
+    // Fixed-effect slots (Racial) never take mods, whatever rarity is stored.
+    if (EQUIPMENT_SLOTS.find(s => s.id === slotId)?.noMods) return 0
     const item = getSlotItem(slotId)
     const rarity = item?.slot_rarity ?? activePreset.value?.target_rarity ?? "Epic"
     return getRarityDef(rarity).totalMods
@@ -553,6 +555,9 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
   ) {
     if (!activePreset.value) return
     const existingItem = getSlotItem(slotId)
+    // Slot-specific default rarity (Belt→Uncommon, Racial→Common) wins over the
+    // preset target so capped slots don't get saved with an impossible rarity.
+    const defaultRarity = EQUIPMENT_SLOTS.find(s => s.id === slotId)?.defaultRarity
     await invoke("set_build_preset_slot_item", {
       input: {
         preset_id: activePreset.value.id,
@@ -560,7 +565,7 @@ export const useBuildPlannerStore = defineStore("buildPlanner", () => {
         item_id: itemId,
         item_name: itemName,
         slot_level: slotLevel ?? existingItem?.slot_level ?? activePreset.value.target_level ?? 90,
-        slot_rarity: slotRarity ?? existingItem?.slot_rarity ?? activePreset.value.target_rarity ?? "Epic",
+        slot_rarity: slotRarity ?? existingItem?.slot_rarity ?? defaultRarity ?? activePreset.value.target_rarity ?? "Epic",
         is_crafted: isCrafted ?? existingItem?.is_crafted ?? false,
         is_masterwork: isMasterwork ?? existingItem?.is_masterwork ?? false,
       },

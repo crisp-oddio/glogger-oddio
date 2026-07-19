@@ -537,7 +537,7 @@ pub struct EquippedSlotCandidates {
 }
 
 /// Map a game equipment-slot name to the build planner's slot id.
-/// Slots the planner doesn't model (mount, banner, racial, saddle…) return None.
+/// Slots the planner doesn't model (mount, banner, saddle…) return None.
 fn planner_slot_for(game_slot: &str) -> Option<&'static str> {
     Some(match game_slot {
         "Head" => "Head",
@@ -550,6 +550,7 @@ fn planner_slot_for(game_slot: &str) -> Option<&'static str> {
         "Ring" => "Ring",
         "Necklace" => "Necklace",
         "Waist" => "Belt",
+        "Racial" => "Racial",
         _ => return None,
     })
 }
@@ -1258,10 +1259,10 @@ mod equipped_gear_tests {
         assert_eq!(planner_slot_for("Waist"), Some("Belt"));
         assert_eq!(planner_slot_for("MainHand"), Some("MainHand"));
         assert_eq!(planner_slot_for("Ring"), Some("Ring"));
+        assert_eq!(planner_slot_for("Racial"), Some("Racial"));
         // Slots the planner doesn't model are skipped.
         assert_eq!(planner_slot_for("MountGlamour"), None);
         assert_eq!(planner_slot_for("Banner"), None);
-        assert_eq!(planner_slot_for("Racial"), None);
         assert_eq!(planner_slot_for("Saddle"), None);
     }
 
