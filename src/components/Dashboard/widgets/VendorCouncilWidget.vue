@@ -276,21 +276,51 @@ const VENDOR_RESET_HOURS = 168
 // ── Category mapping ────────────────────────────────────────────
 
 const CATEGORY_MAP: Record<string, string> = {
-  Jewelry: 'Jewelry & Gems',
-  Gem: 'Jewelry & Gems',
-  Crystal: 'Jewelry & Gems',
-  Seashell: 'Jewelry & Gems',
-  Weapon: 'Weapons',
+  // Armor & Shields — worn armor and generic equippable gear
   Armor: 'Armor & Shields',
   Shield: 'Armor & Shields',
   ClothArmor: 'Armor & Shields',
+  ClothEquipment: 'Armor & Shields',
+  LeatherArmor: 'Armor & Shields',
+  MetalArmor: 'Armor & Shields',
+  Clothing: 'Armor & Shields',
+  Equipment: 'Armor & Shields',
+
+  // Weapons
+  Weapon: 'Weapons',
+  Arrow: 'Weapons',
+
+  // Jewelry & Gems
+  Jewelry: 'Jewelry & Gems',
+  Gem: 'Jewelry & Gems',
+  Crystal: 'Jewelry & Gems',
+  MassiveCrystal: 'Jewelry & Gems',
+  Seashell: 'Jewelry & Gems',
+  Ring: 'Jewelry & Gems',
+  Amulet: 'Jewelry & Gems',
+
+  // Skins & Trophies — animal hides and corpse-harvested parts
   Skin: 'Skins & Trophies',
   Skinning: 'Skins & Trophies',
   Fur: 'Skins & Trophies',
+  Hide: 'Skins & Trophies',
   CorpseTrophy: 'Skins & Trophies',
   Skull: 'Skins & Trophies',
+  Bone: 'Skins & Trophies',
+  BodyOrgan: 'Skins & Trophies',
+
+  // Potions & Alchemy — alchemy consumables and outputs
   Potion: 'Potions & Alchemy',
+  RestorativePotion: 'Potions & Alchemy',
   AlchemyIngredient: 'Potions & Alchemy',
+  Alchemy: 'Potions & Alchemy',
+  AlchemyRelated: 'Potions & Alchemy',
+  Drug: 'Potions & Alchemy',
+  MagicOil: 'Potions & Alchemy',
+  MagicDust: 'Potions & Alchemy',
+  BottledItem: 'Potions & Alchemy',
+
+  // Food & Cooking
   Food: 'Food & Cooking',
   Edible: 'Food & Cooking',
   PreparedFood: 'Food & Cooking',
@@ -300,6 +330,14 @@ const CATEGORY_MAP: Record<string, string> = {
   BreadDish: 'Food & Cooking',
   BrewingIngredient: 'Food & Cooking',
   BrewingRelated: 'Food & Cooking',
+  Meat: 'Food & Cooking',
+  Fish: 'Food & Cooking',
+  Egg: 'Food & Cooking',
+  Dairy: 'Food & Cooking',
+  Vegetable: 'Food & Cooking',
+  Fruit: 'Food & Cooking',
+  Mushroom: 'Food & Cooking',
+  Drink: 'Food & Cooking',
 }
 
 const CATEGORY_ORDER = [
