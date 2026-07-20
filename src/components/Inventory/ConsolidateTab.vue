@@ -51,6 +51,28 @@
         </div>
       </div>
 
+      <!-- Storage-full warning: items that couldn't be fully consolidated -->
+      <div v-if="plan.blockedItems.length" class="shrink-0 mb-3 p-2 rounded bg-status-warning/10 border border-status-warning/30 text-xs">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-status-warning font-semibold">Storage full</span>
+          <span class="text-text-secondary">
+            {{ plan.blockedItems.length }} item{{ plan.blockedItems.length === 1 ? '' : 's' }} couldn't be fully consolidated — target vault{{ plan.blockedItems.length === 1 ? '' : 's' }} at capacity.
+          </span>
+        </div>
+        <ul class="list-disc pl-5 space-y-0.5 text-text-dim max-h-24 overflow-y-auto">
+          <li v-for="b in plan.blockedItems" :key="b.itemName">
+            <ItemInline :reference="b.itemName" class="text-text-secondary" />
+            <span class="tabular-nums"> ×{{ b.leftoverQuantity }}</span>
+            <template v-if="b.fullyBlocked">
+              — nowhere with room (target <span class="text-text-secondary">{{ b.targetVaultName }}</span> full)
+            </template>
+            <template v-else>
+              — {{ b.leftoverStacks }} stack{{ b.leftoverStacks === 1 ? '' : 's' }} left in {{ b.leftoverVaultNames.join(', ') }}
+            </template>
+          </li>
+        </ul>
+      </div>
+
       <!-- Route result banner -->
       <div v-if="route" class="shrink-0 mb-3 p-2 rounded bg-accent-gold/10 border border-accent-gold/30 flex items-center gap-3 text-xs">
         <span class="text-accent-gold font-semibold">Route:</span>
@@ -92,7 +114,8 @@
               type="dropoff"
               :is-done="consolidation.isDropoffDone"
               :toggle="consolidation.toggleDropoff"
-              show-target />
+              show-target
+              show-capacity />
           </div>
         </div>
         <div v-if="consolidation.currentZoneStop.value.localMoves.length" class="mt-2 pt-2 border-t border-border-default/50">
@@ -146,7 +169,7 @@
               </div>
               <div v-if="zs.dropoffs.length" class="px-3 py-1.5">
                 <div class="micro-label mb-1 text-value-negative">Drop Off</div>
-                <MoveChecklist :moves="zs.dropoffs" type="dropoff" :is-done="consolidation.isDropoffDone" :toggle="consolidation.toggleDropoff" show-target />
+                <MoveChecklist :moves="zs.dropoffs" type="dropoff" :is-done="consolidation.isDropoffDone" :toggle="consolidation.toggleDropoff" show-target show-capacity />
               </div>
               <div v-if="zs.localMoves.length" class="px-3 py-1.5">
                 <div class="micro-label mb-1 text-accent-blue">Rearrange Locally</div>
@@ -238,8 +261,18 @@ const MoveChecklist = defineComponent({
     showVaultName: { type: Boolean, default: false },
     showTarget: { type: Boolean, default: false },
     showBothVaults: { type: Boolean, default: false },
+    showCapacity: { type: Boolean, default: false },
   },
   setup(props) {
+    // Colour the target occupancy badge as it approaches capacity.
+    function capClass(move: PlannedMove): string {
+      const cap = move.toVaultCapacity
+      if (cap == null || cap === 0) return 'text-text-muted'
+      const pct = (move.toVaultOccupied / cap) * 100
+      if (pct >= 100) return 'text-accent-red'
+      if (pct >= 90) return 'text-status-warning'
+      return 'text-text-muted'
+    }
     return () => h('div', { class: 'flex flex-col gap-0.5' },
       props.moves.map(move => {
         const done = props.isDone(move)
@@ -251,7 +284,12 @@ const MoveChecklist = defineComponent({
           h(ItemInline, { reference: move.itemName, class: 'flex-1 min-w-0 truncate' }),
           h('span', { class: 'tabular-nums text-text-secondary shrink-0' }, `x${move.quantity}`),
           props.showVaultName ? h('span', { class: 'text-text-dim text-[10px] shrink-0 truncate max-w-24' }, move.fromVaultName) : null,
-          props.showTarget ? h('span', { class: 'text-text-dim text-[10px] shrink-0 truncate max-w-24' }, `→ ${move.toVaultName}`) : null,
+          props.showTarget ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-32' }, [
+            h('span', { class: 'truncate' }, `→ ${move.toVaultName}`),
+            (props.showCapacity && move.toVaultCapacity != null)
+              ? h('span', { class: ['tabular-nums shrink-0', capClass(move)] }, `${move.toVaultOccupied}/${move.toVaultCapacity}`)
+              : null,
+          ]) : null,
           props.showBothVaults ? h('span', { class: 'text-text-dim text-[10px] shrink-0 truncate max-w-32' }, `${move.fromVaultName} → ${move.toVaultName}`) : null,
         ])
       })

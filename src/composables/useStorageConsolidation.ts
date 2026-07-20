@@ -1,5 +1,6 @@
 import { ref, computed, watch, type ComputedRef } from "vue";
 import { useGameStateStore } from "../stores/gameStateStore";
+import { useGameDataStore } from "../stores/gameDataStore";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,29 @@ export interface PlannedMove {
   reason: "duplicate" | "type_specific";
   /** Has the player completed this move (auto-detected or manual check) */
   completed: boolean;
+  /** Target vault's current occupied slot count (for capacity hints in the UI) */
+  toVaultOccupied: number;
+  /** Target vault's slot capacity, or null when unknown (unconstrained) */
+  toVaultCapacity: number | null;
+}
+
+/**
+ * An item that could not be fully consolidated because every candidate target
+ * vault is at (or near) its slot capacity. Surfaced so the plan can warn the
+ * player instead of silently suggesting an impossible move.
+ */
+export interface BlockedConsolidation {
+  itemName: string;
+  /** Total quantity of the item left un-consolidated (still scattered). */
+  leftoverQuantity: number;
+  /** Number of separate stacks left behind across the leftover vaults. */
+  leftoverStacks: number;
+  /** Friendly names of the vaults where the leftover stacks remain. */
+  leftoverVaultNames: string[];
+  /** Friendly name of the vault we consolidated into (best available). */
+  targetVaultName: string;
+  /** True when nothing could be moved at all (target had no free slots). */
+  fullyBlocked: boolean;
 }
 
 /** All moves grouped by zone, with pickups and dropoffs separated */
@@ -39,6 +63,8 @@ export interface ConsolidationPlan {
   itemsToMove: number;
   zonesInvolved: number;
   typeSpecificSuggestions: number;
+  /** Items that couldn't be fully consolidated due to full target vaults. */
+  blockedItems: BlockedConsolidation[];
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -54,6 +80,7 @@ function isRoutableZone(zone: string | null): zone is string {
 
 export function useStorageConsolidation() {
   const gameState = useGameStateStore();
+  const gameData = useGameDataStore();
 
   const wizardActive = ref(false);
   const completedMoves = ref<Set<string>>(new Set());
@@ -70,53 +97,201 @@ export function useStorageConsolidation() {
     return gameState.storageVaultsByKey[key]?.area ?? null;
   }
 
+  // ── Capacity helpers ────────────────────────────────────────────────────
+
+  /** Slot capacity of a vault (unlocked slots, else theoretical max). null = unknown. */
+  function vaultCapacity(key: string): number | null {
+    const vault = gameState.storageVaultsByKey[key];
+    if (!vault) return null;
+    return gameState.getVaultUnlockedSlots(vault) ?? gameState.getVaultMaxPossibleSlots(vault);
+  }
+
+  /** Currently occupied slots in a vault (one storage entry == one slot). */
+  function vaultOccupied(key: string): number {
+    return gameState.storageByVault[key]?.length ?? 0;
+  }
+
+  // ── Item stack-size cache ─────────────────────────────────────────────
+  // Whether an item merges (stackable) or needs one slot per stack (gear)
+  // decides how many slots a consolidation actually consumes at the target.
+  // Fetched lazily from the CDN; unresolved names are treated as non-stackable.
+
+  const stackSizeByItem = ref<Map<string, number | null>>(new Map());
+
+  watch(
+    () => gameState.storage,
+    async () => {
+      const missing = new Set<string>();
+      for (const item of gameState.storage) {
+        if (!stackSizeByItem.value.has(item.item_name)) missing.add(item.item_name);
+      }
+      if (missing.size === 0) return;
+      const names = [...missing];
+      const next = new Map(stackSizeByItem.value);
+      try {
+        const infos = await gameData.resolveItemsBatch(names);
+        for (const name of names) next.set(name, infos[name]?.max_stack_size ?? null);
+      } catch {
+        // On failure treat as unknown → non-stackable (conservative for capacity)
+        for (const name of names) if (!next.has(name)) next.set(name, null);
+      }
+      stackSizeByItem.value = next;
+    },
+    { immediate: true, deep: true },
+  );
+
+  /** Max stack size for an item: >1 stackable, 1 non-stackable, Infinity if not yet resolved. */
+  function maxStack(itemName: string): number {
+    if (!stackSizeByItem.value.has(itemName)) return Infinity; // avoid false "full" during load
+    const s = stackSizeByItem.value.get(itemName);
+    return s != null && s > 1 ? s : 1;
+  }
+
+  /**
+   * Slots a target vault must gain to absorb `incomingStacks`/`incomingQty` of an
+   * item it already holds (`targetStacks` slots, `targetQty` count). Stackable
+   * items merge into existing stacks (often 0 new slots); non-stackable items
+   * need one slot per incoming stack.
+   */
+  function newSlotsNeeded(
+    itemName: string,
+    targetStacks: number,
+    targetQty: number,
+    incomingStacks: number,
+    incomingQty: number,
+  ): number {
+    const ms = maxStack(itemName);
+    if (ms <= 1) return incomingStacks; // non-stackable: every stack keeps a slot
+    const slotsAfter = Math.ceil((targetQty + incomingQty) / ms);
+    return Math.max(0, slotsAfter - targetStacks);
+  }
+
   // ── Plan generation ───────────────────────────────────────────────────
 
   const plan: ComputedRef<ConsolidationPlan> = computed(() => {
     const moves: PlannedMove[] = [];
+    const blockedItems: BlockedConsolidation[] = [];
+    let slotsSaved = 0;
 
-    // ── Step 1: Find duplicates ──────────────────────────────────────
+    // ── Step 1: Find duplicates (capacity-aware) ─────────────────────
 
-    // Group: item_name → vault_key → total_quantity
-    const itemVaults = new Map<string, Map<string, number>>();
+    // Group: item_name → vault_key → { qty, stacks } (one storage entry == one slot)
+    interface Holding { vk: string; qty: number; stacks: number }
+    const itemVaults = new Map<string, Map<string, Holding>>();
     for (const item of gameState.storage) {
-      if (!itemVaults.has(item.item_name)) {
-        itemVaults.set(item.item_name, new Map());
-      }
+      if (!itemVaults.has(item.item_name)) itemVaults.set(item.item_name, new Map());
       const vm = itemVaults.get(item.item_name)!;
-      vm.set(item.vault_key, (vm.get(item.vault_key) ?? 0) + item.stack_size);
+      const cur = vm.get(item.vault_key) ?? { vk: item.vault_key, qty: 0, stacks: 0 };
+      cur.qty += item.stack_size;
+      cur.stacks += 1;
+      vm.set(item.vault_key, cur);
     }
 
-    for (const [itemName, vaultMap] of itemVaults) {
+    // Running free-slot budget per vault. Sources free slots as items leave them,
+    // which can make room for another item's consolidation processed later.
+    const freeBudget = new Map<string, number>();
+    function budget(key: string): number {
+      if (!freeBudget.has(key)) {
+        const cap = vaultCapacity(key);
+        freeBudget.set(key, cap == null ? Infinity : cap - vaultOccupied(key));
+      }
+      return freeBudget.get(key)!;
+    }
+
+    function pushMove(itemName: string, src: Holding, targetKey: string) {
+      const moveKey = `${itemName}|${src.vk}|${targetKey}`;
+      moves.push({
+        itemName,
+        quantity: src.qty,
+        fromVaultKey: src.vk,
+        fromVaultName: vaultName(src.vk),
+        fromAreaKey: vaultArea(src.vk),
+        toVaultKey: targetKey,
+        toVaultName: vaultName(targetKey),
+        toAreaKey: vaultArea(targetKey),
+        reason: "duplicate",
+        completed: completedMoves.value.has(moveKey),
+        toVaultOccupied: vaultOccupied(targetKey),
+        toVaultCapacity: vaultCapacity(targetKey),
+      });
+    }
+
+    // Process item groups in a stable order for deterministic plans.
+    const itemNames = [...itemVaults.keys()].sort();
+    for (const itemName of itemNames) {
+      const vaultMap = itemVaults.get(itemName)!;
       if (vaultMap.size < 2) continue;
 
-      // Target: vault with the most of this item
-      let bestVault = "";
-      let bestQty = 0;
-      for (const [vk, qty] of vaultMap) {
-        if (qty > bestQty) {
-          bestVault = vk;
-          bestQty = qty;
-        }
+      // Candidate holders, most-of-this-item first (fewest moves, most already there).
+      const holders = [...vaultMap.values()].sort((a, b) => b.qty - a.qty || b.stacks - a.stacks);
+      const totalQty = holders.reduce((s, h) => s + h.qty, 0);
+      const totalStacks = holders.reduce((s, h) => s + h.stacks, 0);
+
+      // Prefer a single target that can hold ALL the duplicates outright.
+      let target: Holding | null = null;
+      for (const cand of holders) {
+        const incomingStacks = totalStacks - cand.stacks;
+        const incomingQty = totalQty - cand.qty;
+        const need = newSlotsNeeded(itemName, cand.stacks, cand.qty, incomingStacks, incomingQty);
+        if (need <= budget(cand.vk)) { target = cand; break; }
       }
 
-      // Move from all other vaults to the best
-      for (const [vk, qty] of vaultMap) {
-        if (vk === bestVault) continue;
-        const moveKey = `${itemName}|${vk}|${bestVault}`;
-        moves.push({
-          itemName,
-          quantity: qty,
-          fromVaultKey: vk,
-          fromVaultName: vaultName(vk),
-          fromAreaKey: vaultArea(vk),
-          toVaultKey: bestVault,
-          toVaultName: vaultName(bestVault),
-          toAreaKey: vaultArea(bestVault),
-          reason: "duplicate",
-          completed: completedMoves.value.has(moveKey),
-        });
+      if (target) {
+        // Full consolidation into `target`.
+        const incomingStacks = totalStacks - target.stacks;
+        const incomingQty = totalQty - target.qty;
+        const need = newSlotsNeeded(itemName, target.stacks, target.qty, incomingStacks, incomingQty);
+        freeBudget.set(target.vk, budget(target.vk) - need);
+        for (const h of holders) {
+          if (h.vk === target.vk) continue;
+          freeBudget.set(h.vk, budget(h.vk) + h.stacks); // source empties, frees slots
+          pushMove(itemName, h, target.vk);
+        }
+        slotsSaved += incomingStacks - need;
+        continue;
       }
+
+      // No holder can take everything — reroute to the roomiest holder and move
+      // as many stacks as fit, flagging the leftover.
+      const roomiest = [...holders].sort((a, b) => budget(b.vk) - budget(a.vk) || b.qty - a.qty)[0];
+      const ms = maxStack(itemName);
+      let runQty = roomiest.qty;
+      let runSlots = roomiest.stacks;
+      let runBudget = budget(roomiest.vk);
+      // Move smallest sources first so we empty as many vaults as possible.
+      const sources = holders
+        .filter((h) => h.vk !== roomiest.vk)
+        .sort((a, b) => a.stacks - b.stacks || a.qty - b.qty);
+      const left: Holding[] = [];
+      let movedStacks = 0;
+      let addedSlots = 0;
+      for (const src of sources) {
+        const cost = ms <= 1
+          ? src.stacks
+          : Math.max(0, Math.ceil((runQty + src.qty) / ms) - runSlots);
+        if (cost <= runBudget) {
+          runBudget -= cost;
+          runQty += src.qty;
+          runSlots = ms <= 1 ? runSlots + src.stacks : Math.ceil(runQty / ms);
+          addedSlots += cost;
+          movedStacks += src.stacks;
+          freeBudget.set(src.vk, budget(src.vk) + src.stacks);
+          pushMove(itemName, src, roomiest.vk);
+        } else {
+          left.push(src);
+        }
+      }
+      freeBudget.set(roomiest.vk, runBudget);
+      slotsSaved += movedStacks - addedSlots;
+
+      blockedItems.push({
+        itemName,
+        leftoverQuantity: left.reduce((s, h) => s + h.qty, 0),
+        leftoverStacks: left.reduce((s, h) => s + h.stacks, 0),
+        leftoverVaultNames: left.map((h) => vaultName(h.vk)),
+        targetVaultName: vaultName(roomiest.vk),
+        fullyBlocked: movedStacks === 0,
+      });
     }
 
     // ── Step 2: Type-specific vault opportunities ────────────────────
@@ -214,17 +389,18 @@ export function useStorageConsolidation() {
     });
 
     // ── Stats ────────────────────────────────────────────────────────
-
-    // Slots saved = number of source stacks being consolidated (each move frees 1 slot)
-    const slotsSaved = moves.filter((m) => !m.completed).length;
+    // slotsSaved is accumulated during plan generation as the net slots freed
+    // (source stacks removed minus new slots consumed at the target). Merging
+    // stackable duplicates saves slots; co-locating non-stackable gear does not.
 
     return {
       moves,
       zoneStops,
-      slotsSaved,
+      slotsSaved: Math.max(0, slotsSaved),
       itemsToMove: moves.filter((m) => !m.completed).length,
       zonesInvolved: zoneStops.length,
       typeSpecificSuggestions: moves.filter((m) => m.reason === "type_specific").length,
+      blockedItems,
     };
   });
 
