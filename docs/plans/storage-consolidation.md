@@ -121,6 +121,36 @@ Step-by-step zone checklist driven by the player's current location:
 - Auto-check completed moves
 - Toast notifications on auto-detected moves
 
+### Cross-alt consolidation (DONE)
+
+An **"Include all alts' storage"** toggle pools storage from *every* character on the
+active server (via `characterStore.loadAllCharacterItems()` → `get_all_character_items`,
+which backfills each character's Storage report and returns items tagged with their owner).
+
+- **Per-character storage:** each alt owns separate storage at every NPC, so a vault's
+  identity in this mode is the composite `(character, server, vault_key)`, not `vault_key`
+  alone. In single-character mode the id collapses back to the raw `vault_key` (no behavior
+  change).
+- **Bank targeting:** a **"Gather onto ⟨character⟩"** selector designates a bank/mule
+  character (defaults to the active character). Its vaults rank first in target selection,
+  so duplicates gather onto the bank where capacity allows; if the bank doesn't hold an
+  item, selection falls back to the vault holding the most.
+- **Capacity for alts:** favor/attribute unlocks are only known for the active character,
+  so alt vaults use the theoretical max (`getVaultMaxPossibleSlots` — exact for fixed-slot
+  vaults, an upper bound for favor-gated ones). Occupancy is always exact (row counts).
+- **Cross-character moves** are labeled with the owning character and a `⇄` badge; they
+  require switching characters (withdraw → mail/trade → deposit) and are not auto-detected
+  by the wizard (which tails only the active character's live storage).
+- **Noise reduction (`isCandidate`):** worn/gear items (`ItemInfo.equip_slot` set) are always
+  excluded from suggestions (both modes). In alt mode a **category dropdown** (populated from
+  the item keywords present on the bank's non-gear items, `Lint_*` filtered out) scopes the
+  plan to one keyword, and suggestions are further limited to items the **bank character
+  already holds** (`bankHeldItems`, storage or inventory) — so you top up the bank's existing
+  collections instead of importing arbitrary items. Occupancy/capacity still counts *all*
+  stored items (including gear), so the filter only narrows candidates, never capacity.
+  `ItemInfo.equip_slot` + `keywords` are cached alongside `max_stack_size` in one
+  `resolveItemsBatch` pass (`itemMetaByName`).
+
 ### Phase 5: Polish
 - Type-specific vault suggestions highlighted with special styling
 - "Similar items" grouping suggestions
