@@ -6,8 +6,35 @@
       <span class="text-text-secondary">This feature is a work in progress with known bugs. The consolidation plan may not always be optimal and the wizard may not perfectly track all item movements.</span>
     </div>
 
+    <!-- Cross-alt controls (always available) -->
+    <div class="shrink-0 mb-3 flex items-center gap-3 flex-wrap text-xs">
+      <label class="flex items-center gap-1.5 cursor-pointer select-none">
+        <input type="checkbox" v-model="includeAlts" />
+        <span class="text-text-secondary">Include all alts' storage</span>
+      </label>
+      <template v-if="includeAlts">
+        <span v-if="consolidation.altsLoading.value" class="text-text-muted flex items-center gap-1">
+          <span class="inline-block w-3 h-3 border-2 border-text-muted/40 border-t-text-muted rounded-full animate-spin" />
+          Pooling characters…
+        </span>
+        <template v-else>
+          <span class="text-text-muted">Gather onto</span>
+          <select v-model="bankModel" class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary cursor-pointer">
+            <option v-for="c in consolidation.availableCharacters.value" :key="c.key" :value="c.key">{{ c.character }}</option>
+          </select>
+          <span class="text-text-muted">·</span>
+          <select v-model="category" class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary cursor-pointer max-w-48">
+            <option value="">All categories</option>
+            <option v-for="c in consolidation.availableCategories.value" :key="c.keyword" :value="c.keyword">{{ c.keyword }} ({{ c.count }})</option>
+          </select>
+          <span class="text-text-dim">· {{ consolidation.charactersInPlan.value }} character{{ consolidation.charactersInPlan.value === 1 ? '' : 's' }} pooled</span>
+        </template>
+      </template>
+    </div>
+
     <!-- Empty states -->
-    <EmptyState v-if="!gameState.storage.length" variant="panel" primary="No storage data" secondary="Import an inventory report to see stored items." />
+    <EmptyState v-if="includeAlts && consolidation.altsLoading.value && consolidation.charactersInPlan.value === 0" variant="panel" primary="Loading all characters…" secondary="Pooling storage from every character on this server." />
+    <EmptyState v-else-if="consolidation.charactersInPlan.value === 0" variant="panel" primary="No storage data" secondary="Import an inventory report to see stored items." />
     <EmptyState v-else-if="plan.moves.length === 0" variant="panel" primary="Nothing to consolidate" secondary="All your items are already in single locations." />
 
     <template v-else>
@@ -105,7 +132,8 @@
               type="pickup"
               :is-done="consolidation.isPickupDone"
               :toggle="consolidation.togglePickup"
-              show-vault-name />
+              show-vault-name
+              :show-character="includeAlts" />
           </div>
           <div v-if="consolidation.currentZoneStop.value.dropoffs.length">
             <div class="micro-label mb-1 text-value-negative">Drop Off</div>
@@ -115,7 +143,8 @@
               :is-done="consolidation.isDropoffDone"
               :toggle="consolidation.toggleDropoff"
               show-target
-              show-capacity />
+              show-capacity
+              :show-character="includeAlts" />
           </div>
         </div>
         <div v-if="consolidation.currentZoneStop.value.localMoves.length" class="mt-2 pt-2 border-t border-border-default/50">
@@ -125,7 +154,8 @@
             type="local"
             :is-done="consolidation.isLocalDone"
             :toggle="consolidation.toggleLocal"
-            show-both-vaults />
+            show-both-vaults
+            :show-character="includeAlts" />
         </div>
 
         <!-- Next zone indicator -->
@@ -165,15 +195,15 @@
             <div class="divide-y divide-border-default/30">
               <div v-if="zs.pickups.length" class="px-3 py-1.5">
                 <div class="micro-label mb-1 text-value-positive">Pick Up to Carry</div>
-                <MoveChecklist :moves="zs.pickups" type="pickup" :is-done="consolidation.isPickupDone" :toggle="consolidation.togglePickup" show-vault-name />
+                <MoveChecklist :moves="zs.pickups" type="pickup" :is-done="consolidation.isPickupDone" :toggle="consolidation.togglePickup" show-vault-name :show-character="includeAlts" />
               </div>
               <div v-if="zs.dropoffs.length" class="px-3 py-1.5">
                 <div class="micro-label mb-1 text-value-negative">Drop Off</div>
-                <MoveChecklist :moves="zs.dropoffs" type="dropoff" :is-done="consolidation.isDropoffDone" :toggle="consolidation.toggleDropoff" show-target show-capacity />
+                <MoveChecklist :moves="zs.dropoffs" type="dropoff" :is-done="consolidation.isDropoffDone" :toggle="consolidation.toggleDropoff" show-target show-capacity :show-character="includeAlts" />
               </div>
               <div v-if="zs.localMoves.length" class="px-3 py-1.5">
                 <div class="micro-label mb-1 text-accent-blue">Rearrange Locally</div>
-                <MoveChecklist :moves="zs.localMoves" type="local" :is-done="consolidation.isLocalDone" :toggle="consolidation.toggleLocal" show-both-vaults />
+                <MoveChecklist :moves="zs.localMoves" type="local" :is-done="consolidation.isLocalDone" :toggle="consolidation.toggleLocal" show-both-vaults :show-character="includeAlts" />
               </div>
             </div>
           </div>
@@ -193,6 +223,15 @@ import ItemInline from '../Shared/Item/ItemInline.vue'
 
 const gameState = useGameStateStore()
 const consolidation = useStorageConsolidation()
+
+// Cross-alt bindings. `includeAlts` is a writable computed from the composable;
+// `bankModel` shows the effective bank (defaults to the active character).
+const includeAlts = consolidation.includeAlts
+const category = consolidation.category
+const bankModel = computed({
+  get: () => consolidation.bankKey.value || consolidation.bankOwnerKey.value,
+  set: (v: string) => { consolidation.bankKey.value = v },
+})
 
 const planning = ref(false)
 const routeError = ref('')
@@ -262,6 +301,7 @@ const MoveChecklist = defineComponent({
     showTarget: { type: Boolean, default: false },
     showBothVaults: { type: Boolean, default: false },
     showCapacity: { type: Boolean, default: false },
+    showCharacter: { type: Boolean, default: false },
   },
   setup(props) {
     // Colour the target occupancy badge as it approaches capacity.
@@ -273,6 +313,13 @@ const MoveChecklist = defineComponent({
       if (pct >= 90) return 'text-status-warning'
       return 'text-text-muted'
     }
+    // A vault reference, optionally prefixed with its owning character.
+    function vaultBits(character: string, name: string) {
+      const bits = []
+      if (props.showCharacter) bits.push(h('span', { class: 'text-accent-blue/80 shrink-0' }, `[${character}]`))
+      bits.push(h('span', { class: 'truncate' }, name))
+      return bits
+    }
     return () => h('div', { class: 'flex flex-col gap-0.5' },
       props.moves.map(move => {
         const done = props.isDone(move)
@@ -281,16 +328,24 @@ const MoveChecklist = defineComponent({
           class: ['flex items-center gap-1.5 text-xs py-0.5 cursor-pointer', done ? 'opacity-40 line-through' : ''],
         }, [
           h('input', { type: 'checkbox', checked: done, class: 'shrink-0', onChange: () => props.toggle(move) }),
+          (props.showCharacter && move.crossCharacter)
+            ? h('span', { class: 'text-accent-blue shrink-0', title: 'Cross-character move — switch to the owning character' }, '⇄')
+            : null,
           h(ItemInline, { reference: move.itemName, class: 'flex-1 min-w-0 truncate' }),
           h('span', { class: 'tabular-nums text-text-secondary shrink-0' }, `x${move.quantity}`),
-          props.showVaultName ? h('span', { class: 'text-text-dim text-[10px] shrink-0 truncate max-w-24' }, move.fromVaultName) : null,
-          props.showTarget ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-32' }, [
-            h('span', { class: 'truncate' }, `→ ${move.toVaultName}`),
+          props.showVaultName ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-40' }, vaultBits(move.fromCharacter, move.fromVaultName)) : null,
+          props.showTarget ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-44' }, [
+            h('span', { class: 'shrink-0' }, '→'),
+            ...vaultBits(move.toCharacter, move.toVaultName),
             (props.showCapacity && move.toVaultCapacity != null)
               ? h('span', { class: ['tabular-nums shrink-0', capClass(move)] }, `${move.toVaultOccupied}/${move.toVaultCapacity}`)
               : null,
           ]) : null,
-          props.showBothVaults ? h('span', { class: 'text-text-dim text-[10px] shrink-0 truncate max-w-32' }, `${move.fromVaultName} → ${move.toVaultName}`) : null,
+          props.showBothVaults ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-56' }, [
+            ...vaultBits(move.fromCharacter, move.fromVaultName),
+            h('span', { class: 'shrink-0' }, '→'),
+            ...vaultBits(move.toCharacter, move.toVaultName),
+          ]) : null,
         ])
       })
     )

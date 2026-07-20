@@ -1,6 +1,9 @@
 import { ref, computed, watch, type ComputedRef } from "vue";
 import { useGameStateStore } from "../stores/gameStateStore";
 import { useGameDataStore } from "../stores/gameDataStore";
+import { useCharacterStore } from "../stores/characterStore";
+import { useSettingsStore } from "../stores/settingsStore";
+import { useViewPrefs } from "./useViewPrefs";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -22,6 +25,12 @@ export interface PlannedMove {
   toVaultOccupied: number;
   /** Target vault's slot capacity, or null when unknown (unconstrained) */
   toVaultCapacity: number | null;
+  /** Owning character of the source vault (for cross-alt moves). */
+  fromCharacter: string;
+  /** Owning character of the target vault (for cross-alt moves). */
+  toCharacter: string;
+  /** True when source and target belong to different characters. */
+  crossCharacter: boolean;
 }
 
 /**
@@ -81,70 +90,220 @@ function isRoutableZone(zone: string | null): zone is string {
 export function useStorageConsolidation() {
   const gameState = useGameStateStore();
   const gameData = useGameDataStore();
+  const characterStore = useCharacterStore();
+  const settingsStore = useSettingsStore();
 
   const wizardActive = ref(false);
   const completedMoves = ref<Set<string>>(new Set());
 
-  // ── Vault helpers ───────────────────────────────────────────────────────
+  // ── Cross-alt options (persisted) ────────────────────────────────────────
+  // When `includeAlts` is on, storage from every character on the active server
+  // is pooled and duplicates are gathered onto `bankKey` (a designated character)
+  // where possible. Each alt owns separate storage at every NPC, so a vault's
+  // identity in this mode is (character, server, vault_key), not vault_key alone.
 
-  function vaultName(key: string): string {
-    const detail = gameState.storageVaultsByKey[key];
-    if (detail?.npc_friendly_name) return detail.npc_friendly_name;
-    return key;
+  const { prefs, update } = useViewPrefs("inventory.consolidate", {
+    includeAlts: false as boolean,
+    bankKey: "" as string,
+    category: "" as string,
+  });
+  const includeAlts = computed<boolean>({
+    get: () => prefs.value.includeAlts,
+    set: (v) => update({ includeAlts: v }),
+  });
+  const bankKey = computed<string>({
+    get: () => prefs.value.bankKey,
+    set: (v) => update({ bankKey: v }),
+  });
+  /** Item-keyword filter (empty = all categories). Only applied in alt mode. */
+  const category = computed<string>({
+    get: () => prefs.value.category,
+    set: (v) => update({ category: v }),
+  });
+
+  const activeCharacter = computed(() => settingsStore.settings.activeCharacterName ?? "");
+  const activeServer = computed(() => settingsStore.settings.activeServerName ?? "");
+
+  /** Separator for composite (character, server, vault) identities. */
+  const SEP = "";
+  function ownerKey(character: string, server: string): string {
+    return `${character}${SEP}${server}`;
+  }
+  /** Composite vault id. In single-character mode this is just the raw vault_key. */
+  function makeVaultId(character: string, server: string, vaultKey: string): string {
+    return includeAlts.value ? `${character}${SEP}${server}${SEP}${vaultKey}` : vaultKey;
+  }
+  function parseVaultId(id: string): { character: string; server: string; vaultKey: string } {
+    const first = id.indexOf(SEP);
+    if (first === -1) {
+      return { character: activeCharacter.value, server: activeServer.value, vaultKey: id };
+    }
+    const last = id.lastIndexOf(SEP);
+    return { character: id.slice(0, first), server: id.slice(first + 1, last), vaultKey: id.slice(last + 1) };
   }
 
-  function vaultArea(key: string): string | null {
-    return gameState.storageVaultsByKey[key]?.area ?? null;
+  /** The character duplicates are gathered onto (defaults to the active character). */
+  const bankOwnerKey = computed(() =>
+    prefs.value.bankKey || ownerKey(activeCharacter.value, activeServer.value),
+  );
+  function isBankVault(id: string): boolean {
+    const { character, server } = parseVaultId(id);
+    return ownerKey(character, server) === bankOwnerKey.value;
+  }
+
+  /** Every item the bank character currently holds (storage or inventory).
+   *  Only populated in alt mode; used to scope suggestions to what the bank has. */
+  const bankHeldItems = computed<Set<string>>(() => {
+    const set = new Set<string>();
+    if (!includeAlts.value) return set;
+    for (const it of characterStore.allCharacterItems) {
+      if (ownerKey(it.character_name, it.server_name) === bankOwnerKey.value) set.add(it.item_name);
+    }
+    return set;
+  });
+
+  // Load every character's storage on demand when alt-inclusion turns on.
+  watch(
+    includeAlts,
+    (on) => { if (on) characterStore.loadAllCharacterItems(); },
+    { immediate: true },
+  );
+
+  // ── Unified storage dataset ──────────────────────────────────────────────
+  interface OwnedItem { character: string; server: string; vaultKey: string; itemName: string; stackSize: number }
+
+  const ownedStorage = computed<OwnedItem[]>(() => {
+    if (includeAlts.value) {
+      return characterStore.allCharacterItems
+        .filter((it) => !it.is_in_inventory && it.storage_vault)
+        .map((it) => ({
+          character: it.character_name,
+          server: it.server_name,
+          vaultKey: it.storage_vault,
+          itemName: it.item_name,
+          stackSize: it.stack_size,
+        }));
+    }
+    const ch = activeCharacter.value;
+    const sv = activeServer.value;
+    return gameState.storage.map((it) => ({
+      character: ch, server: sv, vaultKey: it.vault_key, itemName: it.item_name, stackSize: it.stack_size,
+    }));
+  });
+
+  /** Occupied slots per composite vault id (every stored stack counts as one slot). */
+  const occupiedByVault = computed<Map<string, number>>(() => {
+    const m = new Map<string, number>();
+    for (const it of ownedStorage.value) {
+      const id = makeVaultId(it.character, it.server, it.vaultKey);
+      m.set(id, (m.get(id) ?? 0) + 1);
+    }
+    return m;
+  });
+
+  // ── Vault helpers ───────────────────────────────────────────────────────
+
+  function vaultName(id: string): string {
+    const { vaultKey } = parseVaultId(id);
+    const detail = gameState.storageVaultsByKey[vaultKey];
+    return detail?.npc_friendly_name ?? vaultKey;
+  }
+
+  function vaultArea(id: string): string | null {
+    return gameState.storageVaultsByKey[parseVaultId(id).vaultKey]?.area ?? null;
+  }
+
+  /** Vault name, prefixed with its owning character when alts are pooled. */
+  function vaultLabel(id: string): string {
+    const name = vaultName(id);
+    return includeAlts.value ? `[${parseVaultId(id).character}] ${name}` : name;
   }
 
   // ── Capacity helpers ────────────────────────────────────────────────────
 
-  /** Slot capacity of a vault (unlocked slots, else theoretical max). null = unknown. */
-  function vaultCapacity(key: string): number | null {
-    const vault = gameState.storageVaultsByKey[key];
+  /**
+   * Slot capacity of a vault. Favor/attribute unlocks are only known for the
+   * active character; for alt-owned vaults we fall back to the theoretical max
+   * (accurate for fixed-slot vaults, an upper bound for favor-gated ones).
+   * null = unknown (unconstrained).
+   */
+  function vaultCapacity(id: string): number | null {
+    const { character, server, vaultKey } = parseVaultId(id);
+    const vault = gameState.storageVaultsByKey[vaultKey];
     if (!vault) return null;
-    return gameState.getVaultUnlockedSlots(vault) ?? gameState.getVaultMaxPossibleSlots(vault);
+    if (character === activeCharacter.value && server === activeServer.value) {
+      return gameState.getVaultUnlockedSlots(vault) ?? gameState.getVaultMaxPossibleSlots(vault);
+    }
+    return gameState.getVaultMaxPossibleSlots(vault);
   }
 
   /** Currently occupied slots in a vault (one storage entry == one slot). */
-  function vaultOccupied(key: string): number {
-    return gameState.storageByVault[key]?.length ?? 0;
+  function vaultOccupied(id: string): number {
+    return occupiedByVault.value.get(id) ?? 0;
   }
 
-  // ── Item stack-size cache ─────────────────────────────────────────────
-  // Whether an item merges (stackable) or needs one slot per stack (gear)
-  // decides how many slots a consolidation actually consumes at the target.
-  // Fetched lazily from the CDN; unresolved names are treated as non-stackable.
+  // ── Item metadata cache ────────────────────────────────────────────────
+  // max_stack_size decides how many slots a consolidation consumes; equip_slot
+  // marks gear (excluded from suggestions); keywords drive the category filter.
+  // Fetched lazily from the CDN; unresolved names are treated as non-stackable
+  // and non-equipment.
 
-  const stackSizeByItem = ref<Map<string, number | null>>(new Map());
+  interface ItemMeta { maxStack: number | null; equipSlot: string | null; keywords: string[] }
+  const itemMetaByName = ref<Map<string, ItemMeta | null>>(new Map());
 
   watch(
-    () => gameState.storage,
+    ownedStorage,
     async () => {
       const missing = new Set<string>();
-      for (const item of gameState.storage) {
-        if (!stackSizeByItem.value.has(item.item_name)) missing.add(item.item_name);
+      for (const item of ownedStorage.value) {
+        if (!itemMetaByName.value.has(item.itemName)) missing.add(item.itemName);
       }
       if (missing.size === 0) return;
       const names = [...missing];
-      const next = new Map(stackSizeByItem.value);
+      const next = new Map(itemMetaByName.value);
       try {
         const infos = await gameData.resolveItemsBatch(names);
-        for (const name of names) next.set(name, infos[name]?.max_stack_size ?? null);
+        for (const name of names) {
+          const info = infos[name];
+          next.set(name, info
+            ? { maxStack: info.max_stack_size, equipSlot: info.equip_slot, keywords: info.keywords ?? [] }
+            : null);
+        }
       } catch {
-        // On failure treat as unknown → non-stackable (conservative for capacity)
+        // On failure treat as unknown → non-stackable, non-equipment (conservative)
         for (const name of names) if (!next.has(name)) next.set(name, null);
       }
-      stackSizeByItem.value = next;
+      itemMetaByName.value = next;
     },
     { immediate: true, deep: true },
   );
 
   /** Max stack size for an item: >1 stackable, 1 non-stackable, Infinity if not yet resolved. */
   function maxStack(itemName: string): number {
-    if (!stackSizeByItem.value.has(itemName)) return Infinity; // avoid false "full" during load
-    const s = stackSizeByItem.value.get(itemName);
+    if (!itemMetaByName.value.has(itemName)) return Infinity; // avoid false "full" during load
+    const s = itemMetaByName.value.get(itemName)?.maxStack ?? null;
     return s != null && s > 1 ? s : 1;
+  }
+
+  /** True when the item is wearable gear (has an equip slot). */
+  function isEquipment(itemName: string): boolean {
+    return !!itemMetaByName.value.get(itemName)?.equipSlot;
+  }
+
+  function itemKeywords(itemName: string): string[] {
+    return itemMetaByName.value.get(itemName)?.keywords ?? [];
+  }
+
+  /**
+   * Whether an item should appear as a consolidation candidate. Gear is always
+   * excluded. In alt mode, suggestions are further scoped to the selected
+   * category and to items the bank character already holds.
+   */
+  function isCandidate(itemName: string): boolean {
+    if (isEquipment(itemName)) return false;
+    if (!includeAlts.value) return true;
+    if (category.value && !itemKeywords(itemName).includes(category.value)) return false;
+    return bankHeldItems.value.has(itemName);
   }
 
   /**
@@ -175,16 +334,20 @@ export function useStorageConsolidation() {
 
     // ── Step 1: Find duplicates (capacity-aware) ─────────────────────
 
-    // Group: item_name → vault_key → { qty, stacks } (one storage entry == one slot)
+    // Group: item_name → vaultId → { qty, stacks } (one storage entry == one slot).
+    // vaultId is the composite (character, server, vault_key) so each alt's storage
+    // at the same NPC stays distinct.
     interface Holding { vk: string; qty: number; stacks: number }
     const itemVaults = new Map<string, Map<string, Holding>>();
-    for (const item of gameState.storage) {
-      if (!itemVaults.has(item.item_name)) itemVaults.set(item.item_name, new Map());
-      const vm = itemVaults.get(item.item_name)!;
-      const cur = vm.get(item.vault_key) ?? { vk: item.vault_key, qty: 0, stacks: 0 };
-      cur.qty += item.stack_size;
+    for (const item of ownedStorage.value) {
+      if (!isCandidate(item.itemName)) continue; // exclude gear / off-category / non-bank items
+      const id = makeVaultId(item.character, item.server, item.vaultKey);
+      if (!itemVaults.has(item.itemName)) itemVaults.set(item.itemName, new Map());
+      const vm = itemVaults.get(item.itemName)!;
+      const cur = vm.get(id) ?? { vk: id, qty: 0, stacks: 0 };
+      cur.qty += item.stackSize;
       cur.stacks += 1;
-      vm.set(item.vault_key, cur);
+      vm.set(id, cur);
     }
 
     // Running free-slot budget per vault. Sources free slots as items leave them,
@@ -198,8 +361,12 @@ export function useStorageConsolidation() {
       return freeBudget.get(key)!;
     }
 
+    const bankRank = (vk: string) => (includeAlts.value && isBankVault(vk) ? 1 : 0);
+
     function pushMove(itemName: string, src: Holding, targetKey: string) {
       const moveKey = `${itemName}|${src.vk}|${targetKey}`;
+      const from = parseVaultId(src.vk);
+      const to = parseVaultId(targetKey);
       moves.push({
         itemName,
         quantity: src.qty,
@@ -213,6 +380,9 @@ export function useStorageConsolidation() {
         completed: completedMoves.value.has(moveKey),
         toVaultOccupied: vaultOccupied(targetKey),
         toVaultCapacity: vaultCapacity(targetKey),
+        fromCharacter: from.character,
+        toCharacter: to.character,
+        crossCharacter: ownerKey(from.character, from.server) !== ownerKey(to.character, to.server),
       });
     }
 
@@ -222,8 +392,12 @@ export function useStorageConsolidation() {
       const vaultMap = itemVaults.get(itemName)!;
       if (vaultMap.size < 2) continue;
 
-      // Candidate holders, most-of-this-item first (fewest moves, most already there).
-      const holders = [...vaultMap.values()].sort((a, b) => b.qty - a.qty || b.stacks - a.stacks);
+      // Candidate holders. With a designated bank, its vaults rank first so
+      // duplicates gather onto the bank where capacity allows; otherwise
+      // most-of-this-item first (fewest moves, most already there).
+      const holders = [...vaultMap.values()].sort(
+        (a, b) => bankRank(b.vk) - bankRank(a.vk) || b.qty - a.qty || b.stacks - a.stacks,
+      );
       const totalQty = holders.reduce((s, h) => s + h.qty, 0);
       const totalStacks = holders.reduce((s, h) => s + h.stacks, 0);
 
@@ -251,9 +425,11 @@ export function useStorageConsolidation() {
         continue;
       }
 
-      // No holder can take everything — reroute to the roomiest holder and move
-      // as many stacks as fit, flagging the leftover.
-      const roomiest = [...holders].sort((a, b) => budget(b.vk) - budget(a.vk) || b.qty - a.qty)[0];
+      // No holder can take everything — reroute to the roomiest holder (bank
+      // first when designated) and move as many stacks as fit, flagging the rest.
+      const roomiest = [...holders].sort(
+        (a, b) => bankRank(b.vk) - bankRank(a.vk) || budget(b.vk) - budget(a.vk) || b.qty - a.qty,
+      )[0];
       const ms = maxStack(itemName);
       let runQty = roomiest.qty;
       let runSlots = roomiest.stacks;
@@ -288,8 +464,8 @@ export function useStorageConsolidation() {
         itemName,
         leftoverQuantity: left.reduce((s, h) => s + h.qty, 0),
         leftoverStacks: left.reduce((s, h) => s + h.stacks, 0),
-        leftoverVaultNames: left.map((h) => vaultName(h.vk)),
-        targetVaultName: vaultName(roomiest.vk),
+        leftoverVaultNames: left.map((h) => vaultLabel(h.vk)),
+        targetVaultName: vaultLabel(roomiest.vk),
         fullyBlocked: movedStacks === 0,
       });
     }
@@ -648,6 +824,52 @@ export function useStorageConsolidation() {
     return stops;
   });
 
+  // ── Cross-alt UI helpers ─────────────────────────────────────────────────
+
+  /** Characters available to pool/target: the active character plus every alt
+   *  seen in the cross-character data, de-duplicated by (character, server). */
+  const availableCharacters = computed(() => {
+    const map = new Map<string, { key: string; character: string; server: string }>();
+    if (activeCharacter.value) {
+      const k = ownerKey(activeCharacter.value, activeServer.value);
+      map.set(k, { key: k, character: activeCharacter.value, server: activeServer.value });
+    }
+    for (const it of characterStore.allCharacterItems) {
+      const k = ownerKey(it.character_name, it.server_name);
+      if (!map.has(k)) map.set(k, { key: k, character: it.character_name, server: it.server_name });
+    }
+    return [...map.values()].sort((a, b) => a.character.localeCompare(b.character));
+  });
+
+  const altsLoading = computed(() => characterStore.allCharacterItemsLoading);
+  /** Distinct characters contributing storage to the current plan. */
+  const charactersInPlan = computed(() => {
+    const set = new Set<string>();
+    for (const it of ownedStorage.value) set.add(ownerKey(it.character, it.server));
+    return set.size;
+  });
+
+  /** Item-keyword categories present among the bank's non-gear stored items,
+   *  with a per-category distinct-item count. Drives the category dropdown. */
+  const availableCategories = computed(() => {
+    if (!includeAlts.value) return [] as { keyword: string; count: number }[];
+    const counts = new Map<string, number>();
+    const seen = new Set<string>();
+    for (const it of ownedStorage.value) {
+      if (seen.has(it.itemName)) continue;
+      if (isEquipment(it.itemName)) continue;
+      if (!bankHeldItems.value.has(it.itemName)) continue;
+      seen.add(it.itemName);
+      for (const kw of itemKeywords(it.itemName)) {
+        if (kw.startsWith("Lint_")) continue; // internal/dev keywords
+        counts.set(kw, (counts.get(kw) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .map(([keyword, count]) => ({ keyword, count }))
+      .sort((a, b) => a.keyword.localeCompare(b.keyword));
+  });
+
   return {
     plan,
     wizardActive,
@@ -660,6 +882,15 @@ export function useStorageConsolidation() {
     remainingZoneStops,
     completedCount,
     totalCount,
+    // Cross-alt options
+    includeAlts,
+    bankKey,
+    bankOwnerKey,
+    category,
+    availableCharacters,
+    availableCategories,
+    altsLoading,
+    charactersInPlan,
     // Action tracking (separate pickup/dropoff/local checkboxes)
     isPickupDone,
     isDropoffDone,
