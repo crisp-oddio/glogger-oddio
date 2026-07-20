@@ -714,6 +714,22 @@ const DELAY_LOOP_SLACK_SECS: u32 = 2;
 /// activity typically closes via an explicit signal sooner.
 const DEFAULT_CONTEXT_LIFETIME_SECS: u32 = 30;
 
+/// Max seconds between a corpse's `Search Corpse of X` loot window and a
+/// `ProcessRemoveLoot` for that pickup to still be filed under the corpse.
+///
+/// PG re-emits the corpse's `Search Corpse of X` TalkScreen in the *same* log
+/// tick as every item taken off it, so genuine corpse loot fires its RemoveLoot
+/// 0s after the search (auto-loot) or up to ~2s later (a slow manual first-grab)
+/// — verified across 59 real corpse-loot events, max observed gap 2s.
+///
+/// Gathered/ground loot (Xogrite Chunks and other node pickups) also fires
+/// `ProcessRemoveLoot` but has **no** corpse window of its own. Without this
+/// gate it borrowed whatever corpse-search context was still inside the 30s
+/// `DEFAULT_CONTEXT_LIFETIME_SECS`, mis-filing e.g. Xogrite Chunks under a
+/// monster killed seconds earlier. Requiring the corpse search to be *fresh*
+/// keeps ground loot out while comfortably covering real corpse loot.
+const CORPSE_LOOT_MAX_SEARCH_AGE_SECS: u32 = 3;
+
 /// Parse a Project: Gorgon item instance ID.
 ///
 /// The game logs item instance IDs as **signed 32-bit** integers, so they are
@@ -846,6 +862,25 @@ pub struct PlayerEventParser {
     /// (`skinned/butchered the corpse (with a +N skill bonus from equipment)`),
     /// attached to the extract that follows.
     pending_extract_equip_bonus: Option<u32>,
+
+    /// The most recent `Search Corpse of X` loot window and when it opened.
+    /// A `ProcessRemoveLoot` is attributed to this corpse only if the search is
+    /// still fresh (`CORPSE_LOOT_MAX_SEARCH_AGE_SECS`) — this is what keeps
+    /// gathered/ground loot (e.g. Xogrite Chunks) from being mis-filed under a
+    /// monster killed moments before. Cleared when the corpse interaction ends.
+    last_corpse_search: Option<CorpseSearchMark>,
+}
+
+/// The most recent corpse loot window, used to attribute `ProcessRemoveLoot`
+/// pickups. PG re-emits the corpse's `Search Corpse of X` TalkScreen in the same
+/// tick as each item taken off it, so a fresh mark identifies the corpse a
+/// RemoveLoot belongs to.
+#[derive(Clone, Debug)]
+struct CorpseSearchMark {
+    entity_id: u32,
+    corpse_name: String,
+    /// Seconds-of-day the search TalkScreen fired (from the log timestamp).
+    at_secs: u32,
 }
 
 /// A captured `Anatomy_<Family>` skill reading (e.g. family "Canines", raw 44).
@@ -881,6 +916,7 @@ impl PlayerEventParser {
             skill_levels: HashMap::new(),
             last_anatomy: None,
             pending_extract_equip_bonus: None,
+            last_corpse_search: None,
         }
     }
 
@@ -1950,21 +1986,22 @@ impl PlayerEventParser {
         let args_end = line[args_start..].find(')')? + args_start;
         let instance_id = parse_instance_id(&line[args_start..args_end])?;
 
-        // Attach the most recent CorpseSearch context (last = most recently opened).
-        // Multiple corpse searches can be active simultaneously (30s timeout each),
-        // so we must use the newest one — that's the corpse currently being looted.
-        let corpse_ctx = self.activity_contexts.iter().rev().find(|c| {
-            matches!(&c.source, ActivitySource::CorpseSearch { .. })
-        });
-        let (corpse_entity_id, corpse_name) = match corpse_ctx {
-            Some(c) => match &c.source {
-                ActivitySource::CorpseSearch {
-                    entity_id,
-                    corpse_name,
-                } => (Some(*entity_id), Some(corpse_name.clone())),
-                _ => (None, None),
-            },
-            None => (None, None),
+        // Attribute this pickup to the corpse whose loot window is open — but
+        // ONLY if that `Search Corpse of X` is still fresh. PG re-fires the
+        // corpse's search TalkScreen in the same tick as each item taken off it,
+        // so genuine corpse loot lands within `CORPSE_LOOT_MAX_SEARCH_AGE_SECS`
+        // of the mark. Gathered/ground loot (e.g. Xogrite Chunks) fires its own
+        // RemoveLoot with no corpse window; a stale mark from a monster killed
+        // seconds earlier must NOT capture it (that was the mis-filing bug).
+        let remove_at_secs = timestamp_to_secs(&ts);
+        let (corpse_entity_id, corpse_name) = match &self.last_corpse_search {
+            Some(mark)
+                if remove_at_secs.saturating_sub(mark.at_secs)
+                    <= CORPSE_LOOT_MAX_SEARCH_AGE_SECS =>
+            {
+                (Some(mark.entity_id), Some(mark.corpse_name.clone()))
+            }
+            _ => (None, None),
         };
 
         // Resolve item identity:
@@ -2449,6 +2486,16 @@ impl PlayerEventParser {
             });
 
             let started_at_secs = timestamp_to_secs(&ts);
+
+            // Mark this as the corpse whose loot window is currently open, so a
+            // following `ProcessRemoveLoot` (fired in the same tick per item) is
+            // filed under it — but only while the mark is fresh (see
+            // `parse_remove_loot` / `CORPSE_LOOT_MAX_SEARCH_AGE_SECS`).
+            self.last_corpse_search = Some(CorpseSearchMark {
+                entity_id,
+                corpse_name: corpse_name.trim().to_string(),
+                at_secs: started_at_secs,
+            });
             let source = ActivitySource::CorpseSearch {
                 entity_id,
                 corpse_name: corpse_name.trim().to_string(),
@@ -2597,6 +2644,11 @@ impl PlayerEventParser {
         // cast to u32 only when non-negative since activity contexts store u32.
         if entity_id >= 0 {
             self.close_activities_for_entity(entity_id as u32);
+            // The corpse loot window closed — drop the mark so a subsequent
+            // ground-loot pickup can't borrow it even inside the fresh window.
+            if self.last_corpse_search.as_ref().map(|m| m.entity_id) == Some(entity_id as u32) {
+                self.last_corpse_search = None;
+            }
         }
 
         Some(PlayerEvent::InteractionEnded {
@@ -5116,6 +5168,106 @@ mod tests {
                 assert_eq!(corpse_name, "Ratkin Miner");
             }
             other => panic!("Expected CorpseSearch, got {:?}", other),
+        }
+    }
+
+    /// Helper: pull the first LootPickedUp event out of a batch.
+    fn first_loot_pickup(events: &[PlayerEvent]) -> Option<&PlayerEvent> {
+        events.iter().find(|e| matches!(e, PlayerEvent::LootPickedUp { .. }))
+    }
+
+    #[test]
+    fn test_loot_attributes_to_fresh_corpse_search() {
+        // Genuine corpse loot: the item is taken in the same tick the corpse's
+        // `Search Corpse of X` window (re-)fires. It must be filed under that
+        // corpse.
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[18:04:38] LocalPlayer: ProcessTalkScreen(435269, "Search Corpse of Ratkin Miner", "", "", System.Int32[], System.String[], 1, Corpse)"#,
+        );
+        parser.process_line(
+            r#"[18:04:38] LocalPlayer: ProcessAddItem(SpruceWood(111), -1, True)"#,
+        );
+        let events =
+            parser.process_line(r#"[18:04:38] LocalPlayer: ProcessRemoveLoot(111)"#);
+        match first_loot_pickup(&events).expect("LootPickedUp present") {
+            PlayerEvent::LootPickedUp { corpse_entity_id, corpse_name, item_name, .. } => {
+                assert_eq!(*corpse_entity_id, Some(435269));
+                assert_eq!(corpse_name.as_deref(), Some("Ratkin Miner"));
+                assert_eq!(item_name.as_deref(), Some("SpruceWood"));
+            }
+            other => panic!("Expected LootPickedUp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_manual_loot_two_seconds_after_search_still_attributes() {
+        // Manual first-grab off a boss: window opens, item taken 2s later with
+        // no re-fire (real Throgg-the-Gemlord pattern). 2s is within the fresh
+        // window, so it still counts as that corpse's drop.
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[19:20:03] LocalPlayer: ProcessTalkScreen(428100, "Search Corpse of Throgg the Gemlord", "", "", System.Int32[], System.String[], 0, Corpse)"#,
+        );
+        parser.process_line(
+            r#"[19:20:05] LocalPlayer: ProcessAddItem(CouncilCoinpurse5(222), -1, True)"#,
+        );
+        let events =
+            parser.process_line(r#"[19:20:05] LocalPlayer: ProcessRemoveLoot(222)"#);
+        match first_loot_pickup(&events).expect("LootPickedUp present") {
+            PlayerEvent::LootPickedUp { corpse_entity_id, corpse_name, .. } => {
+                assert_eq!(*corpse_entity_id, Some(428100));
+                assert_eq!(corpse_name.as_deref(), Some("Throgg the Gemlord"));
+            }
+            other => panic!("Expected LootPickedUp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_ground_loot_after_stale_corpse_is_not_attributed() {
+        // The Xogrite bug: a monster is killed and its corpse searched, then the
+        // player gathers a ground node (Xogrite Chunk) several seconds later.
+        // The gather fires its own ProcessRemoveLoot with no corpse window; it
+        // must NOT be filed under the (now-stale) monster.
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[12:00:00] LocalPlayer: ProcessTalkScreen(500, "Search Corpse of Aktaari Royal Guard", "", "", System.Int32[], System.String[], 1, Corpse)"#,
+        );
+        // ... 8 seconds later, gather Xogrite from a ground node.
+        parser.process_line(
+            r#"[12:00:08] LocalPlayer: ProcessAddItem(XogriteChunk(999), -1, True)"#,
+        );
+        let events =
+            parser.process_line(r#"[12:00:08] LocalPlayer: ProcessRemoveLoot(999)"#);
+        match first_loot_pickup(&events).expect("LootPickedUp present") {
+            PlayerEvent::LootPickedUp { corpse_entity_id, corpse_name, item_name, .. } => {
+                assert_eq!(*corpse_entity_id, None, "ground loot must not borrow a stale corpse");
+                assert_eq!(*corpse_name, None);
+                assert_eq!(item_name.as_deref(), Some("XogriteChunk"));
+            }
+            other => panic!("Expected LootPickedUp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_end_interaction_clears_corpse_mark() {
+        // Closing the corpse window drops the mark, so a ground pickup right
+        // after (even within the fresh window) isn't filed under the corpse.
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[12:00:00] LocalPlayer: ProcessTalkScreen(500, "Search Corpse of Aktaari Royal Guard", "", "", System.Int32[], System.String[], 1, Corpse)"#,
+        );
+        parser.process_line(r#"[12:00:00] LocalPlayer: ProcessEndInteraction(500)"#);
+        parser.process_line(
+            r#"[12:00:01] LocalPlayer: ProcessAddItem(XogriteChunk(999), -1, True)"#,
+        );
+        let events =
+            parser.process_line(r#"[12:00:01] LocalPlayer: ProcessRemoveLoot(999)"#);
+        match first_loot_pickup(&events).expect("LootPickedUp present") {
+            PlayerEvent::LootPickedUp { corpse_entity_id, .. } => {
+                assert_eq!(*corpse_entity_id, None, "closed corpse window must not attribute");
+            }
+            other => panic!("Expected LootPickedUp, got {:?}", other),
         }
     }
 

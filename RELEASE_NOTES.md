@@ -1,7 +1,7 @@
-## What's Changed since v0.12.3
+## What's Changed since v0.12.4
 
 ### Fixes
-- fix(build-planner): convert direct damage to Fire for parenthesized type-change mods (`d19b004`)
+- fix(drop-tracker): stop filing ground/gathered loot under monster kills (`0e60ddd`)
 
 ---
-*2 commits since v0.12.3*
+*1 commits since v0.12.4*

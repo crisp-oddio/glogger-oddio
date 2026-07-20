@@ -332,6 +332,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 61)?;
     }
 
+    if current_version < 62 {
+        migration_v62_purge_misattributed_xogrite(conn)?;
+        super::record_migration(conn, 62)?;
+    }
+
     Ok(())
 }
 
@@ -361,6 +366,29 @@ fn migration_v61_poems(conn: &Connection) -> Result<()> {
             ON poems(recorded_at DESC);
         CREATE INDEX IF NOT EXISTS idx_poems_author
             ON poems(author);",
+    )?;
+    Ok(())
+}
+
+/// Migration V62: purge Xogrite Chunks mis-filed as monster loot.
+///
+/// Xogrite Chunks are gathered from ground nodes (Povus caves), never dropped by
+/// a corpse. A parser bug attributed any `ProcessRemoveLoot` to whatever
+/// `Search Corpse of X` window was still inside its 30s lifetime, so Xogrite
+/// gathered seconds after a nearby kill was filed under that monster (e.g. under
+/// "Aktaari Royal Guard"). The parser is fixed to require a *fresh* corpse search
+/// (see `CORPSE_LOOT_MAX_SEARCH_AGE_SECS` in `player_event_parser.rs`); this
+/// removes the rows the old code already wrote.
+///
+/// Only the loot rows are deleted — the `enemy_kills` denominators are genuine
+/// kills and stay. Match both the internal name (own tracking) and the display
+/// name (imported CSV/shared data). Idempotent: a no-op once clean.
+fn migration_v62_purge_misattributed_xogrite(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM enemy_kill_loot
+             WHERE item_name IN ('XogriteChunk', 'Xogrite Chunk');
+         DELETE FROM imported_enemy_kill_loot_agg
+             WHERE item_name IN ('XogriteChunk', 'Xogrite Chunk');",
     )?;
     Ok(())
 }
