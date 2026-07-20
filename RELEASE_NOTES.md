@@ -1,7 +1,7 @@
-## What's Changed since v0.12.4
+## What's Changed since v0.12.5
 
 ### Fixes
-- fix(drop-tracker): stop filing ground/gathered loot under monster kills (`0e60ddd`)
+- fix(consolidate): account for target vault slot capacity (`35d3704`)
 
 ---
-*1 commits since v0.12.4*
+*2 commits since v0.12.5*
