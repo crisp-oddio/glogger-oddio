@@ -126,6 +126,16 @@ Step-by-step zone checklist driven by the player's current location:
 - "Similar items" grouping suggestions
 - Persist plan across navigation (useViewPrefs)
 - Handle edge cases (vault full, item moved by other means)
+  - **Vault-full handling: DONE.** Plan generation is capacity-aware. Each vault
+    gets a running free-slot budget (`getVaultUnlockedSlots` ?? `getVaultMaxPossibleSlots`,
+    minus current occupancy; `null` capacity = unconstrained). A consolidation target
+    is only chosen if it can receive the incoming stacks. Slot cost depends on item
+    `max_stack_size`: stackable items merge (often 0 new slots), non-stackable gear
+    needs one slot per stack. If the natural best holder can't fit everything, the
+    planner reroutes to the roomiest holder that can, else does a partial fill and
+    flags the leftover via `ConsolidationPlan.blockedItems` (surfaced as a "Storage
+    full" warning banner). `slotsSaved` is now the accurate net (source stacks freed
+    minus new target slots) rather than a raw move count.
 
 ## Key Files
 
