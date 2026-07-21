@@ -2115,8 +2115,9 @@ impl DataIngestCoordinator {
         conn.execute(
             "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(character_name, server_name, cow_name, zone) DO UPDATE SET
-                last_milked_at = excluded.last_milked_at",
+             ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+                last_milked_at = excluded.last_milked_at,
+                zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
             rusqlite::params![character, server, cow_name, zone, now],
         )
         .ok();
@@ -2145,8 +2146,9 @@ impl DataIngestCoordinator {
         conn.execute(
             "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(character_name, server_name, cow_name, zone) DO UPDATE SET
-                last_milked_at = excluded.last_milked_at
+             ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+                last_milked_at = excluded.last_milked_at,
+                zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END
                 WHERE excluded.last_milked_at > milking_timers.last_milked_at",
             rusqlite::params![character, server, cow_name, zone, backfill_time],
         )

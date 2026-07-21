@@ -337,6 +337,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 62)?;
     }
 
+    if current_version < 63 {
+        migration_v63_milking_timers_per_cow(conn)?;
+        super::record_migration(conn, 63)?;
+    }
+
     Ok(())
 }
 
@@ -2840,6 +2845,56 @@ fn migration_v50_corpse_extracts(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration V63: make a cow's milking timer identity per-cow, not per-cow-per-zone.
+///
+/// A cow's 1-hour milk cooldown is a property of the NPC itself — the game's
+/// cooldown message ("You've already milked Homer in the past hour.") carries no
+/// zone. The original schema keyed `milking_timers` on
+/// `(character, server, cow_name, zone)`, so the *same* cow recorded once with a
+/// known area and once while `current_area` was still unknown (zone = '') landed
+/// in two rows. The widget then showed that cow twice — a live countdown under
+/// its real zone plus a phantom "Ready!" (or vice-versa) under a blank zone.
+///
+/// Drop `zone` from the primary key so each cow occupies a single row. Existing
+/// duplicates are merged: keep the most recent `last_milked_at`, and adopt the
+/// most recent *non-empty* zone as the grouping label (falling back to '' only
+/// when every recorded row had an unknown area). The write path (see
+/// `record_cow_milk` / `record_cow_milk_backfill`) is updated to conflict on the
+/// new key and to never overwrite a good zone with a blank one.
+fn migration_v63_milking_timers_per_cow(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE milking_timers_new (
+             character_name TEXT NOT NULL,
+             server_name TEXT NOT NULL,
+             cow_name TEXT NOT NULL,
+             zone TEXT NOT NULL,
+             last_milked_at TEXT NOT NULL,
+             PRIMARY KEY (character_name, server_name, cow_name)
+         );
+
+         INSERT INTO milking_timers_new
+             (character_name, server_name, cow_name, zone, last_milked_at)
+         SELECT m.character_name, m.server_name, m.cow_name,
+                COALESCE(
+                    (SELECT z.zone FROM milking_timers z
+                      WHERE z.character_name = m.character_name
+                        AND z.server_name = m.server_name
+                        AND z.cow_name = m.cow_name
+                        AND z.zone != ''
+                      ORDER BY z.last_milked_at DESC
+                      LIMIT 1),
+                    ''
+                ) AS zone,
+                MAX(m.last_milked_at) AS last_milked_at
+         FROM milking_timers m
+         GROUP BY m.character_name, m.server_name, m.cow_name;
+
+         DROP TABLE milking_timers;
+         ALTER TABLE milking_timers_new RENAME TO milking_timers;",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2916,5 +2971,88 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hits_goodbye, 1);
+    }
+
+    /// Recreate the original `milking_timers` schema (zone as a PK part) so we
+    /// can prove v63 collapses the per-zone duplicate rows into one per cow.
+    fn setup_legacy_milking_timers() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE milking_timers (
+                 character_name TEXT NOT NULL,
+                 server_name TEXT NOT NULL,
+                 cow_name TEXT NOT NULL,
+                 zone TEXT NOT NULL,
+                 last_milked_at TEXT NOT NULL,
+                 PRIMARY KEY (character_name, server_name, cow_name, zone)
+             );",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn v63_merges_per_zone_duplicate_cows() {
+        let c = setup_legacy_milking_timers();
+        // Homer recorded twice: once with a real zone (older), once while the
+        // area was still unknown (newer). Cookie only has an unknown-zone row.
+        // Bessie lives in a genuinely different zone and must survive alongside.
+        c.execute_batch(
+            "INSERT INTO milking_timers VALUES
+                 ('Me','Alpha','Homer','Red Wing Casino','2026-07-20T10:00:00+00:00'),
+                 ('Me','Alpha','Homer','','2026-07-20T10:56:00+00:00'),
+                 ('Me','Alpha','Cookie','','2026-07-20T09:00:00+00:00'),
+                 ('Me','Alpha','Bessie','Serbule','2026-07-20T08:00:00+00:00');",
+        )
+        .unwrap();
+
+        migration_v63_milking_timers_per_cow(&c).unwrap();
+
+        // One row per cow now.
+        let total: i64 = c
+            .query_row("SELECT COUNT(*) FROM milking_timers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 3, "each cow collapses to a single row");
+
+        // Homer keeps the most recent milk time and the most recent *non-empty* zone.
+        let (zone, last): (String, String) = c
+            .query_row(
+                "SELECT zone, last_milked_at FROM milking_timers WHERE cow_name = 'Homer'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(zone, "Red Wing Casino");
+        assert_eq!(last, "2026-07-20T10:56:00+00:00");
+
+        // Cookie only ever had an unknown zone — stays blank.
+        let cookie_zone: String = c
+            .query_row(
+                "SELECT zone FROM milking_timers WHERE cow_name = 'Cookie'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cookie_zone, "");
+
+        // The new key is per-cow: re-milking Homer from another zone updates the
+        // single row instead of inserting a second one.
+        c.execute(
+            "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
+             VALUES ('Me','Alpha','Homer','Serbule','2026-07-20T11:30:00+00:00')
+             ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+                last_milked_at = excluded.last_milked_at,
+                zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
+            [],
+        )
+        .unwrap();
+        let homer_rows: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM milking_timers WHERE cow_name = 'Homer'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(homer_rows, 1, "re-milk upserts, never duplicates");
     }
 }

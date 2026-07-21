@@ -56,15 +56,25 @@ Tracks cow milking activity across three categories: NPC cow cooldown timers, pl
 
 ## Database
 
-### Table: `milking_timers` (migration v35)
+### Table: `milking_timers` (migration v34, revised v63)
 
 | Column | Type | Description |
 |--------|------|-------------|
 | character_name | TEXT | PK part — character who milked |
 | server_name | TEXT | PK part — server |
 | cow_name | TEXT | PK part — display name (e.g., "Homer") |
-| zone | TEXT | PK part — area where cow was milked |
+| zone | TEXT | Area where the cow was last milked (grouping label only, not identity) |
 | last_milked_at | TEXT | RFC3339 timestamp of last milk |
+
+**Identity is per-cow, not per-cow-per-zone.** A cow's 1-hour cooldown belongs to
+the NPC itself (the game's "You've already milked Homer in the past hour." message
+carries no zone). `zone` was originally part of the primary key, so a cow recorded
+once with a known area and once while `current_area` was still unknown (`zone = ''`)
+produced two rows and the widget showed the cow twice. Migration v63 drops `zone`
+from the PK (keeping the most recent milk time and most recent non-empty zone when
+merging existing duplicates); the write path now upserts on
+`(character_name, server_name, cow_name)` and never overwrites a known zone with a
+blank one. The widget additionally de-duplicates by `cow_name` as a safeguard.
 
 ### Table: `player_milking_log` (migration v36, updated v38)
 
