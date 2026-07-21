@@ -34,7 +34,11 @@
               class="text-[10px] font-semibold uppercase tracking-wider text-accent-gold">
               Current Area:
             </span>
-            <AreaInline :reference="group.zone" class="text-xs font-semibold text-text-secondary" />
+            <AreaInline
+              v-if="group.zone"
+              :reference="group.zone"
+              class="text-xs font-semibold text-text-secondary" />
+            <span v-else class="text-xs font-semibold text-text-dim italic">Unknown Area</span>
           </div>
           <div class="flex flex-col gap-0.5">
             <div
@@ -146,8 +150,37 @@ let unlisten: UnlistenFn | null = null
 
 const currentZone = computed(() => gameState.world.area?.area_name ?? null)
 
+// Collapse to one entry per cow. A cow's cooldown is per-NPC (the backend keys
+// milking_timers on cow_name), but the same cow can have been recorded under
+// different zone strings before its area was known — guard against any residual
+// duplicate rows so a cow never shows twice.
+const dedupedTimers = computed<MilkingTimer[]>(() => {
+  const byCow = new Map<string, MilkingTimer>()
+  for (const t of timers.value) {
+    const existing = byCow.get(t.cow_name)
+    if (!existing) {
+      byCow.set(t.cow_name, { ...t })
+      continue
+    }
+    const tTime = new Date(t.last_milked_at).getTime()
+    const exTime = new Date(existing.last_milked_at).getTime()
+    // Most recent milk time drives the countdown; keep the most recent
+    // non-empty zone as the grouping label.
+    let zone = existing.zone
+    if (t.zone !== '' && (existing.zone === '' || tTime >= exTime)) {
+      zone = t.zone
+    }
+    byCow.set(t.cow_name, {
+      cow_name: t.cow_name,
+      zone,
+      last_milked_at: tTime > exTime ? t.last_milked_at : existing.last_milked_at,
+    })
+  }
+  return [...byCow.values()]
+})
+
 const groupedTimers = computed<ZoneGroup[]>(() => {
-  const withRemaining: TimerWithRemaining[] = timers.value.map(t => {
+  const withRemaining: TimerWithRemaining[] = dedupedTimers.value.map(t => {
     const milkedAt = new Date(t.last_milked_at).getTime()
     const remaining = Math.ceil((milkedAt + COOLDOWN_MS - now.value) / 1000)
     return { ...t, remaining }
@@ -165,7 +198,12 @@ const groupedTimers = computed<ZoneGroup[]>(() => {
   }
 
   const groups: ZoneGroup[] = []
-  const sortedZones = [...zones.keys()].sort((a, b) => a.localeCompare(b))
+  const sortedZones = [...zones.keys()].sort((a, b) => {
+    // Unknown ('') zones sort to the bottom.
+    if (a === '' && b !== '') return 1
+    if (a !== '' && b === '') return -1
+    return a.localeCompare(b)
+  })
 
   for (const zone of sortedZones) {
     groups.push({
