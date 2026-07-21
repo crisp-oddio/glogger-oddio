@@ -342,6 +342,32 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 63)?;
     }
 
+    if current_version < 64 {
+        migration_v64_arena_matches(conn)?;
+        super::record_migration(conn, 64)?;
+    }
+
+    Ok(())
+}
+
+/// Migration V64: casino arena fight outcomes (drives the Arena dashboard
+/// widget's fighter rankings + head-to-head matchup matrix). Kuzavek narrates
+/// each match on the `[NPC Chatter]` channel; we record the matchup and winner
+/// only (the player's wager lives in Player.log and isn't tracked here).
+/// Idempotent via the unique index — the same match re-ingested from chat
+/// backfill dedups on (fought_at, fighter_a, fighter_b).
+fn migration_v64_arena_matches(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS arena_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fought_at TEXT NOT NULL,
+            fighter_a TEXT NOT NULL,
+            fighter_b TEXT NOT NULL,
+            winner TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_arena_dedup
+            ON arena_matches(fought_at, fighter_a, fighter_b);",
+    )?;
     Ok(())
 }
 

@@ -100,6 +100,37 @@ export interface RouletteStats {
   recent: number[]
 }
 
+// ── Arena Types ──────────────────────────────────────────────────────────
+// Matches Rust ArenaStats (db/arena_commands.rs).
+
+export interface ArenaFighter {
+  name: string
+  wins: number
+  losses: number
+  win_pct: number
+}
+
+export interface ArenaHeadToHead {
+  fighter: string
+  opponent: string
+  wins: number
+  losses: number
+}
+
+export interface ArenaRecentMatch {
+  fought_at: string
+  fighter_a: string
+  fighter_b: string
+  winner: string
+}
+
+export interface ArenaStats {
+  total_matches: number
+  fighters: ArenaFighter[]
+  head_to_head: ArenaHeadToHead[]
+  recent: ArenaRecentMatch[]
+}
+
 export interface CombatWisdomMonster {
   name: string
   verb: string
@@ -208,6 +239,15 @@ export const useGameStateStore = defineStore('gameState', () => {
     counts: [],
     last_spun_at: null,
     last_number: null,
+    recent: [],
+  })
+
+  /** Persisted casino arena fight history (from the DB). Drives the Arena
+   *  widget's fighter rankings + head-to-head matchup matrix. */
+  const arenaStats = ref<ArenaStats>({
+    total_matches: 0,
+    fighters: [],
+    head_to_head: [],
     recent: [],
   })
 
@@ -591,6 +631,15 @@ export const useGameStateStore = defineStore('gameState', () => {
       rouletteStats.value = await invoke<RouletteStats>('get_roulette_stats')
     } catch (e) {
       console.error('[gameStateStore] Failed to load roulette stats:', e)
+    }
+  }
+
+  /** Fetch persisted casino arena fight history. */
+  async function fetchArenaStats() {
+    try {
+      arenaStats.value = await invoke<ArenaStats>('get_arena_stats')
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load arena stats:', e)
     }
   }
 
@@ -1080,6 +1129,12 @@ export const useGameStateStore = defineStore('gameState', () => {
   listen<string[]>('game-state-updated', (event) => {
     const unique = [...new Set(event.payload)]
     for (const domain of unique) {
+      // Arena history is global (not character-scoped), so it bypasses
+      // refreshDomain's active-character guard.
+      if (domain === 'arena') {
+        void fetchArenaStats()
+        continue
+      }
       refreshDomain(domain)
     }
   })
@@ -1183,6 +1238,8 @@ export const useGameStateStore = defineStore('gameState', () => {
     // Casino roulette outcome history
     rouletteStats,
     fetchRouletteStats,
+    arenaStats,
+    fetchArenaStats,
 
     // Council-wallet estimate
     currencyEstimate,
