@@ -547,6 +547,13 @@ pub fn run() {
                         }
                         Err(e) => eprintln!("Arena backfill failed: {e}"),
                     }
+                    // Personal betting history from Player.log + Player-prev.log.
+                    match db::arena_commands::backfill_bets_from_player_logs(&sm, &dbp) {
+                        Ok(n) => {
+                            startup_log!("Arena bet backfill: {} new bet(s)", n);
+                        }
+                        Err(e) => eprintln!("Arena bet backfill failed: {e}"),
+                    }
                 });
             }
 
@@ -674,6 +681,7 @@ pub fn run() {
             db::roulette_commands::backfill_roulette_from_chat_logs,
             db::arena_commands::get_arena_stats,
             db::arena_commands::backfill_arena_from_chat_logs,
+            db::arena_commands::backfill_arena_bets_from_player_logs,
             // CDN management
             get_cache_status,
             check_cdn_version,

@@ -124,11 +124,21 @@ export interface ArenaRecentMatch {
   winner: string
 }
 
+export interface ArenaBettingSummary {
+  total: number
+  won: number
+  win_pct: number
+  total_wagered: number
+  total_won: number
+  net_profit: number
+}
+
 export interface ArenaStats {
   total_matches: number
   fighters: ArenaFighter[]
   head_to_head: ArenaHeadToHead[]
   recent: ArenaRecentMatch[]
+  betting: ArenaBettingSummary
 }
 
 export interface CombatWisdomMonster {
@@ -249,6 +259,14 @@ export const useGameStateStore = defineStore('gameState', () => {
     fighters: [],
     head_to_head: [],
     recent: [],
+    betting: {
+      total: 0,
+      won: 0,
+      win_pct: 0,
+      total_wagered: 0,
+      total_won: 0,
+      net_profit: 0,
+    },
   })
 
   // ── Council-wallet estimate (anchored on last export + live deltas) ───

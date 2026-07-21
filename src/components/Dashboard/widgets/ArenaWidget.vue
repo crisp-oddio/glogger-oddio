@@ -8,12 +8,23 @@
     </div>
 
     <template v-else>
-      <!-- Header: sample size -->
-      <div class="flex items-baseline justify-between gap-2">
+      <!-- Header: sample size + personal betting rate -->
+      <div class="flex items-baseline justify-between gap-2 flex-wrap">
         <span class="text-xs text-text-dim uppercase tracking-wide">Fighter rankings</span>
-        <span class="text-xs text-text-dim tabular-nums">
-          <span class="text-sm font-semibold text-accent-gold">{{ stats.total_matches.toLocaleString() }}</span>
-          fights tracked
+        <span class="flex items-baseline gap-3 text-xs text-text-dim tabular-nums">
+          <span
+            v-if="stats.betting.total > 0"
+            class="cursor-help"
+            :title="bettingTooltip">
+            <span class="text-sm font-semibold" :style="{ color: rateColor(stats.betting.win_pct) }">
+              {{ stats.betting.win_pct.toFixed(0) }}%
+            </span>
+            Betting Rate
+          </span>
+          <span>
+            <span class="text-sm font-semibold text-accent-gold">{{ stats.total_matches.toLocaleString() }}</span>
+            fights tracked
+          </span>
         </span>
       </div>
 
@@ -136,6 +147,20 @@ const fighterNames = computed(() => stats.value.fighters.map((f) => f.name))
 const fighterOptions = computed(() =>
   fighterNames.value.map((n) => ({ value: n, label: n })),
 )
+
+/** P&L tooltip for the personal betting rate in the header. */
+const bettingTooltip = computed(() => {
+  const b = stats.value.betting
+  const net = b.net_profit
+  const sign = net >= 0 ? '+' : '−'
+  const netStr = `${sign}${Math.abs(net).toLocaleString()}`
+  return (
+    `${b.won}/${b.total} bets won\n` +
+    `Wagered: ${b.total_wagered.toLocaleString()} councils\n` +
+    `Won back: ${b.total_won.toLocaleString()} councils\n` +
+    `Net: ${netStr} councils`
+  )
+})
 
 // ── Matchup predictor state ───────────────────────────────────────────────
 const pickA = ref('')

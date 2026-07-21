@@ -347,6 +347,33 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 64)?;
     }
 
+    if current_version < 65 {
+        migration_v65_arena_bets(conn)?;
+        super::record_migration(conn, 65)?;
+    }
+
+    Ok(())
+}
+
+/// Migration V65: the player's own casino arena bets (drives the Arena widget's
+/// "Betting Rate" + P&L). Parsed from `Player.log` NPC 5712 talk screens; each
+/// resolved bet records the pick, opponent, wager, payout, and whether it won.
+/// Idempotent via the unique index — re-ingested from the Player.log backfill,
+/// the same bet dedups on (placed_at, pick).
+fn migration_v65_arena_bets(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS arena_bets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placed_at TEXT NOT NULL,
+            pick TEXT NOT NULL,
+            opponent TEXT NOT NULL,
+            wager INTEGER NOT NULL,
+            payout INTEGER NOT NULL,
+            won INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_arena_bets_dedup
+            ON arena_bets(placed_at, pick);",
+    )?;
     Ok(())
 }
 
