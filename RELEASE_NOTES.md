@@ -1,7 +1,7 @@
-## What's Changed since v0.12.8
+## What's Changed since v0.12.9
 
 ### Features
-- feat(arena): add Casino Arena fight tracker + dashboard widget (`0d722a7`)
+- feat(arena): track personal betting rate + P&L from Player.log (`f4aea8f`)
 
 ---
-*2 commits since v0.12.8*
+*2 commits since v0.12.9*

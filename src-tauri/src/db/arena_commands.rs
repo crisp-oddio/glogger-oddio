@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::DbPool;
-use crate::arena_parser::ArenaTracker;
+use crate::arena_parser::{ArenaBetTracker, ArenaTracker};
 use crate::chat_parser::parse_chat_line;
 use crate::settings::SettingsManager;
 
@@ -48,6 +48,23 @@ pub struct ArenaRecentMatch {
     pub winner: String,
 }
 
+/// The player's personal betting summary (their own bets, from Player.log).
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ArenaBettingSummary {
+    /// Resolved bets (win or loss).
+    pub total: u32,
+    /// Bets won.
+    pub won: u32,
+    /// Win percentage 0..=100.
+    pub win_pct: f64,
+    /// Total councils wagered across all resolved bets.
+    pub total_wagered: i64,
+    /// Total councils received from winning bets.
+    pub total_won: i64,
+    /// Net profit/loss (total_won - total_wagered).
+    pub net_profit: i64,
+}
+
 /// Aggregate arena history for the dashboard widget.
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct ArenaStats {
@@ -58,6 +75,8 @@ pub struct ArenaStats {
     pub head_to_head: Vec<ArenaHeadToHead>,
     /// Up to the last 15 matches, newest first.
     pub recent: Vec<ArenaRecentMatch>,
+    /// The player's own betting record (from Player.log NPC 5712 bets).
+    pub betting: ArenaBettingSummary,
 }
 
 /// Persist a single resolved match. Idempotent via `idx_arena_dedup`.
@@ -74,6 +93,64 @@ pub fn record_arena_match(
         rusqlite::params![fought_at, fighter_a, fighter_b, winner],
     )
     .map_err(|e| format!("Failed to record arena match: {e}"))
+}
+
+/// Persist a single resolved personal bet. Idempotent via `idx_arena_bets_dedup`.
+pub fn record_arena_bet(
+    conn: &rusqlite::Connection,
+    placed_at: &str,
+    pick: &str,
+    opponent: &str,
+    wager: i64,
+    payout: i64,
+    won: bool,
+) -> Result<usize, String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO arena_bets
+            (placed_at, pick, opponent, wager, payout, won)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![placed_at, pick, opponent, wager, payout, won as i64],
+    )
+    .map_err(|e| format!("Failed to record arena bet: {e}"))
+}
+
+/// Aggregate the player's personal betting record.
+fn aggregate_betting(conn: &rusqlite::Connection) -> Result<ArenaBettingSummary, String> {
+    // won-bet payouts and all-bet wagers, in one pass.
+    let (total, won, total_wagered, total_won) = conn
+        .query_row(
+            "SELECT
+                COUNT(*),
+                COALESCE(SUM(won), 0),
+                COALESCE(SUM(wager), 0),
+                COALESCE(SUM(CASE WHEN won = 1 THEN payout ELSE 0 END), 0)
+             FROM arena_bets",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u32,
+                    row.get::<_, i64>(1)? as u32,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("Betting aggregate error: {e}"))?;
+
+    let win_pct = if total == 0 {
+        0.0
+    } else {
+        (won as f64 / total as f64) * 100.0
+    };
+
+    Ok(ArenaBettingSummary {
+        total,
+        won,
+        win_pct,
+        total_wagered,
+        total_won,
+        net_profit: total_won - total_wagered,
+    })
 }
 
 /// Aggregate all persisted matches into fighter records, a head-to-head matrix,
@@ -181,11 +258,14 @@ pub fn aggregate_stats(conn: &rusqlite::Connection) -> Result<ArenaStats, String
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))?;
 
+    let betting = aggregate_betting(conn)?;
+
     Ok(ArenaStats {
         total_matches: total,
         fighters,
         head_to_head,
         recent,
+        betting,
     })
 }
 
@@ -287,6 +367,90 @@ pub fn backfill_arena_from_chat_logs(
     backfill_from_chat_logs(&settings, &db)
 }
 
+/// Scan `Player-prev.log` then `Player.log` for the player's own arena bets and
+/// persist the resolved ones. Idempotent (unique index). Returns rows inserted.
+///
+/// Unlike the chat-based fight backfill (many daily files), bets live only in
+/// the current + previous Player.log, so betting history reaches back only as
+/// far as those two files — it then accumulates permanently as new bets resolve
+/// on each rescan. Player.log lines carry no date, so each file's last-modified
+/// date anchors its bets (the poem-backfill pattern). A single tracker spans
+/// both files in chronological order so a bet placed at the tail of the previous
+/// log still resolves against a payout in the current one.
+pub fn backfill_bets_from_player_logs(
+    settings: &SettingsManager,
+    db: &DbPool,
+) -> Result<usize, String> {
+    // Oldest first: previous log, then the current one.
+    let paths: Vec<std::path::PathBuf> = [
+        settings.get_player_prev_log_path(),
+        settings.get_player_log_path(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|p| p.is_file())
+    .collect();
+
+    if paths.is_empty() {
+        return Ok(0);
+    }
+
+    let mut conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
+
+    let mut tracker = ArenaBetTracker::new();
+    let mut inserted = 0usize;
+
+    for path in &paths {
+        // Anchor this file's HH:MM:SS lines to its last-modified date.
+        let base_date = fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|mtime| chrono::DateTime::<chrono::Utc>::from(mtime).date_naive());
+
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        for line in text.lines() {
+            // Cheap pre-filter — bet lines are a tiny fraction of Player.log.
+            if !line.contains("You are betting ")
+                && !line.contains("Success! You have placed your bet for ")
+                && !line.contains("You received ")
+            {
+                continue;
+            }
+            if let Some(bet) = tracker.observe_line(line, base_date) {
+                // `&tx` derefs to `&Connection` for the shared recorder.
+                inserted += record_arena_bet(
+                    &tx,
+                    &bet.placed_at,
+                    &bet.pick,
+                    &bet.opponent,
+                    bet.wager,
+                    bet.payout,
+                    bet.won,
+                )?;
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| format!("Commit error: {e}"))?;
+    Ok(inserted)
+}
+
+/// Tauri command wrapper around [`backfill_bets_from_player_logs`].
+#[tauri::command]
+pub fn backfill_arena_bets_from_player_logs(
+    settings: State<'_, Arc<SettingsManager>>,
+    db: State<'_, DbPool>,
+) -> Result<usize, String> {
+    backfill_bets_from_player_logs(&settings, &db)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,7 +467,18 @@ mod tests {
                 winner TEXT NOT NULL
             );
             CREATE UNIQUE INDEX idx_arena_dedup
-                ON arena_matches(fought_at, fighter_a, fighter_b);",
+                ON arena_matches(fought_at, fighter_a, fighter_b);
+            CREATE TABLE arena_bets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                placed_at TEXT NOT NULL,
+                pick TEXT NOT NULL,
+                opponent TEXT NOT NULL,
+                wager INTEGER NOT NULL,
+                payout INTEGER NOT NULL,
+                won INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_arena_bets_dedup
+                ON arena_bets(placed_at, pick);",
         )
         .unwrap();
         conn
@@ -362,5 +537,37 @@ mod tests {
         assert_eq!(stats.total_matches, 0);
         assert!(stats.fighters.is_empty());
         assert!(stats.head_to_head.is_empty());
+        assert_eq!(stats.betting.total, 0);
+        assert_eq!(stats.betting.net_profit, 0);
+    }
+
+    #[test]
+    fn betting_summary_win_rate_and_pnl() {
+        let conn = setup();
+        // Two wins (7500→14250 each) and one loss (7500→0).
+        record_arena_bet(&conn, "2026-07-20 10:00:00", "Otis", "Leo", 7500, 14250, true).unwrap();
+        record_arena_bet(&conn, "2026-07-20 11:00:00", "Corrrak", "Gloz", 7500, 14250, true).unwrap();
+        record_arena_bet(&conn, "2026-07-20 12:00:00", "Leo", "Dura", 7500, 14250, false).unwrap();
+
+        let b = aggregate_stats(&conn).unwrap().betting;
+        assert_eq!(b.total, 3);
+        assert_eq!(b.won, 2);
+        assert!((b.win_pct - 66.666).abs() < 0.01);
+        assert_eq!(b.total_wagered, 22_500); // 3 × 7500
+        assert_eq!(b.total_won, 28_500); // 2 × 14250
+        assert_eq!(b.net_profit, 6_000); // 28500 - 22500
+    }
+
+    #[test]
+    fn bet_record_is_idempotent() {
+        let conn = setup();
+        for _ in 0..3 {
+            record_arena_bet(&conn, "2026-07-20 10:00:00", "Otis", "Leo", 7500, 14250, true)
+                .unwrap();
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM arena_bets", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

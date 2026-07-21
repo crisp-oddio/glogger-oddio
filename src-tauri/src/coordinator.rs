@@ -1019,6 +1019,7 @@ impl DataIngestCoordinator {
                         &msg.message,
                         &local_ts,
                     ) {
+                        let mut arena_changed = false;
                         if let Ok(conn) = self.db_pool.get() {
                             if let Ok(1) = crate::db::arena_commands::record_arena_match(
                                 &conn,
@@ -1027,10 +1028,26 @@ impl DataIngestCoordinator {
                                 &m.fighter_b,
                                 &m.winner,
                             ) {
-                                self.app_handle
-                                    .emit("game-state-updated", vec!["arena"])
-                                    .ok();
+                                arena_changed = true;
                             }
+                        }
+                        // A resolved fight means one of the player's own bets
+                        // likely just resolved too (the payout lands in Player.log
+                        // at fight end). Re-scan for bets — this only fires while
+                        // the player is at the casino watching, so it's naturally
+                        // infrequent. Idempotent, so re-scans are cheap no-ops.
+                        match crate::db::arena_commands::backfill_bets_from_player_logs(
+                            &self.settings,
+                            &self.db_pool,
+                        ) {
+                            Ok(n) if n > 0 => arena_changed = true,
+                            Ok(_) => {}
+                            Err(e) => eprintln!("[coordinator] Arena bet rescan failed: {e}"),
+                        }
+                        if arena_changed {
+                            self.app_handle
+                                .emit("game-state-updated", vec!["arena"])
+                                .ok();
                         }
                     }
 
