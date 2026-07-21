@@ -1,7 +1,7 @@
-## What's Changed since v0.12.7
+## What's Changed since v0.12.8
 
-### Fixes
-- fix(milking): de-duplicate cow timers by keying identity per-cow (`8a84c2f`)
+### Features
+- feat(arena): add Casino Arena fight tracker + dashboard widget (`0d722a7`)
 
 ---
-*2 commits since v0.12.7*
+*2 commits since v0.12.8*

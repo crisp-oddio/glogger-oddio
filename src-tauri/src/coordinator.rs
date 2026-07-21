@@ -117,6 +117,9 @@ pub struct DataIngestCoordinator {
     /// loot to a specific searched corpse. Populated when a `Search Corpse of X`
     /// loot window opens. Entries expire after 120 seconds.
     recent_kills: std::collections::HashMap<u32, (i64, std::time::Instant)>,
+    /// Casino arena narration tracker — resolves Kuzavek's `[NPC Chatter]`
+    /// intro/result lines into completed matches for the Arena widget.
+    arena_tracker: crate::arena_parser::ArenaTracker,
 }
 
 impl DataIngestCoordinator {
@@ -159,6 +162,7 @@ impl DataIngestCoordinator {
             debug_capture: DebugCaptureState::new(),
             pending_cow_interaction: None,
             recent_kills: std::collections::HashMap::new(),
+            arena_tracker: crate::arena_parser::ArenaTracker::new(),
         })
     }
 
@@ -1005,6 +1009,30 @@ impl DataIngestCoordinator {
                     // Convert chat timestamp from local time to UTC
                     let mut msg = msg;
                     msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
+
+                    // Casino arena narration (Kuzavek on [NPC Chatter]) → resolved
+                    // matches for the Arena widget. Uses the local wall-clock
+                    // timestamp so live records dedup against the chat backfill.
+                    if let Some(m) = self.arena_tracker.observe(
+                        msg.channel.as_deref(),
+                        msg.sender.as_deref(),
+                        &msg.message,
+                        &local_ts,
+                    ) {
+                        if let Ok(conn) = self.db_pool.get() {
+                            if let Ok(1) = crate::db::arena_commands::record_arena_match(
+                                &conn,
+                                &m.fought_at,
+                                &m.fighter_a,
+                                &m.fighter_b,
+                                &m.winner,
+                            ) {
+                                self.app_handle
+                                    .emit("game-state-updated", vec!["arena"])
+                                    .ok();
+                            }
+                        }
+                    }
 
                     // Run Status channel messages through the structured parser
                     if let Some(status_event) = parse_status_message(&msg) {

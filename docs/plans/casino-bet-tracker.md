@@ -2,7 +2,22 @@
 
 Parse arena fight announcements, bet confirmations, and outcomes. Track bet history with win/loss stats and P&L.
 
-**Blocked on Phase 0: Log sample collection is required before implementation can begin.**
+## Status
+
+- **Phase 0 (log capture): DONE.** Real samples confirmed — see "Confirmed Log Events" below.
+- **Fighter prediction tracker: SHIPPED** (the "who wins most often" subset the user asked for). Kuzavek's `[NPC Chatter]` intro/result narration is parsed into resolved matches, no manual tips:
+  - `arena_parser.rs` — stateful `ArenaTracker` (intro pair → result line), 7-fighter seed roster + auto-discovery.
+  - `db/arena_commands.rs` + migration v64 (`arena_matches`) — records + aggregates (per-fighter W/L, directed H2H matrix, recent), chat-log backfill.
+  - `coordinator.rs` wiring (live) + startup backfill in `lib.rs`.
+  - `ArenaWidget.vue` (`arena` dashboard widget) — rankings, H2H matrix, matchup predictor (H2H ≥3 samples, else overall win rate).
+- **Still TODO (the betting/P&L half):** parse the player's own wager from `Player.log` NPC 5712 talk screens and correlate payouts. Confirmed parseable (see below) but not yet built.
+
+## Confirmed Log Events (captured from real logs)
+
+- **Fighters + matchup** (`Chat.log`, `[NPC Chatter] Kuzavek:`): `Introducing our two competitors! On the far side is ... OTIS!` then `And on the side nearest me is Leo ...!`
+- **Result** (`Chat.log`): `<X> wins!` / `<X> loses!` / `<X> has been defeated!` / `... has fallen` / `... is down`. Winner named OR loser named; wording is highly variable, so resolution is scoped to the already-known pending pair.
+- **Bet placement + odds** (`Player.log`, NPC 5712 "Kuzavek"): `ProcessTalkScreen(5712, "Confirm Bet", "You are betting <em>7500</em> Councils that Otis defeats Leo... you will receive <em>14250</em> Councils...")` — wager, pick, opponent, payout.
+- **Payout**: win → `ProcessScreenText(CombatInfo, "You received N Councils.")` (generic — must gate on expected amount + area + time); loss → no line.
 
 ## Log Events (Unconfirmed — Needs Captures)
 

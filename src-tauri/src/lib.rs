@@ -1,3 +1,4 @@
+mod arena_parser;
 mod cdn;
 mod cdn_commands;
 mod cdn_diff;
@@ -533,6 +534,22 @@ pub fn run() {
                 });
             }
 
+            // Step 5d-ii-b: One-shot backfill of casino arena fight outcomes from
+            // the historical ChatLogs so the Arena widget's rankings + matchup
+            // matrix are populated immediately. Idempotent (unique index).
+            {
+                let sm = settings_manager.clone();
+                let dbp = db_pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    match db::arena_commands::backfill_from_chat_logs(&sm, &dbp) {
+                        Ok(n) => {
+                            startup_log!("Arena backfill: {} new match(es)", n);
+                        }
+                        Err(e) => eprintln!("Arena backfill failed: {e}"),
+                    }
+                });
+            }
+
             // Step 5d-iii: One-shot removal of words of power that were spoken
             // while glogger wasn't running — scans only chat logs dated after
             // the earliest saved discovery, so it's a no-op when the widget is
@@ -655,6 +672,8 @@ pub fn run() {
             db::combat_wisdom_commands::backfill_combat_wisdom_from_chat_logs,
             db::roulette_commands::get_roulette_stats,
             db::roulette_commands::backfill_roulette_from_chat_logs,
+            db::arena_commands::get_arena_stats,
+            db::arena_commands::backfill_arena_from_chat_logs,
             // CDN management
             get_cache_status,
             check_cdn_version,
