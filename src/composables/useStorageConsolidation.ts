@@ -126,12 +126,26 @@ export function useStorageConsolidation() {
 
   /** Separator for composite (character, server, vault) identities. */
   const SEP = "";
+  /** Owner token for account-wide "transfer chest" storage shared by all characters. */
+  const SHARED = "*Account*";
+  /** Account-wide transfer chests (`*AccountStorage_*`) are shared across every
+   *  character, so their contents must be counted once, not once per character. */
+  function isAccountVault(vaultKey: string): boolean {
+    return vaultKey.startsWith("*AccountStorage");
+  }
   function ownerKey(character: string, server: string): string {
     return `${character}${SEP}${server}`;
   }
-  /** Composite vault id. In single-character mode this is just the raw vault_key. */
+  /** Friendly owner label; the shared account token renders as "Account". */
+  function ownerDisplay(character: string): string {
+    return character === SHARED ? "Account" : character;
+  }
+  /** Composite vault id. Single-character mode uses the raw vault_key; in alt mode
+   *  account/transfer chests get the shared owner so they collapse to one vault. */
   function makeVaultId(character: string, server: string, vaultKey: string): string {
-    return includeAlts.value ? `${character}${SEP}${server}${SEP}${vaultKey}` : vaultKey;
+    if (!includeAlts.value) return vaultKey;
+    const owner = isAccountVault(vaultKey) ? SHARED : character;
+    return `${owner}${SEP}${server}${SEP}${vaultKey}`;
   }
   function parseVaultId(id: string): { character: string; server: string; vaultKey: string } {
     const first = id.indexOf(SEP);
@@ -172,10 +186,31 @@ export function useStorageConsolidation() {
   // ── Unified storage dataset ──────────────────────────────────────────────
   interface OwnedItem { character: string; server: string; vaultKey: string; itemName: string; stackSize: number }
 
+  /** One character whose account-storage rows represent the shared transfer chests
+   *  (prefer the active character; else the first character that has any). Used to
+   *  count account/transfer-chest contents once instead of once per character. */
+  const canonicalAccountOwner = computed(() => {
+    const activeK = ownerKey(activeCharacter.value, activeServer.value);
+    const owners = new Set<string>();
+    let first = "";
+    for (const it of characterStore.allCharacterItems) {
+      if (!it.is_in_inventory && isAccountVault(it.storage_vault)) {
+        const k = ownerKey(it.character_name, it.server_name);
+        owners.add(k);
+        if (!first) first = k;
+      }
+    }
+    return owners.has(activeK) ? activeK : first;
+  });
+
   const ownedStorage = computed<OwnedItem[]>(() => {
     if (includeAlts.value) {
+      const canonical = canonicalAccountOwner.value;
       return characterStore.allCharacterItems
         .filter((it) => !it.is_in_inventory && it.storage_vault)
+        // account/transfer chests are shared — keep only one character's copy
+        .filter((it) => !isAccountVault(it.storage_vault)
+          || ownerKey(it.character_name, it.server_name) === canonical)
         .map((it) => ({
           character: it.character_name,
           server: it.server_name,
@@ -216,7 +251,7 @@ export function useStorageConsolidation() {
   /** Vault name, prefixed with its owning character when alts are pooled. */
   function vaultLabel(id: string): string {
     const name = vaultName(id);
-    return includeAlts.value ? `[${parseVaultId(id).character}] ${name}` : name;
+    return includeAlts.value ? `[${ownerDisplay(parseVaultId(id).character)}] ${name}` : name;
   }
 
   // ── Capacity helpers ────────────────────────────────────────────────────
@@ -380,9 +415,12 @@ export function useStorageConsolidation() {
         completed: completedMoves.value.has(moveKey),
         toVaultOccupied: vaultOccupied(targetKey),
         toVaultCapacity: vaultCapacity(targetKey),
-        fromCharacter: from.character,
-        toCharacter: to.character,
-        crossCharacter: ownerKey(from.character, from.server) !== ownerKey(to.character, to.server),
+        fromCharacter: ownerDisplay(from.character),
+        toCharacter: ownerDisplay(to.character),
+        // Account/transfer chests are reachable from any character, so a move that
+        // touches one is NOT a character switch — only real-char↔real-char moves are.
+        crossCharacter: from.character !== SHARED && to.character !== SHARED
+          && ownerKey(from.character, from.server) !== ownerKey(to.character, to.server),
       });
     }
 

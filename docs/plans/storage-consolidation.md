@@ -131,6 +131,11 @@ which backfills each character's Storage report and returns items tagged with th
   identity in this mode is the composite `(character, server, vault_key)`, not `vault_key`
   alone. In single-character mode the id collapses back to the raw `vault_key` (no behavior
   change).
+- **Transfer chests are shared:** account-wide "transfer chests" (`*AccountStorage_*`) are
+  visible to every character, so all characters report the same contents. They're deduped to
+  one shared location (owner token `*Account*`, displayed "Account") by keeping only the
+  `canonicalAccountOwner`'s copy — otherwise they'd appear as N-times duplicates. Moves
+  touching a transfer chest are not flagged cross-character (any character can reach them).
 - **Bank targeting:** a **"Gather onto ⟨character⟩"** selector designates a bank/mule
   character (defaults to the active character). Its vaults rank first in target selection,
   so duplicates gather onto the bank where capacity allows; if the bank doesn't hold an
