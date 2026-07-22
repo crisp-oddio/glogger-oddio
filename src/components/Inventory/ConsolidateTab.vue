@@ -333,15 +333,15 @@ const MoveChecklist = defineComponent({
             : null,
           h(ItemInline, { reference: move.itemName, class: 'flex-1 min-w-0 truncate' }),
           h('span', { class: 'tabular-nums text-text-secondary shrink-0' }, `x${move.quantity}`),
-          props.showVaultName ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-40' }, vaultBits(move.fromCharacter, move.fromVaultName)) : null,
-          props.showTarget ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-44' }, [
+          props.showVaultName ? h('span', { class: 'text-text-dim text-xs shrink-0 flex items-center gap-1 max-w-64' }, vaultBits(move.fromCharacter, move.fromVaultName)) : null,
+          props.showTarget ? h('span', { class: 'text-text-dim text-xs shrink-0 flex items-center gap-1 max-w-64' }, [
             h('span', { class: 'shrink-0' }, '→'),
             ...vaultBits(move.toCharacter, move.toVaultName),
             (props.showCapacity && move.toVaultCapacity != null)
               ? h('span', { class: ['tabular-nums shrink-0', capClass(move)] }, `${move.toVaultOccupied}/${move.toVaultCapacity}`)
               : null,
           ]) : null,
-          props.showBothVaults ? h('span', { class: 'text-text-dim text-[10px] shrink-0 flex items-center gap-1 max-w-56' }, [
+          props.showBothVaults ? h('span', { class: 'text-text-dim text-xs shrink-0 flex items-center gap-1 max-w-80' }, [
             ...vaultBits(move.fromCharacter, move.fromVaultName),
             h('span', { class: 'shrink-0' }, '→'),
             ...vaultBits(move.toCharacter, move.toVaultName),
