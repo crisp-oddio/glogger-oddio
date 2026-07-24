@@ -16,7 +16,10 @@
       <div v-if="session.earns.length === 0" class="text-xs text-text-dim italic">
         No Combat Wisdom earned yet this session.
       </div>
-      <div v-else class="flex flex-col gap-1 max-h-40 overflow-y-auto pr-1">
+      <div
+        v-else
+        class="flex flex-col gap-1 overflow-y-auto pr-1 min-h-0"
+        :style="{ height: earnedHeight + 'px' }">
         <div
           v-for="(e, i) in session.earns"
           :key="i"
@@ -30,7 +33,15 @@
       </div>
     </div>
 
-    <div class="h-px bg-border-default" />
+    <!-- Draggable divider: shrinks Earned to give Monster cooldowns more room -->
+    <div
+      class="group relative h-px bg-border-default cursor-row-resize select-none -my-1 py-1"
+      title="Drag to resize"
+      @pointerdown="startDrag">
+      <div
+        class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 rounded transition-colors"
+        :class="dragging ? 'bg-accent-gold' : 'bg-transparent group-hover:bg-accent-gold/50'" />
+    </div>
 
     <!-- Per-monster cooldowns -->
     <div class="flex flex-col gap-1.5 min-h-0 flex-1">
@@ -72,6 +83,38 @@ const store = useGameStateStore()
 const now = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | undefined
 
+// --- Resizable split between "Earned this session" and "Monster cooldowns" ---
+const EARNED_MIN = 48
+const EARNED_MAX = 400
+const EARNED_KEY = 'combatWisdom.earnedHeight'
+const earnedHeight = ref(clampEarned(Number(localStorage.getItem(EARNED_KEY)) || 160))
+const dragging = ref(false)
+let dragStartY = 0
+let dragStartHeight = 0
+
+function clampEarned(h: number): number {
+  return Math.min(EARNED_MAX, Math.max(EARNED_MIN, Math.round(h)))
+}
+
+function startDrag(e: PointerEvent) {
+  dragging.value = true
+  dragStartY = e.clientY
+  dragStartHeight = earnedHeight.value
+  ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+  window.addEventListener('pointermove', onDrag)
+  window.addEventListener('pointerup', endDrag)
+  e.preventDefault()
+}
+function onDrag(e: PointerEvent) {
+  earnedHeight.value = clampEarned(dragStartHeight + (e.clientY - dragStartY))
+}
+function endDrag() {
+  dragging.value = false
+  localStorage.setItem(EARNED_KEY, String(earnedHeight.value))
+  window.removeEventListener('pointermove', onDrag)
+  window.removeEventListener('pointerup', endDrag)
+}
+
 onMounted(() => {
   store.fetchCombatWisdomMonsters()
   timer = setInterval(() => {
@@ -80,6 +123,8 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  window.removeEventListener('pointermove', onDrag)
+  window.removeEventListener('pointerup', endDrag)
 })
 
 const session = computed(() => store.combatWisdomSession)
