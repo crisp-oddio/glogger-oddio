@@ -1,7 +1,7 @@
-## What's Changed since v0.12.10
+## What's Changed since v0.12.11
 
 ### Features
-- feat(consolidate): dedupe account transfer chests + enlarge/widen move labels (`4daac54`)
+- feat(combat-wisdom): draggable split to resize monster cooldowns (`3111850`)
 
 ---
-*2 commits since v0.12.10*
+*1 commits since v0.12.11*
