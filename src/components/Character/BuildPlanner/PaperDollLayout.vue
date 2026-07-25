@@ -95,6 +95,8 @@
             :model-value="store.activePreset.skill_primary ?? ''"
             :options="combatSkillOptions"
             size="xs"
+            searchable
+            search-placeholder="Type a skill..."
             class="flex-1"
             @update:model-value="onPrimarySkillChange" />
         </div>
@@ -104,6 +106,8 @@
             :model-value="store.activePreset.skill_secondary ?? ''"
             :options="combatSkillOptions"
             size="xs"
+            searchable
+            search-placeholder="Type a skill..."
             class="flex-1"
             @update:model-value="onSecondarySkillChange" />
         </div>
@@ -238,7 +242,9 @@ const rarityOptions = RARITY_DEFS.map(r => ({ value: r.id, label: r.label }))
 // equipment slot still falls back to these unless it sets its own skill.
 const combatSkillOptions = computed(() => [
   { value: '', label: 'None' },
-  ...store.combatSkills.map(s => ({ value: s.name, label: s.name })),
+  ...store.combatSkills
+    .map(s => ({ value: s.name, label: s.name }))
+    .sort((a, b) => a.label.localeCompare(b.label)),
 ])
 
 // Collapsible section states, persisted per-install via view prefs so the

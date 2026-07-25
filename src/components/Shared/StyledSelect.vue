@@ -31,23 +31,42 @@
       <div
         v-if="open"
         ref="dropdownRef"
-        class="fixed z-50 rounded border border-border-default bg-surface-elevated shadow-lg overflow-y-auto"
+        class="fixed z-50 rounded border border-border-default bg-surface-elevated shadow-lg flex flex-col"
         :style="dropdownStyle"
         :class="sizeClasses.dropdown">
-        <button
-          v-for="option in options"
-          :key="option.value"
-          type="button"
-          class="w-full text-left cursor-pointer transition-colors truncate"
-          :class="[
-            sizeClasses.option,
-            option.value === modelValue
-              ? 'bg-accent-gold/15 text-accent-gold font-medium'
-              : 'text-text-primary hover:bg-surface-hover',
-          ]"
-          @click="select(option.value)">
-          {{ option.label }}
-        </button>
+        <input
+          v-if="showSearch"
+          ref="searchRef"
+          v-model="searchQuery"
+          type="text"
+          :placeholder="searchPlaceholder"
+          class="shrink-0 w-full bg-surface border-b border-border-default text-text-primary placeholder:text-text-muted focus:outline-none"
+          :class="sizeClasses.option"
+          @keydown.enter.prevent="selectFirstFiltered"
+          @keydown.escape.prevent="close"
+          @keydown.down.prevent="focusFirstOption" />
+        <div class="overflow-y-auto min-h-0">
+          <button
+            v-for="option in filteredOptions"
+            :key="option.value"
+            type="button"
+            class="w-full text-left cursor-pointer transition-colors truncate"
+            :class="[
+              sizeClasses.option,
+              option.value === modelValue
+                ? 'bg-accent-gold/15 text-accent-gold font-medium'
+                : 'text-text-primary hover:bg-surface-hover',
+            ]"
+            @click="select(option.value)">
+            {{ option.label }}
+          </button>
+          <div
+            v-if="showSearch && filteredOptions.length === 0"
+            class="text-text-muted"
+            :class="sizeClasses.option">
+            No matches
+          </div>
+        </div>
       </div>
     </Teleport>
   </div>
@@ -68,21 +87,48 @@ const props = withDefaults(defineProps<{
   size?: 'xs' | 'sm' | 'md'
   colorClass?: string
   fullWidth?: boolean
+  /**
+   * Type-to-search filter box atop the dropdown.
+   * - 'auto' (default): shown automatically once the list is long enough
+   *   (see AUTO_SEARCH_THRESHOLD) so every big dropdown app-wide gets it for free.
+   * - true / false: force it on or off regardless of list length.
+   */
+  searchable?: boolean | 'auto'
+  searchPlaceholder?: string
 }>(), {
   placeholder: 'Select...',
   size: 'sm',
   colorClass: '',
   fullWidth: false,
+  searchable: 'auto',
+  searchPlaceholder: 'Type to search...',
 })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
 }>()
 
+// Lists at or above this many options auto-gain a search box when searchable === 'auto'.
+const AUTO_SEARCH_THRESHOLD = 8
+
 const containerRef = ref<HTMLElement>()
 const dropdownRef = ref<HTMLElement>()
+const searchRef = ref<HTMLInputElement>()
 const open = ref(false)
+const searchQuery = ref('')
 const dropdownStyle = ref<Record<string, string>>({})
+
+const showSearch = computed(() => {
+  if (props.searchable === 'auto') return props.options.length >= AUTO_SEARCH_THRESHOLD
+  return props.searchable
+})
+
+const filteredOptions = computed(() => {
+  if (!showSearch.value) return props.options
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return props.options
+  return props.options.filter(o => o.label.toLowerCase().includes(q))
+})
 
 const sizeClasses = computed(() => {
   switch (props.size) {
@@ -142,12 +188,26 @@ function toggle() {
     close()
   } else {
     open.value = true
-    nextTick(positionDropdown)
+    searchQuery.value = ''
+    nextTick(() => {
+      positionDropdown()
+      if (showSearch.value) searchRef.value?.focus()
+    })
   }
 }
 
 function close() {
   open.value = false
+}
+
+function selectFirstFiltered() {
+  const first = filteredOptions.value[0]
+  if (first) select(first.value)
+}
+
+function focusFirstOption() {
+  const btn = dropdownRef.value?.querySelector<HTMLButtonElement>('button')
+  btn?.focus()
 }
 
 function select(value: string) {
