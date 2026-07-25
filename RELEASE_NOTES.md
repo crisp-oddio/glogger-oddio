@@ -1,7 +1,7 @@
-## What's Changed since v0.12.11
+## What's Changed since v0.12.12
 
 ### Features
-- feat(combat-wisdom): draggable split to resize monster cooldowns (`3111850`)
+- feat(build-planner): type-to-search filter for long dropdowns app-wide (`1e28db8`)
 
 ---
-*1 commits since v0.12.11*
+*2 commits since v0.12.12*
