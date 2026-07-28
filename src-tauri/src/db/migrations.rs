@@ -352,6 +352,35 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 65)?;
     }
 
+    if current_version < 66 {
+        migration_v66_harvest_almanac(conn)?;
+        super::record_migration(conn, 66)?;
+    }
+
+    Ok(())
+}
+
+/// Migration V66: the Emotion-Harvesting Almanac (the `AlmanacPriestHarvesting`
+/// NPC in Statehelm) — which monsters are the day's harvesting foci. Mirrors
+/// `garden_almanac`: the whole snapshot is replaced on each read, so no unique
+/// index is needed. The almanac names a monster but no zone, so `zone_name` is
+/// deliberately absent — the widget resolves zones from the kill database.
+fn migration_v66_harvest_almanac(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS harvest_almanac (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            monster_name TEXT NOT NULL,
+            description TEXT,
+            event_start TEXT,
+            event_end TEXT,
+            is_current INTEGER NOT NULL DEFAULT 0,
+            captured_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_harvest_almanac_char_server
+            ON harvest_almanac(character_name, server_name);",
+    )?;
     Ok(())
 }
 
@@ -3028,6 +3057,50 @@ mod tests {
 
     /// Recreate the original `milking_timers` schema (zone as a PK part) so we
     /// can prove v63 collapses the per-zone duplicate rows into one per cow.
+    /// The widget reads via `get_harvest_almanac`, whose SELECT must line up with
+    /// the columns v66 creates — a mismatch only shows up at runtime otherwise.
+    #[test]
+    fn v66_harvest_almanac_round_trips() {
+        let c = Connection::open_in_memory().unwrap();
+        migration_v66_harvest_almanac(&c).unwrap();
+
+        c.execute_batch(
+            "INSERT INTO harvest_almanac
+                 (character_name, server_name, monster_name, description, event_start, event_end, is_current, captured_at)
+             VALUES
+                 ('oddio','Arisetsu','Skeleton Swordsmen','Seek out skeletal swordsmen.',NULL,'2026-07-29T03:59:26+00:00',1,'2026-07-28T05:57:26+00:00'),
+                 ('oddio','Arisetsu','Rock Elementals',NULL,'2026-07-29T03:00:00+00:00',NULL,0,'2026-07-28T05:57:26+00:00'),
+                 ('someone-else','Arisetsu','Wolves',NULL,NULL,NULL,1,'2026-07-28T05:57:26+00:00');",
+        )
+        .unwrap();
+
+        // Mirrors get_harvest_almanac's query exactly.
+        let mut stmt = c
+            .prepare(
+                "SELECT monster_name, description, event_start, event_end, is_current, captured_at
+                 FROM harvest_almanac
+                 WHERE character_name = ?1 AND server_name = ?2
+                 ORDER BY is_current DESC, event_start ASC",
+            )
+            .unwrap();
+        let rows: Vec<(String, Option<String>, bool)> = stmt
+            .query_map(rusqlite::params!["oddio", "Arisetsu"], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get::<_, i32>(4)? != 0))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // Scoped to the character, current focus first.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "Skeleton Swordsmen");
+        assert!(rows[0].2);
+        assert_eq!(rows[0].1.as_deref(), Some("Seek out skeletal swordsmen."));
+        assert_eq!(rows[1].0, "Rock Elementals");
+        assert!(!rows[1].2);
+        assert_eq!(rows[1].1, None);
+    }
+
     fn setup_legacy_milking_timers() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
