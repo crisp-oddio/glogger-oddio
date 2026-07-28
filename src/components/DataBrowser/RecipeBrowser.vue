@@ -157,6 +157,20 @@
             </div>
           </div>
 
+          <!-- Currency costs (Combat Wisdom, Fae Energy, …) -->
+          <div v-if="selected.costs?.length" class="flex flex-col gap-1.5">
+            <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5">Currency Cost</div>
+            <div class="flex flex-col gap-1">
+              <div
+                v-for="(cost, idx) in selected.costs"
+                :key="idx"
+                class="flex gap-2 items-center text-sm px-1.5 py-0.5 bg-surface-inset border-l-2 border-l-accent-gold/50">
+                <span class="text-accent-gold text-[0.72rem] min-w-10 shrink-0 tabular-nums">{{ cost.price.toLocaleString() }}</span>
+                <span class="flex-1 text-accent-gold">{{ currencyLabel(cost.currency) }}</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Results -->
           <div v-if="selected.result_items.length" class="flex flex-col gap-1.5">
             <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5">Results</div>
@@ -318,6 +332,7 @@ import SkillInline from "../Shared/Skill/SkillInline.vue";
 import RecipeInline from "../Shared/Recipe/RecipeInline.vue";
 import SourcesPanel from "../Shared/SourcesPanel.vue";
 import { useRecipeCost, formatGold } from "../../composables/useRecipeCost";
+import { currencyLabel } from "../../utils/recipeCurrency";
 
 const props = defineProps<{
   navTarget?: EntityNavigationTarget | null;

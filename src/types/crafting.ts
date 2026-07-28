@@ -65,6 +65,15 @@ export interface ResolvedIngredient {
   is_dynamic: boolean
 }
 
+/** A non-item currency cost (Combat Wisdom, Fae Energy, …) scaled to the craft count */
+export interface ResolvedCurrencyCost {
+  currency: string
+  /** Cost of a single craft */
+  per_craft: number
+  /** Total across every craft, including expanded intermediates */
+  total: number
+}
+
 export interface ResolvedRecipe {
   recipe_id: number
   recipe_name: string
@@ -86,6 +95,8 @@ export interface ResolvedRecipe {
   ingredients: ResolvedIngredient[]
   /** Estimated vendor cost for all ingredients */
   estimated_cost: number
+  /** Currency costs (Combat Wisdom, Fae Energy, …), incl. expanded intermediates */
+  currency_costs: ResolvedCurrencyCost[]
 }
 
 // ── Flattened material types ─────────────────────────────────────────────────

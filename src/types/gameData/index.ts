@@ -2,7 +2,7 @@
 export type { ItemInfo } from './items'
 export type { SkillInfo } from './skills'
 export type { AbilityInfo, AbilityFamily, CombatStats } from './abilities'
-export type { RecipeIngredient, RecipeResultItem, RecipeInfo } from './recipes'
+export type { RecipeIngredient, RecipeCost, RecipeResultItem, RecipeInfo } from './recipes'
 export type {
   QuestInfo,
   QuestData,

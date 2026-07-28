@@ -33,6 +33,25 @@
         ({{ Math.round(ing.chance_to_consume * 100) }}% consumed)
       </span>
     </div>
+    <div
+      v-for="(cost, i) in recipe.costs ?? []"
+      :key="`cost-${i}`"
+      class="text-accent-gold text-xs leading-relaxed pl-2 relative before:content-['•'] before:absolute before:left-0"
+    >
+      {{ formatRecipeCost(cost) }}
+    </div>
+  </div>
+
+  <!-- Currency costs when the recipe has no item ingredients at all -->
+  <div v-else-if="recipe.costs?.length" class="mb-2">
+    <div class="text-text-muted text-[0.65rem] uppercase tracking-wide mb-1">Cost</div>
+    <div
+      v-for="(cost, i) in recipe.costs"
+      :key="i"
+      class="text-accent-gold text-xs leading-relaxed pl-2 relative before:content-['•'] before:absolute before:left-0"
+    >
+      {{ formatRecipeCost(cost) }}
+    </div>
   </div>
 
   <div v-if="recipe.result_items.length" class="mb-2">
@@ -82,6 +101,7 @@ import { ref, onMounted } from "vue";
 import { useGameDataStore } from "../../../stores/gameDataStore";
 import type { RecipeInfo, RecipeIngredient, RecipeResultItem } from "../../../types/gameData/recipes";
 import { useRecipeCost, formatGold } from "../../../composables/useRecipeCost";
+import { formatRecipeCost } from "../../../utils/recipeCurrency";
 
 const props = defineProps<{
   recipe: RecipeInfo;
