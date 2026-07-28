@@ -50,6 +50,11 @@
             @click="resetToLiveLoadout"
             title="Reset to your in-game equipped skills"
             class="text-text-dim hover:text-entity-item cursor-pointer text-sm leading-none px-1">↺</button>
+          <button
+            v-if="selectedSkill1 || selectedSkill2"
+            @click="clearLoadout"
+            title="Set both skills to Any — show data from every loadout"
+            class="text-text-dim hover:text-entity-item cursor-pointer text-sm leading-none px-1">✕</button>
         </div>
       </div>
 
@@ -445,6 +450,14 @@ watch(
 // driven by the [searchTarget, scope, selectedLoadout] watch below.
 function onLoadoutChange() {
   manualOverride.value = true;
+}
+
+// Clear both slots to "Any" — drops the loadout filter entirely. Counts as a
+// manual pick so it isn't immediately overwritten by the live loadout again.
+function clearLoadout() {
+  manualOverride.value = true;
+  selectedSkill1.value = "";
+  selectedSkill2.value = "";
 }
 
 // Snap back to the live in-game loadout and resume auto-following.
