@@ -1,7 +1,8 @@
-## What's Changed since v0.12.12
+## What's Changed since v0.12.13
 
 ### Features
-- feat(build-planner): type-to-search filter for long dropdowns app-wide (`1e28db8`)
+- feat(dashboard): Almanac of Corruption widget for daily harvesting foci (`875fc66`)
+- feat(farming-db): clear both equipped-skill filters to Any (`abb8f41`)
 
 ---
-*2 commits since v0.12.12*
+*3 commits since v0.12.13*
