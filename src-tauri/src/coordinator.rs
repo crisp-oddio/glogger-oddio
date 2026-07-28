@@ -845,9 +845,16 @@ impl DataIngestCoordinator {
                                 self.ingest_report_stats(book_type, content);
                             }
 
-                            // Parse gardening almanac events
+                            // Parse almanac events. The Emotion-Harvesting Almanac
+                            // (Statehelm's AlmanacPriestHarvesting) ships under the
+                            // same "GardeningAlmanac" book type as the crop one, so
+                            // the content — not the type — picks the parser.
                             if book_type == "GardeningAlmanac" {
-                                self.ingest_garden_almanac(timestamp, content);
+                                if content.contains("Harvesting Focuses") {
+                                    self.ingest_harvest_almanac(timestamp, content);
+                                } else {
+                                    self.ingest_garden_almanac(timestamp, content);
+                                }
                             }
                         }
 
@@ -2105,6 +2112,61 @@ impl DataIngestCoordinator {
             .ok();
     }
 
+    /// Parse the Emotion-Harvesting Almanac and persist the day's harvesting
+    /// foci to `harvest_almanac`. Like the garden almanac, the whole snapshot is
+    /// replaced on each read so the table always reflects the latest reading.
+    fn ingest_harvest_almanac(&self, timestamp: &str, content: &str) {
+        let (character, server) = match self.active_character_server() {
+            Some(cs) => cs,
+            None => return,
+        };
+
+        let conn = match self.db_pool.get() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let _ = timestamp; // timestamp not needed; we use wall-clock time
+        let captured_at = chrono::Utc::now().to_rfc3339();
+
+        let events = parse_harvest_almanac_content(content, &captured_at);
+        if events.is_empty() {
+            return;
+        }
+
+        conn.execute(
+            "DELETE FROM harvest_almanac WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+        )
+        .ok();
+
+        for event in &events {
+            conn.execute(
+                "INSERT INTO harvest_almanac (character_name, server_name, monster_name, description, event_start, event_end, is_current, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    character,
+                    server,
+                    event.monster_name,
+                    event.description,
+                    event.event_start,
+                    event.event_end,
+                    event.is_current as i32,
+                    event.captured_at,
+                ],
+            )
+            .ok();
+        }
+
+        startup_log!(
+            "[coordinator] Ingested {} harvest almanac foci",
+            events.len()
+        );
+        self.app_handle
+            .emit("game-state-updated", vec!["harvest_almanac"])
+            .ok();
+    }
+
     /// Parse structured stats from PlayerAge or Behavior Report books and
     /// persist them to the `character_stats` table as key-value pairs.
     fn ingest_report_stats(&self, book_type: &str, content: &str) {
@@ -2942,6 +3004,123 @@ fn parse_almanac_content(content: &str, captured_at: &str) -> Vec<AlmanacEvent> 
     events
 }
 
+/// A parsed harvesting focus — a monster the almanac marks as today's target.
+struct HarvestFocus {
+    monster_name: String,
+    description: Option<String>,
+    event_start: Option<String>,
+    event_end: Option<String>,
+    is_current: bool,
+    captured_at: String,
+}
+
+/// Parse Emotion-Harvesting Almanac content into structured foci.
+///
+/// ```text
+/// <h1>Current Harvesting Focuses:</h1>
+/// <indent=20><h2>Skeleton Swordsmen</h2></indent><indent=20>Seek out skeletal swordsmen...</indent>
+/// <indent=20><i>Ends in 22 hours 2 minutes</i></indent>
+///
+/// <h1>Upcoming Harvesting Focuses:</h1><i>No harvesting foci are happening in the immediate future.</i>
+/// ```
+///
+/// Two shape differences from the gardening almanac: the heading is a bare
+/// monster name with no zone, and the flavor text shares the heading's line.
+fn parse_harvest_almanac_content(content: &str, captured_at: &str) -> Vec<HarvestFocus> {
+    // Both almanacs arrive as book type "GardeningAlmanac"; refuse crop content
+    // outright so a heading like "Corn Season in Serbule" can't land here as a
+    // monster name.
+    if !content.contains("Harvesting Focuses") {
+        return Vec::new();
+    }
+
+    let mut foci = Vec::new();
+    let mut in_current_section = false;
+
+    let mut pending_monster: Option<String> = None;
+    let mut pending_desc: Option<String> = None;
+
+    let captured_dt = chrono::DateTime::parse_from_rfc3339(captured_at)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+
+    // Log content escapes its newlines; normalize so a single pass covers both.
+    let normalized = content.replace("\\n", "\n");
+
+    for line in normalized.lines() {
+        let line = line.trim();
+
+        if line.contains("Current Harvesting Focuses") {
+            in_current_section = true;
+            continue;
+        }
+        if line.contains("Upcoming Harvesting Focuses") {
+            in_current_section = false;
+            continue;
+        }
+
+        // <indent=20><h2>Monster</h2></indent><indent=20>flavor text</indent>
+        if let Some(monster) = extract_tag_content(line, "h2") {
+            let monster = monster.trim().to_string();
+            if monster.is_empty() {
+                continue;
+            }
+            pending_desc = line
+                .find("</h2>")
+                .map(|i| strip_markup(&line[i + "</h2>".len()..]))
+                .filter(|d| !d.is_empty());
+            pending_monster = Some(monster);
+            continue;
+        }
+
+        // <i>Ends in X hours Y minutes</i> / <i>Starts in ...</i>. Only consumed
+        // when a monster is pending — an empty section's "no foci" notice is an
+        // <i> too, and must not be mistaken for a timer.
+        if let Some(i_content) = extract_tag_content(line, "i") {
+            let monster = match pending_monster.take() {
+                Some(m) => m,
+                None => continue,
+            };
+            let description = pending_desc.take();
+            let duration = parse_duration_text(&i_content);
+
+            let (event_start, event_end) = if i_content.starts_with("Ends in") {
+                (None, duration.map(|d| (captured_dt + d).to_rfc3339()))
+            } else if i_content.starts_with("Starts in") {
+                (duration.map(|d| (captured_dt + d).to_rfc3339()), None)
+            } else {
+                (None, None)
+            };
+
+            foci.push(HarvestFocus {
+                monster_name: monster,
+                description,
+                event_start,
+                event_end,
+                is_current: in_current_section,
+                captured_at: captured_at.to_string(),
+            });
+        }
+    }
+
+    foci
+}
+
+/// Strip `<...>` markup, returning the trimmed plain text between the tags.
+fn strip_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    for c in s.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
+
 /// Extract text content from a simple HTML tag like `<h2>text</h2>`.
 /// Also handles tags embedded in `<indent=N>` wrappers.
 fn extract_tag_content(line: &str, tag: &str) -> Option<String> {
@@ -3012,6 +3191,48 @@ pub(crate) fn normalize_combat_loadout(skill1: &str, skill2: &str) -> Option<Str
     }
     parts.sort();
     Some(parts.join("+"))
+}
+
+#[cfg(test)]
+mod harvest_almanac_tests {
+    use super::parse_harvest_almanac_content;
+
+    /// Verbatim book content from a real Player.log capture (2026-07-28).
+    const REAL_CAPTURE: &str = "<h1>Current Harvesting Focuses:</h1>\\n<indent=20><h2>Skeleton Swordsmen</h2></indent><indent=20>Seek out skeletal swordsmen. Beneath their parries and their feints, their malice beats pure today.</indent>\\n<indent=20><i>Ends in 22 hours 2 minutes</i></indent>\\n\\n\\n<h1>Upcoming Harvesting Focuses:</h1><i>No harvesting foci are happening in the immediate future.</i>";
+
+    #[test]
+    fn parses_current_focus_from_real_capture() {
+        let foci = parse_harvest_almanac_content(REAL_CAPTURE, "2026-07-28T05:57:26+00:00");
+
+        // The "no foci are happening" notice is an <i> too — it must not become
+        // a second, timerless entry.
+        assert_eq!(foci.len(), 1);
+        let f = &foci[0];
+        assert_eq!(f.monster_name, "Skeleton Swordsmen");
+        assert!(f.is_current);
+        assert!(f.description.as_deref().unwrap().starts_with("Seek out skeletal swordsmen."));
+        assert_eq!(f.event_start, None);
+        // 22h2m past the capture time.
+        assert_eq!(f.event_end.as_deref(), Some("2026-07-29T03:59:26+00:00"));
+    }
+
+    #[test]
+    fn parses_upcoming_focus_as_not_current() {
+        let content = "<h1>Current Harvesting Focuses:</h1><i>No harvesting foci are happening in the immediate future.</i>\\n<h1>Upcoming Harvesting Focuses:</h1>\\n<indent=20><h2>Rock Elementals</h2></indent><indent=20>Stone hearts crack tomorrow.</indent>\\n<indent=20><i>Starts in 1 day 3 hours</i></indent>";
+        let foci = parse_harvest_almanac_content(content, "2026-07-28T00:00:00+00:00");
+
+        assert_eq!(foci.len(), 1);
+        assert_eq!(foci[0].monster_name, "Rock Elementals");
+        assert!(!foci[0].is_current);
+        assert_eq!(foci[0].event_start.as_deref(), Some("2026-07-29T03:00:00+00:00"));
+        assert_eq!(foci[0].event_end, None);
+    }
+
+    #[test]
+    fn ignores_gardening_almanac_content() {
+        let garden = "<h1>Current Gardening Events:</h1>\\n<indent=20><h2>Corn Season in Serbule</h2></indent>\\n<indent=20><i>Ends in 5 hours</i></indent>";
+        assert!(parse_harvest_almanac_content(garden, "2026-07-28T00:00:00+00:00").is_empty());
+    }
 }
 
 #[cfg(test)]

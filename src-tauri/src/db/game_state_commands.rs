@@ -1011,6 +1011,53 @@ pub fn get_player_milking_leaderboard(
         .map_err(|e| format!("Row error: {e}"))
 }
 
+// ── Harvest Almanac ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HarvestAlmanacEntry {
+    pub monster_name: String,
+    pub description: Option<String>,
+    pub event_start: Option<String>,
+    pub event_end: Option<String>,
+    pub is_current: bool,
+    pub captured_at: String,
+}
+
+/// The day's harvesting foci as of the last time this character read the
+/// Emotion-Harvesting Almanac in Statehelm.
+#[tauri::command]
+pub fn get_harvest_almanac(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+) -> Result<Vec<HarvestAlmanacEntry>, String> {
+    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT monster_name, description, event_start, event_end, is_current, captured_at
+             FROM harvest_almanac
+             WHERE character_name = ?1 AND server_name = ?2
+             ORDER BY is_current DESC, event_start ASC",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![character_name, server_name], |row| {
+            Ok(HarvestAlmanacEntry {
+                monster_name: row.get(0)?,
+                description: row.get(1)?,
+                event_start: row.get(2)?,
+                event_end: row.get(3)?,
+                is_current: row.get::<_, i32>(4)? != 0,
+                captured_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("Query error: {e}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Row error: {e}"))
+}
+
 // ── Garden Almanac ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

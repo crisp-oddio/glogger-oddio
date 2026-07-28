@@ -203,6 +203,7 @@ use db::game_state_commands::{
     set_mushroom_circles,
     get_garden_almanac,
     get_garden_almanac_history,
+    get_harvest_almanac,
 };
 use db::gourmand_commands::{
     export_text_file, get_all_foods, get_gourmand_eaten_foods, import_cooks_helper_file,
@@ -1027,6 +1028,8 @@ pub fn run() {
             // Garden almanac
             get_garden_almanac,
             get_garden_almanac_history,
+            // Harvest almanac (Statehelm's Emotion-Harvesting Almanac)
+            get_harvest_almanac,
             // Trip routing
             plan_trip,
             // External content
