@@ -1,8 +1,7 @@
-## What's Changed since v0.12.13
+## What's Changed since v0.12.14
 
 ### Features
-- feat(dashboard): Almanac of Corruption widget for daily harvesting foci (`875fc66`)
-- feat(farming-db): clear both equipped-skill filters to Any (`abb8f41`)
+- feat(recipes): surface currency costs (Combat Wisdom, Fae Energy) on recipes (`3302041`)
 
 ---
-*3 commits since v0.12.13*
+*2 commits since v0.12.14*
