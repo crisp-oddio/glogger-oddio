@@ -84,7 +84,20 @@
           :ingredient="ing"
           :is-marked-for-crafting="isMarkedForCrafting(ing.item_id)"
           @toggle-intermediate="(itemId) => $emit('toggle-intermediate', entry.id, itemId)" />
-        <div v-if="resolvedIngredients.length === 0" class="text-text-dim italic py-2 px-2">
+        <!-- Currency costs (Combat Wisdom, Fae Energy, …) -->
+        <div
+          v-for="cc in currencyCosts"
+          :key="cc.currency"
+          class="flex items-center gap-2 py-1.5 px-2 text-xs border-b border-surface-dark/50">
+          <span class="text-accent-gold">{{ currencyLabel(cc.currency) }}</span>
+          <div class="ml-auto flex items-center gap-2 shrink-0">
+            <span class="text-text-primary tabular-nums">×{{ cc.per_craft.toLocaleString() }}</span>
+            <span class="text-text-muted tabular-nums" :title="`${cc.total.toLocaleString()} total across all crafts`">
+              ({{ cc.total.toLocaleString() }})
+            </span>
+          </div>
+        </div>
+        <div v-if="resolvedIngredients.length === 0 && currencyCosts.length === 0" class="text-text-dim italic py-2 px-2">
           No ingredients
         </div>
       </template>
@@ -96,7 +109,8 @@
 import { ref, computed, watch, onMounted } from "vue";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useCraftingStore } from "../../stores/craftingStore";
-import type { CraftingProjectEntry, ResolvedIngredient } from "../../types/crafting";
+import type { CraftingProjectEntry, ResolvedIngredient, ResolvedCurrencyCost } from "../../types/crafting";
+import { currencyLabel } from "../../utils/recipeCurrency";
 import type { RecipeInfo } from "../../types/gameData/recipes";
 import RecipeInline from "../Shared/Recipe/RecipeInline.vue";
 import IngredientRow from "./IngredientRow.vue";
@@ -125,6 +139,7 @@ const estimatedTotalCost = ref<number | null>(null);
 defineExpose({ expanded });
 const recipe = ref<RecipeInfo | null>(null);
 const resolvedIngredients = ref<ResolvedIngredient[]>([]);
+const currencyCosts = ref<ResolvedCurrencyCost[]>([]);
 
 const isTargetMode = computed(() => props.entry.target_stock !== null);
 
@@ -198,6 +213,7 @@ watch(expanded, async (isExpanded) => {
           false,
         );
         resolvedIngredients.value = resolved.ingredients;
+        currencyCosts.value = resolved.currency_costs;
       }
     } catch (e) {
       console.error("[crafting] Failed to resolve entry ingredients:", e);

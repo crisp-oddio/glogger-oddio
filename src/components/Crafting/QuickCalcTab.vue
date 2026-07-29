@@ -128,6 +128,13 @@
             <span class="text-text-dim">Est. cost:</span>
             <span class="text-accent-red font-semibold ml-1">{{ resolved.estimated_cost.toLocaleString() }}g</span>
           </div>
+          <div v-for="cc in resolved.currency_costs" :key="cc.currency">
+            <span class="text-text-dim">{{ currencyLabel(cc.currency) }}:</span>
+            <span class="text-accent-gold font-semibold ml-1 tabular-nums">{{ cc.total.toLocaleString() }}</span>
+            <span v-if="resolved.craft_count > 1" class="text-text-muted text-xs ml-1">
+              ({{ cc.per_craft.toLocaleString() }}/craft)
+            </span>
+          </div>
         </div>
 
         <!-- Probabilistic warning -->
@@ -191,6 +198,7 @@ import MaterialSummary from "./MaterialSummary.vue";
 import PickupList from "./PickupList.vue";
 import ShoppingList from "./ShoppingList.vue";
 import LiveCraftingPanel from "./LiveCraftingPanel.vue";
+import { currencyLabel } from "../../utils/recipeCurrency";
 
 const gameData = useGameDataStore();
 const craftingStore = useCraftingStore();

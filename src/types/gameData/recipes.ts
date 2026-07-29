@@ -6,6 +6,12 @@ export interface RecipeIngredient {
   chance_to_consume: number | null
 }
 
+/** A non-item cost paid when using the recipe (Combat Wisdom, Fae Energy, …) */
+export interface RecipeCost {
+  currency: string
+  price: number
+}
+
 export interface RecipeResultItem {
   item_id: number
   stack_size: number
@@ -21,6 +27,7 @@ export interface RecipeInfo {
   skill: string | null
   skill_level_req: number | null
   ingredients: RecipeIngredient[]
+  costs: RecipeCost[]
   result_items: RecipeResultItem[]
   reward_skill: string | null
   reward_skill_xp: number | null

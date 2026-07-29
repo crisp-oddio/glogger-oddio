@@ -366,7 +366,14 @@ export const useCraftingStore = defineStore("crafting", () => {
       ? Math.ceil(desiredQuantity)
       : Math.ceil(desiredQuantity / effectiveOutput);
 
-    // Resolve each ingredient
+    // Resolve each ingredient.
+    // Currency costs (Combat Wisdom, Fae Energy, …) accumulate here so expanded
+    // intermediates roll their own currency costs up into the parent total.
+    const currencyTotals = new Map<string, number>();
+    for (const cost of recipe.costs ?? []) {
+      currencyTotals.set(cost.currency, (currencyTotals.get(cost.currency) ?? 0) + cost.price * craftCount);
+    }
+
     const ingredients: ResolvedIngredient[] = [];
     for (const ing of recipe.ingredients) {
       const chanceToConsume = ing.chance_to_consume ?? 1;
@@ -421,6 +428,9 @@ export const useCraftingStore = defineStore("crafting", () => {
             );
             children = subResolved.ingredients;
             childCraftsNeeded = subResolved.craft_count;
+            for (const cc of subResolved.currency_costs) {
+              currencyTotals.set(cc.currency, (currencyTotals.get(cc.currency) ?? 0) + cc.total);
+            }
           }
           visited.delete(ing.item_id);
         }
@@ -487,6 +497,11 @@ export const useCraftingStore = defineStore("crafting", () => {
       reward_skill: recipe.reward_skill,
       ingredients,
       estimated_cost: Math.round(estimatedCost),
+      currency_costs: [...currencyTotals.entries()].map(([currency, total]) => ({
+        currency,
+        per_craft: (recipe.costs ?? []).find((c) => c.currency === currency)?.price ?? 0,
+        total,
+      })),
     };
 
     // Store in cache for future identical requests

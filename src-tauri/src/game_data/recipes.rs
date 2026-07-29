@@ -13,6 +13,13 @@ pub struct RecipeIngredient {
     pub chance_to_consume: Option<f32>,
 }
 
+/// A non-item cost paid when using the recipe (Combat Wisdom, Fae Energy, …).
+#[derive(Debug, Serialize, Clone)]
+pub struct RecipeCost {
+    pub currency: String,
+    pub price: f32,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct RecipeResultItem {
     pub item_id: u32,
@@ -31,6 +38,7 @@ pub struct RecipeInfo {
     pub skill: Option<String>,
     pub skill_level_req: Option<f32>,
     pub ingredients: Vec<RecipeIngredient>,
+    pub costs: Vec<RecipeCost>,
     pub result_items: Vec<RecipeResultItem>,
     pub reward_skill: Option<String>,
     pub reward_skill_xp: Option<f32>,
@@ -83,6 +91,7 @@ pub fn parse(json: &str) -> Result<HashMap<u32, RecipeInfo>, String> {
         };
 
         let ingredients = parse_ingredients(&value);
+        let costs = parse_costs(&value);
         let result_items = parse_result_items(&value, "ResultItems");
         let proto_result_items = parse_result_items(&value, "ProtoResultItems");
 
@@ -101,6 +110,7 @@ pub fn parse(json: &str) -> Result<HashMap<u32, RecipeInfo>, String> {
                 skill: str_field(&value, "Skill"),
                 skill_level_req: f32_field(&value, "SkillLevelReq"),
                 ingredients,
+                costs,
                 result_items,
                 reward_skill: str_field(&value, "RewardSkill"),
                 reward_skill_xp: f32_field(&value, "RewardSkillXp"),
@@ -170,6 +180,24 @@ fn parse_ingredients(value: &Value) -> Vec<RecipeIngredient> {
         .unwrap_or_default()
 }
 
+/// Parse the `Costs` array — currency prices paid on top of the item ingredients.
+fn parse_costs(value: &Value) -> Vec<RecipeCost> {
+    value
+        .get("Costs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|cost| {
+                    Some(RecipeCost {
+                        currency: str_field(cost, "Currency")?,
+                        price: cost.get("Price").and_then(|v| v.as_f64())? as f32,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn parse_result_items(value: &Value, field: &str) -> Vec<RecipeResultItem> {
     value
         .get(field)
@@ -220,4 +248,36 @@ fn str_array_field(value: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_currency_costs() {
+        let json = r#"{
+            "recipe_18111": {
+                "Name": "Infuse Combat Wisdom into Prophesied Hammer",
+                "Costs": [{ "Currency": "CombatWisdom", "Price": 1000 }],
+                "Ingredients": [
+                    { "Desc": "Foretold Hammer (Augmented)", "ItemKeys": ["Hammer"], "StackSize": 1 }
+                ]
+            }
+        }"#;
+
+        let recipes = parse(json).expect("parse");
+        let recipe = &recipes[&18111];
+        assert_eq!(recipe.costs.len(), 1);
+        assert_eq!(recipe.costs[0].currency, "CombatWisdom");
+        assert_eq!(recipe.costs[0].price, 1000.0);
+        // Currency costs are separate from the item ingredient list
+        assert_eq!(recipe.ingredients.len(), 1);
+    }
+
+    #[test]
+    fn recipes_without_costs_get_an_empty_list() {
+        let json = r#"{ "recipe_1": { "Name": "Plain Recipe" } }"#;
+        assert!(parse(json).expect("parse")[&1].costs.is_empty());
+    }
 }
