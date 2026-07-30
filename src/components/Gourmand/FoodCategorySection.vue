@@ -3,7 +3,7 @@
     <div class="flex items-center justify-between mb-3">
       <h3 class="text-text-primary font-bold uppercase tracking-wide text-sm">
         {{ title }}
-        <span class="text-text-muted font-normal ml-2">{{ eatenCount }} / {{ foods.length }} eaten</span>
+        <span class="text-text-muted font-normal ml-2">{{ eatenCount }} / {{ scopedFoods.length }} eaten</span>
       </h3>
     </div>
 
@@ -42,7 +42,9 @@
     </div>
 
     <div v-if="visibleFoods.length === 0" class="text-text-muted text-sm py-4 text-center">
-      {{ hideEaten || hideUnusable ? 'All foods hidden by filters.' : 'No foods in this category.' }}
+      {{ hideEaten || hideUnusable || sourceFilter !== 'all'
+        ? 'All foods hidden by filters.'
+        : 'No foods in this category.' }}
     </div>
   </div>
 </template>
@@ -50,6 +52,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { FoodItem } from '../../types/gourmand'
+import { foodSourceRank } from '../../types/gourmand'
+import type { FoodSourceFilter } from '../../stores/gourmandStore'
+import { matchesSourceFilter } from '../../stores/gourmandStore'
 import FoodCard from './FoodCard.vue'
 import FoodListRow from './FoodListRow.vue'
 
@@ -60,7 +65,8 @@ const props = defineProps<{
   manuallyMarkedFoods: Set<string>
   hideEaten: boolean
   hideUnusable: boolean
-  sortMode: 'level' | 'alpha' | 'food-level'
+  sourceFilter: FoodSourceFilter
+  sortMode: 'level' | 'alpha' | 'food-level' | 'source'
   sortAsc: boolean
   viewMode: 'card' | 'list'
   selectable: boolean
@@ -73,10 +79,16 @@ defineEmits<{
   toggle: [food: FoodItem]
 }>()
 
-const eatenCount = computed(() => props.foods.filter(f => props.eatenFoods.has(f.name)).length)
+// The source filter narrows what this section is *about*, so the header count
+// follows it. The hide toggles only decide what's drawn, so they don't.
+const scopedFoods = computed(() =>
+  props.foods.filter(f => matchesSourceFilter(f, props.sourceFilter)),
+)
+
+const eatenCount = computed(() => scopedFoods.value.filter(f => props.eatenFoods.has(f.name)).length)
 
 const visibleFoods = computed(() => {
-  let foods = [...props.foods]
+  let foods = [...scopedFoods.value]
 
   // Filter
   if (props.hideEaten) {
@@ -97,6 +109,9 @@ const visibleFoods = computed(() => {
       break
     case 'alpha':
       foods.sort((a, b) => dir * a.name.localeCompare(b.name))
+      break
+    case 'source':
+      foods.sort((a, b) => dir * (foodSourceRank(a) - foodSourceRank(b)) || a.name.localeCompare(b.name))
       break
   }
 

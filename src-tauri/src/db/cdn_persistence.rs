@@ -22,7 +22,7 @@ pub fn persist_cdn_data(conn: &mut Connection, data: &GameData) -> Result<()> {
     insert_tsys_client_info(&tx, &data.tsys.client_info)?;
     insert_item_uses(&tx, &data.item_uses)?;
     insert_areas(&tx, &data.areas)?;
-    insert_foods(&tx, &data.items)?;
+    insert_foods(&tx, data)?;
     insert_survey_types(&tx, &data.items, &data.recipes, &data.areas)?;
 
     // Backfill survey_uses.area for any rows that are NULL or still hold
@@ -514,11 +514,18 @@ fn insert_areas(
     Ok(())
 }
 
-/// Insert pre-parsed food items derived from items with food_desc
-fn insert_foods(tx: &Transaction, items: &std::collections::HashMap<u32, ItemInfo>) -> Result<()> {
+/// Insert pre-parsed food items derived from items with food_desc.
+///
+/// Each row also carries the food's source classification (`source_kinds`,
+/// `craft_skills`) so the Gourmand screen can separate what you cook from what
+/// only turns up during an event — see `game_data::food_sources`.
+fn insert_foods(tx: &Transaction, data: &GameData) -> Result<()> {
+    let items = &data.items;
+    let skill_names = crate::game_data::food_sources::skill_display_names(&data.skills);
+
     let mut stmt = tx.prepare(
-        "INSERT INTO foods (item_id, name, icon_id, food_category, food_level, gourmand_req, effect_descs, keywords, value)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+        "INSERT INTO foods (item_id, name, icon_id, food_category, food_level, gourmand_req, effect_descs, keywords, value, source_kinds, craft_skills)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
     )?;
 
     for (id, item) in items {
@@ -552,6 +559,17 @@ fn insert_foods(tx: &Transaction, items: &std::collections::HashMap<u32, ItemInf
         let keywords_json =
             serde_json::to_string(&item.keywords).unwrap_or_else(|_| "[]".to_string());
 
+        let sources = crate::game_data::food_sources::classify(
+            item,
+            data.sources.items.get(id),
+            &data.recipes,
+            &skill_names,
+        );
+        let source_kinds_json =
+            serde_json::to_string(&sources.kinds).unwrap_or_else(|_| "[]".to_string());
+        let craft_skills_json =
+            serde_json::to_string(&sources.craft_skills).unwrap_or_else(|_| "[]".to_string());
+
         stmt.execute(params![
             id,
             &item.name,
@@ -562,6 +580,8 @@ fn insert_foods(tx: &Transaction, items: &std::collections::HashMap<u32, ItemInf
             effects_json,
             keywords_json,
             item.value,
+            source_kinds_json,
+            craft_skills_json,
         ])?;
     }
 

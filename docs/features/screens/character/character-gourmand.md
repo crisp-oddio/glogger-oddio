@@ -11,6 +11,7 @@ Tracks which foods a player has eaten for the Gourmand skill. Shows progress tow
 **Backend (Rust):**
 - `src-tauri/src/db/gourmand_commands.rs` — report parsing, food queries, import/export
 - `src-tauri/src/db/cdn_persistence.rs` — `foods` table population during CDN refresh
+- `src-tauri/src/game_data/food_sources.rs` — source classification (crafted vs event vs …)
 
 **Frontend (Vue/TS):**
 - `src/stores/gourmandStore.ts` — Pinia store
@@ -50,6 +51,35 @@ Foods Consumed:
 - `strip_food_tags()` removes parenthesized tags like `(HAS MEAT)`, `(HAS DAIRY)`
 - On import, `gourmand_eaten_foods` is cleared and repopulated (snapshot model)
 
+## Source Classification
+
+Each food is tagged during CDN ingestion with *where it comes from*, so the
+screen can separate the ~443 foods you can cook from the ones that only turn up
+during an event. Classification lives in `game_data/food_sources.rs` and is
+driven by the item's entry in `sources_items.json`:
+
+| Kind | Derived from |
+|------|--------------|
+| `unobtainable` | `Lint_NotObtainable` keyword |
+| `crafted` | a `Recipe` source entry (the recipe's skill becomes `craft_skills`) |
+| `event` | curated rule list — see below |
+| `vendor` / `quest` / `npc-gift` / `hangout` / `barter` / `container` | the matching `sources_items.json` entry type |
+| `other` | no source entry at all — drops, foraged ingredients, butchered flesh |
+
+A food carries a *set* of kinds (Cheese is often both `crafted` and `vendor`),
+emitted in the priority order above; `source_kinds[0]` is what the UI badges and
+sorts on.
+
+**The CDN has no event flag** — no keyword, no field, no source entry — so the
+`event` kind comes from a hand-curated list in `is_event_food()` and needs a
+line added whenever Project: Gorgon ships a new event food. It currently
+matches the `HalloweenCandy` keyword, any `*CandyCane` / `SteamCake*` internal
+name, the summer treat block (items 6480–6485), and the commemorative cakes
+(Welcome, Apology, Thank You, Celebratory, Duke's). Deliberately excluded: the
+pumpkin dishes are ordinary year-round Cooking recipes despite the theming, and
+Jellybeans / Tiramisu of Delights have no evidence either way, so they fall
+through to `other` rather than being guessed at.
+
 ## Gourmand Level Resolution
 
 The store resolves the player's Gourmand level with a priority chain:
@@ -72,11 +102,14 @@ Uses `PaneLayout` (screen-key `char-gourmand`) with left + conditional right pan
 - **Favorites** — top 3 most-eaten foods per category, shown in left pane
 - **Food Buff panel** — select a meal + snack to see combined buff stats in the right pane. Effect descriptions are resolved via the backend `resolve_effect_descs` command (same as item tooltips) to correctly display human-readable labels from CDN attribute tokens.
 - **Card and list views** — toggle between grid cards and compact three-column lists
-- **Sorting** — by gourmand level, food level, or alphabetical; ascending or descending
+- **Sorting** — by gourmand level, food level, alphabetical, or source; ascending or descending
 - **Filtering** — hide eaten foods, hide unusable foods (gourmand level too low)
+- **Source filter** — dropdown narrowing to one source kind, plus a "Not crafted" option. Only kinds that actually match something are offered, each with its count. Category headers follow the filter (`12 / 32 eaten`); the hide toggles don't affect those counts.
+- **Source badges** — card view badges every food with its craft skill (`Cooking`, `Cheesemaking`, `Sushi Preparation`) or source kind; list view badges only non-crafted foods, to keep the three-column layout dense. Event foods are amber, unobtainable ones struck through. Hovering shows every source the food has.
+- **Attainable only** — recomputes the progress bars against just the foods you can still realistically get, dropping `event` and `unobtainable` from the denominators. Lists are unaffected.
 - **Item tooltips** — hover any food for full item tooltip (description, effects, keywords, value)
 - **Click to select** — click meals/snacks to populate the food buff comparison panel
-- **Export uneaten** — save remaining uneaten foods to a text file
+- **Export uneaten** — save remaining uneaten foods to a text file. Respects the source filter and "attainable only", tags each line with its source, and names the active filters in the header so a narrowed export isn't mistaken for the full list.
 - **Unmatched detection** — warns when report foods don't match CDN data (renamed/removed items)
 - **Manual eaten marking** — click any food to toggle its eaten/uneaten status without importing a report. Manual marks are preserved during report imports (report data won't overwrite manual marks).
 - **Color coding** — green (report-imported eaten), blue (manually marked eaten), red (uneaten), dimmed (can't eat), gold border (selected)
@@ -96,6 +129,13 @@ Uses `PaneLayout` (screen-key `char-gourmand`) with left + conditional right pan
 | effect_descs | TEXT | JSON array of effect strings |
 | keywords | TEXT | JSON array of keyword strings |
 | value | REAL | Item gold value |
+| source_kinds | TEXT | JSON array of source kinds, most-significant first (migration v67) |
+| craft_skills | TEXT | JSON array of crafting skill display names; empty unless crafted (migration v67) |
+
+> Migration v67 clears `cdn_version` so the next startup re-persists the CDN —
+> without that, `persist_cdn_data` short-circuits on an unchanged version and
+> the two new columns stay at their `[]` default. The UI treats an empty
+> `source_kinds` as "unknown" and simply omits the badge.
 
 **`gourmand_eaten_foods`** — last-imported report snapshot:
 

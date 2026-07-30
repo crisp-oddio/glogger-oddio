@@ -6,7 +6,27 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { useGameStateStore } from './gameStateStore'
 import { useCharacterStore } from './characterStore'
 import { useSettingsStore } from './settingsStore'
-import type { FoodItem, GourmandFoodEntry, GourmandImportResult } from '../types/gourmand'
+import type {
+  FoodItem,
+  FoodSourceKind,
+  GourmandFoodEntry,
+  GourmandImportResult,
+} from '../types/gourmand'
+import { foodSourceLabel, foodSourceRank, isAttainable } from '../types/gourmand'
+
+/**
+ * `all` shows everything; `not-crafted` is the complement of `crafted` (handy
+ * for "what's left that I can't just cook?"); anything else matches foods that
+ * list that kind among their sources — not just as their primary one, so a
+ * quest-given event candy shows up under both Quest and Event.
+ */
+export type FoodSourceFilter = 'all' | 'not-crafted' | FoodSourceKind
+
+export function matchesSourceFilter(food: FoodItem, filter: FoodSourceFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'not-crafted') return !food.source_kinds.includes('crafted')
+  return food.source_kinds.includes(filter)
+}
 
 export const useGourmandStore = defineStore('gourmand', () => {
   // ── State ──────────────────────────────────────────────────────────────────
@@ -26,7 +46,10 @@ export const useGourmandStore = defineStore('gourmand', () => {
   const selectedSnack = ref<FoodItem | null>(null)
   const hideEaten = ref(false)
   const hideUnusable = ref(false)
-  const sortMode = ref<'level' | 'alpha' | 'food-level'>('level')
+  const sourceFilter = ref<FoodSourceFilter>('all')
+  /** Count progress against only the foods you can still realistically get. */
+  const attainableOnly = ref(false)
+  const sortMode = ref<'level' | 'alpha' | 'food-level' | 'source'>('level')
   const sortAsc = ref(true)
   const viewMode = ref<'card' | 'list'>('card')
 
@@ -72,19 +95,31 @@ export const useGourmandStore = defineStore('gourmand', () => {
 
   // ── Computed: Progress stats ───────────────────────────────────────────────
 
+  // Progress counts against their own set rather than the category lists above,
+  // so the "attainable only" toggle can drop event and unobtainable foods from
+  // the denominators without hiding them from the lists.
+  const progressFoods = computed(() =>
+    attainableOnly.value ? allFoods.value.filter(isAttainable) : allFoods.value,
+  )
+  const progressMeals = computed(() => progressFoods.value.filter(f => f.food_category === 'Meal'))
+  const progressSnacks = computed(() => progressFoods.value.filter(f => f.food_category === 'Snack'))
+  const progressInstantSnacks = computed(() =>
+    progressFoods.value.filter(f => f.food_category === 'Instant-Snack'),
+  )
+
   function countEaten(foods: FoodItem[]): number {
     return foods.filter(f => eatenFoods.value.has(f.name)).length
   }
 
-  const mealsEaten = computed(() => countEaten(meals.value))
-  const snacksEaten = computed(() => countEaten(snacks.value))
-  const instantSnacksEaten = computed(() => countEaten(instantSnacks.value))
-  const totalEaten = computed(() => countEaten(allFoods.value))
+  const mealsEaten = computed(() => countEaten(progressMeals.value))
+  const snacksEaten = computed(() => countEaten(progressSnacks.value))
+  const instantSnacksEaten = computed(() => countEaten(progressInstantSnacks.value))
+  const totalEaten = computed(() => countEaten(progressFoods.value))
 
-  const mealProgress = computed(() => meals.value.length ? (mealsEaten.value / meals.value.length) * 100 : 0)
-  const snackProgress = computed(() => snacks.value.length ? (snacksEaten.value / snacks.value.length) * 100 : 0)
-  const instantSnackProgress = computed(() => instantSnacks.value.length ? (instantSnacksEaten.value / instantSnacks.value.length) * 100 : 0)
-  const overallProgress = computed(() => allFoods.value.length ? (totalEaten.value / allFoods.value.length) * 100 : 0)
+  const mealProgress = computed(() => progressMeals.value.length ? (mealsEaten.value / progressMeals.value.length) * 100 : 0)
+  const snackProgress = computed(() => progressSnacks.value.length ? (snacksEaten.value / progressSnacks.value.length) * 100 : 0)
+  const instantSnackProgress = computed(() => progressInstantSnacks.value.length ? (instantSnacksEaten.value / progressInstantSnacks.value.length) * 100 : 0)
+  const overallProgress = computed(() => progressFoods.value.length ? (totalEaten.value / progressFoods.value.length) * 100 : 0)
 
   // ── Computed: Favorites (top 3 most consumed per category) ─────────────────
 
@@ -103,6 +138,13 @@ export const useGourmandStore = defineStore('gourmand', () => {
   // ── Computed: Uneaten foods ────────────────────────────────────────────────
 
   const uneatenFoods = computed(() => allFoods.value.filter(f => !eatenFoods.value.has(f.name)))
+
+  /** What "Export Uneaten" writes: uneaten, narrowed by the active filters. */
+  const exportableUneatenFoods = computed(() =>
+    uneatenFoods.value
+      .filter(f => matchesSourceFilter(f, sourceFilter.value))
+      .filter(f => !attainableOnly.value || isAttainable(f)),
+  )
 
   // ── Computed: Combined effects for comparison panel ────────────────────────
 
@@ -205,12 +247,22 @@ export const useGourmandStore = defineStore('gourmand', () => {
 
     if (!filePath) return
 
-    const lines = uneatenFoods.value.map(f => {
+    const foods = exportableUneatenFoods.value
+    const lines = foods.map(f => {
       const req = f.gourmand_req !== null ? ` (Gourmand ${f.gourmand_req})` : ''
-      return `${f.name} — ${f.food_category} Level ${f.food_level}${req}`
+      return `${f.name} — ${f.food_category} Level ${f.food_level}${req} [${foodSourceLabel(f)}]`
     })
 
-    const content = `Uneaten Foods (${lines.length} remaining)\n\n${lines.join('\n')}\n`
+    // Spell out which filters shaped the list, so an export narrowed to e.g.
+    // Cooking-only foods isn't mistaken for the full remaining set.
+    const scope: string[] = []
+    if (sourceFilter.value !== 'all') scope.push(`source: ${sourceFilter.value}`)
+    if (attainableOnly.value) scope.push('attainable only')
+    const header = scope.length
+      ? `Uneaten Foods (${lines.length} remaining — ${scope.join(', ')})`
+      : `Uneaten Foods (${lines.length} remaining)`
+
+    const content = `${header}\n\n${lines.join('\n')}\n`
 
     try {
       await invoke('export_text_file', { filePath, content })
@@ -264,6 +316,9 @@ export const useGourmandStore = defineStore('gourmand', () => {
       case 'alpha':
         sorted.sort((a, b) => a.name.localeCompare(b.name))
         break
+      case 'source':
+        sorted.sort((a, b) => foodSourceRank(a) - foodSourceRank(b) || a.name.localeCompare(b.name))
+        break
     }
     return sorted
   }
@@ -287,6 +342,8 @@ export const useGourmandStore = defineStore('gourmand', () => {
     selectedSnack,
     hideEaten,
     hideUnusable,
+    sourceFilter,
+    attainableOnly,
     sortMode,
     sortAsc,
     viewMode,
@@ -296,6 +353,10 @@ export const useGourmandStore = defineStore('gourmand', () => {
     meals,
     snacks,
     instantSnacks,
+    progressFoods,
+    progressMeals,
+    progressSnacks,
+    progressInstantSnacks,
     mealsEaten,
     snacksEaten,
     instantSnacksEaten,
@@ -308,6 +369,7 @@ export const useGourmandStore = defineStore('gourmand', () => {
     favoriteSnacks,
     favoriteInstantSnacks,
     uneatenFoods,
+    exportableUneatenFoods,
     combinedEffects,
     // Actions
     loadAllFoods,
