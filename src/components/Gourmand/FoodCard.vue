@@ -20,9 +20,17 @@
           <span v-if="eaten && !manuallyMarked" class="text-accent-green text-xs shrink-0">&times;{{ count }}</span>
           <span v-if="manuallyMarked" class="text-accent-blue text-xs shrink-0" title="Manually marked">manual</span>
         </div>
-        <div class="flex gap-2 text-xs mt-0.5" :class="metaClasses">
+        <div class="flex items-center gap-2 text-xs mt-0.5" :class="metaClasses">
           <span>Lv{{ food.food_level }} {{ food.food_category }}</span>
           <span v-if="food.gourmand_req !== null">Gourm {{ food.gourmand_req }}</span>
+          <span
+            v-if="sourceLabel"
+            class="px-1 rounded border text-[10px] leading-tight truncate"
+            :class="sourceClasses"
+            :title="sourceTitle"
+          >
+            {{ sourceLabel }}
+          </span>
         </div>
       </div>
       <div v-if="!canEat" class="text-accent-red text-xs shrink-0" title="Gourmand level too low">
@@ -35,6 +43,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { FoodItem } from '../../types/gourmand'
+import { foodSourceClasses, foodSourceLabel, foodSourceTitle } from '../../types/gourmand'
 import GameIcon from '../Shared/GameIcon.vue'
 import FoodItemWithTooltip from './FoodItemWithTooltip.vue'
 
@@ -86,6 +95,14 @@ const metaClasses = computed(() => {
   if (!props.canEat) return 'text-text-dim'
   return 'text-text-muted'
 })
+
+// Blank until the CDN has been re-persisted with source data (migration v67),
+// which just leaves the badge off rather than showing a bogus "Drop / Gather".
+const sourceLabel = computed(() =>
+  props.food.source_kinds.length > 0 ? foodSourceLabel(props.food) : '',
+)
+const sourceClasses = computed(() => foodSourceClasses(props.food))
+const sourceTitle = computed(() => foodSourceTitle(props.food))
 
 function handleClick() {
   if (props.selectable) {

@@ -27,6 +27,7 @@ mod attributes;
 pub mod brewing;
 mod directed_goals;
 mod effects;
+pub mod food_sources;
 mod item_uses;
 mod items;
 mod landmarks;

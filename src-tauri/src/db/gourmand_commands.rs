@@ -20,6 +20,12 @@ pub struct FoodItemInfo {
     pub effect_descs: Vec<String>,
     pub keywords: Vec<String>,
     pub value: Option<f32>,
+    /// Where this food comes from, most-significant kind first. See
+    /// `game_data::food_sources`. Empty until the CDN has been re-persisted
+    /// after migration v67.
+    pub source_kinds: Vec<String>,
+    /// Display names of the skills that can craft it (empty if uncraftable).
+    pub craft_skills: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -44,7 +50,7 @@ pub fn get_all_foods(db: State<'_, DbPool>) -> Result<Vec<FoodItemInfo>, String>
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let mut stmt = conn.prepare(
-        "SELECT item_id, name, icon_id, food_category, food_level, gourmand_req, effect_descs, keywords, value
+        "SELECT item_id, name, icon_id, food_category, food_level, gourmand_req, effect_descs, keywords, value, source_kinds, craft_skills
          FROM foods
          ORDER BY food_level ASC, name ASC"
     ).map_err(|e| format!("Query prepare error: {e}"))?;
@@ -53,9 +59,15 @@ pub fn get_all_foods(db: State<'_, DbPool>) -> Result<Vec<FoodItemInfo>, String>
         .query_map([], |row| {
             let effects_str: String = row.get(6)?;
             let keywords_str: String = row.get(7)?;
+            let source_kinds_str: String = row.get(9)?;
+            let craft_skills_str: String = row.get(10)?;
 
             let effect_descs: Vec<String> = serde_json::from_str(&effects_str).unwrap_or_default();
             let keywords: Vec<String> = serde_json::from_str(&keywords_str).unwrap_or_default();
+            let source_kinds: Vec<String> =
+                serde_json::from_str(&source_kinds_str).unwrap_or_default();
+            let craft_skills: Vec<String> =
+                serde_json::from_str(&craft_skills_str).unwrap_or_default();
 
             Ok(FoodItemInfo {
                 item_id: row.get(0)?,
@@ -67,6 +79,8 @@ pub fn get_all_foods(db: State<'_, DbPool>) -> Result<Vec<FoodItemInfo>, String>
                 effect_descs,
                 keywords,
                 value: row.get(8)?,
+                source_kinds,
+                craft_skills,
             })
         })
         .map_err(|e| format!("Query error: {e}"))?;

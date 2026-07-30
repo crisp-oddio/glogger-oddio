@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <PaneLayout
     screen-key="char-gourmand"
     :left-pane="{ title: 'Progress', defaultWidth: 280, minWidth: 220, maxWidth: 400 }"
@@ -10,10 +10,17 @@
         <!-- Progress Summary -->
         <div class="space-y-1.5">
           <h3 class="text-accent-gold font-bold uppercase tracking-wide text-xs mb-1.5">Progress</h3>
-          <GourmandProgressBar label="Overall" :eaten="store.totalEaten" :total="allFoods.length" />
-          <GourmandProgressBar label="Meals" :eaten="store.mealsEaten" :total="store.meals.length" />
-          <GourmandProgressBar label="Snacks" :eaten="store.snacksEaten" :total="store.snacks.length" />
-          <GourmandProgressBar label="Instant-Snacks" :eaten="store.instantSnacksEaten" :total="store.instantSnacks.length" />
+          <GourmandProgressBar label="Overall" :eaten="store.totalEaten" :total="store.progressFoods.length" />
+          <GourmandProgressBar label="Meals" :eaten="store.mealsEaten" :total="store.progressMeals.length" />
+          <GourmandProgressBar label="Snacks" :eaten="store.snacksEaten" :total="store.progressSnacks.length" />
+          <GourmandProgressBar label="Instant-Snacks" :eaten="store.instantSnacksEaten" :total="store.progressInstantSnacks.length" />
+          <label
+            class="flex items-center gap-1.5 text-text-secondary text-xs cursor-pointer pt-1"
+            :title="`Count progress against only the foods you can still realistically get — excludes ${excludedCount} event and unobtainable foods.`"
+          >
+            <input type="checkbox" v-model="store.attainableOnly" class="accent-accent-gold" />
+            Attainable only
+          </label>
         </div>
 
         <!-- Favorites -->
@@ -156,6 +163,19 @@
           </label>
 
           <div class="flex items-center gap-1.5">
+            <span class="text-text-muted">Source:</span>
+            <select
+              v-model="store.sourceFilter"
+              class="bg-surface-dark border border-border-default rounded px-2 py-1 text-text-primary text-sm"
+              title="Filter by where the food comes from"
+            >
+              <option v-for="opt in sourceFilterOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}{{ opt.count !== null ? ` (${opt.count})` : '' }}
+              </option>
+            </select>
+          </div>
+
+          <div class="flex items-center gap-1.5">
             <span class="text-text-muted">Sort:</span>
             <select
               v-model="store.sortMode"
@@ -164,6 +184,7 @@
               <option value="level">Gourmand Level</option>
               <option value="food-level">Food Level</option>
               <option value="alpha">Alphabetical</option>
+              <option value="source">Source</option>
             </select>
             <button
               class="px-1.5 py-1 text-xs bg-surface-dark border border-border-default rounded text-text-secondary hover:text-text-primary hover:border-border-hover transition-all"
@@ -213,6 +234,7 @@
               :manually-marked-foods="store.manuallyMarkedFoods"
               :hide-eaten="store.hideEaten"
               :hide-unusable="store.hideUnusable"
+              :source-filter="store.sourceFilter"
               :sort-mode="store.sortMode"
               :sort-asc="store.sortAsc"
               :view-mode="store.viewMode"
@@ -230,6 +252,7 @@
               :manually-marked-foods="store.manuallyMarkedFoods"
               :hide-eaten="store.hideEaten"
               :hide-unusable="store.hideUnusable"
+              :source-filter="store.sourceFilter"
               :sort-mode="store.sortMode"
               :sort-asc="store.sortAsc"
               :view-mode="store.viewMode"
@@ -247,6 +270,7 @@
               :manually-marked-foods="store.manuallyMarkedFoods"
               :hide-eaten="store.hideEaten"
               :hide-unusable="store.hideUnusable"
+              :source-filter="store.sourceFilter"
               :sort-mode="store.sortMode"
               :sort-asc="store.sortAsc"
               :view-mode="store.viewMode"
@@ -265,7 +289,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, nextTick } from 'vue'
 import { useGourmandStore } from '../../stores/gourmandStore'
+import type { FoodSourceFilter } from '../../stores/gourmandStore'
+import { matchesSourceFilter } from '../../stores/gourmandStore'
 import type { FoodItem } from '../../types/gourmand'
+import { FOOD_SOURCE_ORDER, foodSourceKindLabel, isAttainable } from '../../types/gourmand'
 import PaneLayout from '../Shared/PaneLayout.vue'
 import EmptyState from '../Shared/EmptyState.vue'
 import GourmandProgressBar from './GourmandProgressBar.vue'
@@ -285,6 +312,32 @@ const hasFavorites = computed(() =>
 )
 
 const hasSelection = computed(() => store.selectedMeal || store.selectedSnack)
+
+const excludedCount = computed(() => allFoods.value.filter(f => !isAttainable(f)).length)
+
+// Every kind that at least one food actually carries, so the dropdown never
+// offers an option that filters to nothing. Counts come along for the ride —
+// they make "how much of this is event food?" answerable without clicking.
+const sourceFilterOptions = computed<{ value: FoodSourceFilter; label: string; count: number | null }[]>(() => {
+  const foods = allFoods.value
+  const options: { value: FoodSourceFilter; label: string; count: number | null }[] = [
+    { value: 'all', label: 'All', count: foods.length },
+  ]
+
+  const notCrafted = foods.filter(f => matchesSourceFilter(f, 'not-crafted')).length
+  if (notCrafted > 0 && notCrafted < foods.length) {
+    options.push({ value: 'not-crafted', label: 'Not crafted', count: notCrafted })
+  }
+
+  for (const kind of FOOD_SOURCE_ORDER) {
+    const count = foods.filter(f => f.source_kinds.includes(kind)).length
+    if (count > 0) {
+      options.push({ value: kind, label: foodSourceKindLabel(kind), count })
+    }
+  }
+
+  return options
+})
 
 const unmatchedCount = computed(() => {
   if (!store.reportLoaded || allFoods.value.length === 0) return 0

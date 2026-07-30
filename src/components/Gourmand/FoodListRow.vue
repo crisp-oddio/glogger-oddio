@@ -18,6 +18,14 @@
       <span class="text-text-muted text-xs shrink-0">
         (Lv{{ food.food_level }}<template v-if="food.gourmand_req !== null">, G{{ food.gourmand_req }}</template>)
       </span>
+      <span
+        v-if="sourceLabel"
+        class="px-1 rounded border text-[10px] leading-tight shrink-0"
+        :class="sourceClasses"
+        :title="sourceTitle"
+      >
+        {{ sourceLabel }}
+      </span>
       <span v-if="eaten && !manuallyMarked" class="text-accent-green text-xs shrink-0">&times;{{ count }}</span>
       <span v-if="manuallyMarked" class="text-accent-blue text-xs shrink-0" title="Manually marked">manual</span>
       <span v-if="!canEat" class="text-accent-red text-xs shrink-0">Req {{ food.gourmand_req }}</span>
@@ -28,6 +36,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { FoodItem } from '../../types/gourmand'
+import {
+  foodSourceClasses,
+  foodSourceKindLabel,
+  foodSourceTitle,
+  primaryFoodSource,
+} from '../../types/gourmand'
 import GameIcon from '../Shared/GameIcon.vue'
 import FoodItemWithTooltip from './FoodItemWithTooltip.vue'
 
@@ -67,6 +81,18 @@ const nameClasses = computed(() => {
   if (!props.canEat) return 'text-text-dim'
   return 'text-text-primary'
 })
+
+// Rows are three-to-a-screen tight, so only the foods you *can't* just go and
+// cook earn a badge here — crafted ones (the large majority) stay unmarked and
+// the card view carries the craft-skill detail. Hovering still shows the full
+// source breakdown.
+const sourceLabel = computed(() => {
+  const kind = primaryFoodSource(props.food)
+  if (props.food.source_kinds.length === 0 || kind === 'crafted') return ''
+  return foodSourceKindLabel(kind)
+})
+const sourceClasses = computed(() => foodSourceClasses(props.food))
+const sourceTitle = computed(() => foodSourceTitle(props.food))
 
 function handleClick() {
   if (props.selectable) {

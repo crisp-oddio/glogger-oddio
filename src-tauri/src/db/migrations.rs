@@ -357,6 +357,29 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 66)?;
     }
 
+    if current_version < 67 {
+        migration_v67_food_sources(conn)?;
+        super::record_migration(conn, 67)?;
+    }
+
+    Ok(())
+}
+
+/// Migration V67: where each food comes from (Gourmand tracker source filter).
+///
+/// `source_kinds` and `craft_skills` are JSON arrays derived during CDN
+/// ingestion by `game_data::food_sources` — see `insert_foods`. Both are
+/// populated only by a CDN persist, and `persist_cdn_data` is skipped on
+/// startup when the stored `cdn_version` already matches the loaded data, so
+/// clear `cdn_version` here to force one rebuild. Existing rows keep the `[]`
+/// default until that runs; if the CDN fails to load, the old rows stay in
+/// place exactly as before.
+fn migration_v67_food_sources(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE foods ADD COLUMN source_kinds TEXT NOT NULL DEFAULT '[]';
+         ALTER TABLE foods ADD COLUMN craft_skills TEXT NOT NULL DEFAULT '[]';
+         DELETE FROM cdn_version;",
+    )?;
     Ok(())
 }
 
@@ -3099,6 +3122,52 @@ mod tests {
         assert_eq!(rows[1].0, "Rock Elementals");
         assert!(!rows[1].2);
         assert_eq!(rows[1].1, None);
+    }
+
+    /// v67 has to leave existing food rows readable (so the Gourmand screen
+    /// still works before the CDN rebuild lands) *and* clear `cdn_version`, or
+    /// the startup persist short-circuits and the new columns stay empty.
+    #[test]
+    fn v67_defaults_food_sources_and_forces_a_cdn_rebuild() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE foods (
+                 item_id     INTEGER PRIMARY KEY,
+                 name        TEXT NOT NULL,
+                 icon_id     INTEGER,
+                 food_category TEXT NOT NULL,
+                 food_level  INTEGER NOT NULL,
+                 gourmand_req INTEGER,
+                 effect_descs TEXT NOT NULL,
+                 keywords    TEXT NOT NULL,
+                 value       REAL
+             );
+             CREATE TABLE cdn_version (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 version INTEGER NOT NULL,
+                 loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             INSERT INTO foods VALUES (6090,'Basic Pumpkin Pie',5763,'Meal',50,15,'[]','[]',180);
+             INSERT INTO cdn_version (id, version) VALUES (1, 412);",
+        )
+        .unwrap();
+
+        migration_v67_food_sources(&c).unwrap();
+
+        let (kinds, skills): (String, String) = c
+            .query_row(
+                "SELECT source_kinds, craft_skills FROM foods WHERE item_id = 6090",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kinds, "[]");
+        assert_eq!(skills, "[]");
+
+        let versions: i64 = c
+            .query_row("SELECT COUNT(*) FROM cdn_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, 0, "cdn_version must be cleared to force a repersist");
     }
 
     fn setup_legacy_milking_timers() -> Connection {
