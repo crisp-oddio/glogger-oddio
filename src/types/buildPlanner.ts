@@ -221,36 +221,31 @@ export const RARITY_DEFS: RarityDef[] = [
  *  "aux" is the other combat skill. "generic" includes endurance. */
 export type ModConfig = [main: number, aux: number, generic: number]
 
-export const RARITY_CONFIGS: Record<string, ModConfig[]> = {
-  Common: [],
-  Uncommon: [
-    [1, 0, 2],
-    [0, 0, 3],
-  ],
-  Rare: [
-    [2, 0, 1],
-    [1, 0, 2],
-    [0, 0, 3],
-  ],
-  Exceptional: [
-    [2, 1, 0],
-    [2, 0, 1],
-    [1, 1, 1],
-    [0, 0, 3],
-  ],
-  Epic: [
-    [2, 2, 0],
-    [2, 1, 1],
-    [2, 0, 2],
-    [0, 0, 4],
-  ],
-  Legendary: [
-    [3, 2, 0],
-    [3, 1, 1],
-    [3, 0, 2],
-    [0, 0, 5],
-  ],
+/** Any one combat skill can claim at most 3 of an item's mod slots — the same cap
+ *  for either skill on the item, at every rarity. Generic mods (including
+ *  endurance) are unconstrained filler and can take any slot a skill mod doesn't,
+ *  which is why crafted items routinely come out as e.g. 3 shield + 2 generic or
+ *  2 shield + 3 generic. So rarity only decides how many slots there are; the
+ *  distribution rules are this cap, at most two combat skills per item, and
+ *  `aux <= main` (main is by definition the skill with more mods). */
+export const MAX_MODS_PER_SKILL = 3
+
+/** Enumerate every [main, aux, generic] split a rarity allows, skill-heavy first. */
+function buildRarityConfigs(totalMods: number): ModConfig[] {
+  if (totalMods === 0) return []
+
+  const configs: ModConfig[] = []
+  for (let main = Math.min(MAX_MODS_PER_SKILL, totalMods); main >= 0; main--) {
+    for (let aux = Math.min(MAX_MODS_PER_SKILL, main, totalMods - main); aux >= 0; aux--) {
+      configs.push([main, aux, totalMods - main - aux])
+    }
+  }
+  return configs
 }
+
+export const RARITY_CONFIGS: Record<string, ModConfig[]> = Object.fromEntries(
+  RARITY_DEFS.map(r => [r.id, buildRarityConfigs(r.totalMods)]),
+)
 
 /** Given the current mod counts on an item, determine what types of mods can still be added.
  *  Returns { canAddSkillMod: boolean, canAddGeneric: boolean, mustBeSkill: boolean }
