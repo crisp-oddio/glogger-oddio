@@ -12,14 +12,22 @@ The planner lets you pick two combat skills, set a target level/rarity, and then
 
 Items have a "main" skill (whichever ends up with more mods) and an "auxiliary" skill. Which skill is main vs auxiliary is determined dynamically by what the player puts on the item — the first skill to claim more slots becomes main.
 
-| Rarity | Total Mods | Valid Configurations |
+Rarity only decides **how many** mod slots an item has. The distribution rules are:
+
+- **Any one combat skill can claim at most 3 slots** (`MAX_MODS_PER_SKILL`) — same cap for either skill on the item, at every rarity.
+- **At most two combat skills** per item.
+- **Generic mods (including endurance) are unconstrained filler** — they take any slot a skill mod doesn't. This is why crafted items routinely come out as 3 shield + 2 generic, 2 shield + 3 generic, or all generic.
+
+| Rarity | Total Mods | Valid Configurations (main + aux + generic) |
 |--------|-----------|---------------------|
 | Common | 0 | — |
-| Uncommon | 3 | 1 main + 2 generic, OR 3 generic |
-| Rare | 3 | 2 main + 1 generic, 1 main + 2 generic, OR 3 generic |
-| Exceptional | 3 | 2 main + 1 aux, 2 main + 1 generic, 1 main + 1 aux + 1 generic, OR 3 generic |
-| Epic | 4 | 2 main + 2 aux, 2 main + 1 aux + 1 generic, 2 main + 2 generic, OR 4 generic |
-| Legendary | 5 | 3 main + 2 aux, 3 main + 1 aux + 1 generic, 3 main + 2 generic, OR 5 generic |
+| Uncommon | 3 | 3+0+0, 2+1+0, 2+0+1, 1+1+1, 1+0+2, 0+0+3 |
+| Rare | 3 | 3+0+0, 2+1+0, 2+0+1, 1+1+1, 1+0+2, 0+0+3 |
+| Exceptional | 3 | 3+0+0, 2+1+0, 2+0+1, 1+1+1, 1+0+2, 0+0+3 |
+| Epic | 4 | 3+1+0, 3+0+1, 2+2+0, 2+1+1, 2+0+2, 1+1+2, 1+0+3, 0+0+4 |
+| Legendary | 5 | 3+2+0, 3+1+1, 3+0+2, 2+2+1, 2+1+2, 2+0+3, 1+1+3, 1+0+4, 0+0+5 |
+
+`RARITY_CONFIGS` is derived (`buildRarityConfigs` enumerates every split satisfying the cap and `aux <= main`, skill-heavy first) rather than hand-listed.
 
 The planner uses a **constraint solver** (`computeSlotConstraints` in `buildPlanner.ts`) that tracks which configurations are still reachable as mods are added. Empty slots dynamically show what types of mods can fill them (e.g., "Ice Magic, Knife Fighting, or Generic" or "Ice Magic only").
 
@@ -207,7 +215,7 @@ When a slot is selected, the center panel shows:
 ### Mod Distribution Enforcement
 
 The planner enforces valid mod configurations using a constraint solver:
-- Each rarity has a set of valid configurations (`RARITY_CONFIGS` in `buildPlanner.ts`)
+- Each rarity has a set of valid configurations (`RARITY_CONFIGS` in `buildPlanner.ts`, derived from `MAX_MODS_PER_SKILL` — generic mods are free filler, any one skill is capped at 3)
 - As mods are added, impossible configurations are eliminated
 - The constraint solver (`computeSlotConstraints`) determines: which existing skills can grow, whether generic mods can be added, whether new skills can be introduced
 - Empty slot labels update dynamically (e.g., after 3 Ice Magic + 1 Generic on Legendary, remaining slot shows "Knife Fighting only" if only one config remains valid)
