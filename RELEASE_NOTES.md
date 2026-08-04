@@ -1,7 +1,7 @@
-## What's Changed since v0.12.16
+## What's Changed since v0.12.17
 
-### Features
-- feat(gourmand): classify foods by source (crafted vs event vs drop) (`75ffa9b`)
+### Fixes
+- fix(build-planner): parse indirect-damage mod prose the CDN actually stores (`1a06113`)
 
 ---
-*2 commits since v0.12.16*
+*2 commits since v0.12.17*
