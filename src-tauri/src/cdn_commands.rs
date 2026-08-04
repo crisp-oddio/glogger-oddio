@@ -2105,26 +2105,51 @@ fn parse_token_value(desc: &str) -> Option<(String, f64, Option<String>)> {
     Some((token, value, condition))
 }
 
-/// Some conditional indirect-damage mods are stored as English prose instead of `{TOKEN}{VALUE}`
-/// (e.g. "Indirect Psychic damage is +53% per tick while Vampirism skill active"). Parse that one
-/// well-structured family into the equivalent `MOD_<TYPE>_INDIRECT` percent tokens, each
-/// conditional on the named skill. Returns one `(token, fraction, skill)` per damage type named.
+/// Strip the leading run of `<icon=NNN>` tags most tsys prose descs open with, so the
+/// anchored prose parsers see the sentence itself.
+fn strip_leading_icons(desc: &str) -> String {
+    static ICON: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?:<icon=\d+>)+").unwrap());
+    ICON.replace(desc.trim(), "").trim().to_string()
+}
+
+/// Some conditional indirect-damage mods are stored as English prose instead of `{TOKEN}{VALUE}`.
+/// Three phrasings exist in the data, differing only in wording:
+/// ```text
+/// Indirect Psychic damage is +53% per tick while Vampirism skill active
+/// Indirect Nature and Indirect Trauma damage +30% while Cow skill active
+/// Indirect Poison Damage, Indirect Trauma Damage, and Indirect Psychic Damage +30% while Sword skill active
+/// ```
+/// Each is parsed into the equivalent `MOD_<TYPE>_INDIRECT` percent tokens, one per damage type
+/// named, conditional on the named skill. Returns `(token, fraction, skill)` triples.
 fn parse_conditional_indirect_text(desc: &str) -> Vec<(String, f64, String)> {
-    static RE: Lazy<regex::Regex> = Lazy::new(|| {
-        regex::Regex::new(
-            r"^Indirect (\w+)(?: and Indirect (\w+))? damage is \+(\d+)% per tick while (\w+) skill active\.?$",
-        )
-        .unwrap()
+    // The percent + skill tail, shared by all three phrasings ("is +53% per tick while …",
+    // "damage +30% while …"). Anchored at the end so temporal/conditional riders don't match.
+    static RE_TAIL: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"\+(\d+)% (?:per tick )?while (\w+) skill active\.?$").unwrap()
     });
-    let Some(caps) = RE.captures(desc.trim()) else {
+    static RE_TYPE: Lazy<regex::Regex> =
+        Lazy::new(|| regex::Regex::new(r"Indirect (\w+)").unwrap());
+
+    let body = strip_leading_icons(desc);
+    // Only the "Indirect <type> damage" family; mitigation, vulnerability and proc prose that
+    // merely mentions indirect damage opens with something else.
+    if !body.starts_with("Indirect ") || !body.to_lowercase().contains("damage") {
+        return Vec::new();
+    }
+    let Some(tail) = RE_TAIL.captures(&body) else {
         return Vec::new();
     };
-    let pct = caps[3].parse::<f64>().unwrap_or(0.0) / 100.0;
-    let skill = caps[4].to_string();
-    [1usize, 2]
-        .iter()
-        .filter_map(|&i| caps.get(i))
-        .map(|t| (format!("MOD_{}_INDIRECT", t.as_str().to_uppercase()), pct, skill.clone()))
+    let pct = tail[1].parse::<f64>().unwrap_or(0.0) / 100.0;
+    let skill = tail[2].to_string();
+    let head = &body[..tail.get(0).unwrap().start()];
+    RE_TYPE
+        .captures_iter(head)
+        .filter(|c| {
+            crate::game_data::ability_stats::DAMAGE_TYPES
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(&c[1]))
+        })
+        .map(|c| (format!("MOD_{}_INDIRECT", c[1].to_uppercase()), pct, skill.clone()))
         .collect()
 }
 
@@ -2149,7 +2174,8 @@ fn parse_conditional_direct_text(desc: &str) -> Vec<(String, f64, String)> {
     static RE_DIRECT_TYPE: Lazy<regex::Regex> =
         Lazy::new(|| regex::Regex::new(r"Direct (\w+) [Dd]amage").unwrap());
 
-    let d = desc.trim();
+    let d = strip_leading_icons(desc);
+    let d = d.as_str();
     let mut out = Vec::new();
     if let Some(caps) = RE_PAIR.captures(d) {
         let flat_direct: f64 = caps[3].parse().unwrap_or(0.0);
@@ -5059,6 +5085,13 @@ mod build_stats_parsing_tests {
                 ("MOD_COLD_DIRECT".to_string(), 0.11, "Hammer".to_string()),
             ]
         );
+        // The same text as the CDN actually stores it, behind a leading icon tag.
+        assert_eq!(
+            parse_conditional_direct_text(
+                "<icon=108>Direct Electricity Damage, Direct Fire Damage, and Direct Cold Damage +11% while Hammer skill active",
+            ),
+            out
+        );
         // Unrelated prose stays empty.
         assert!(parse_conditional_direct_text("Max Armor +75 while Shield skill active").is_empty());
         assert!(parse_conditional_direct_text(
@@ -5373,10 +5406,48 @@ mod build_stats_parsing_tests {
     }
 
     #[test]
+    fn parse_conditional_text_three_types_with_icon() {
+        // Sword "of Body Damage" (SwordBoostBodyDamage): leading icon tag, comma-separated list of
+        // three types, and no "is …/per tick" wording.
+        let out = parse_conditional_indirect_text(
+            "<icon=108>Indirect Poison Damage, Indirect Trauma Damage, and Indirect Psychic Damage +30% while Sword skill active",
+        );
+        assert_eq!(
+            out,
+            vec![
+                ("MOD_POISON_INDIRECT".to_string(), 0.30, "Sword".to_string()),
+                ("MOD_TRAUMA_INDIRECT".to_string(), 0.30, "Sword".to_string()),
+                ("MOD_PSYCHIC_INDIRECT".to_string(), 0.30, "Sword".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_conditional_text_no_per_tick_wording_with_icon() {
+        // Cow-family variant: icon tag, two types, "damage +N%" with no "is …/per tick".
+        let out = parse_conditional_indirect_text(
+            "<icon=108>Indirect Nature and Indirect Trauma damage +30% while Cow skill active",
+        );
+        assert_eq!(
+            out,
+            vec![
+                ("MOD_NATURE_INDIRECT".to_string(), 0.30, "Cow".to_string()),
+                ("MOD_TRAUMA_INDIRECT".to_string(), 0.30, "Cow".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn parse_conditional_text_ignores_unrelated_prose() {
         // Mitigation / proc prose must not be misread as a damage boost.
         assert!(parse_conditional_indirect_text(
             "Max Armor +75 while Shield skill active"
+        )
+        .is_empty());
+        // Names indirect damage, but as a debuff on the target rather than an "Indirect <type>
+        // damage +N%" grant — and the tail is temporal.
+        assert!(parse_conditional_indirect_text(
+            "<icon=3481>Heart Thorn causes target to suffer +17% damage from all Indirect Damage sources for 15 seconds"
         )
         .is_empty());
         assert!(parse_conditional_indirect_text(
