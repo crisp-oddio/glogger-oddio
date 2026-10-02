@@ -362,6 +362,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 67)?;
     }
 
+    if current_version < 68 {
+        migration_v68_stall_price_observations(conn)?;
+        super::record_migration(conn, 68)?;
+    }
+
     Ok(())
 }
 
@@ -777,6 +782,41 @@ fn migration_v22_resuscitations(conn: &Connection) -> Result<()> {
             ON character_resuscitations(character_name, server_name);
         CREATE INDEX idx_resuscitations_occurred_at
             ON character_resuscitations(occurred_at);"
+    )?;
+    Ok(())
+}
+
+/// Migration V68: Other players' stall price observations — manual captures
+/// and auto-detected purchases from browsing someone else's stall.
+///
+/// `price_unit = 0` is the "price unknown" sentinel (the game has no
+/// zero-price listings; minimum is 1 council). The unique key drives
+/// `INSERT OR IGNORE` idempotency: re-saving or re-detecting the same
+/// (timestamp, item, stall, price) never duplicates. Purgeable via
+/// `admin_commands::PURGE_TABLES` on the `observed_at` column.
+fn migration_v68_stall_price_observations(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE stall_price_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            item_name TEXT NOT NULL,
+            internal_name TEXT,
+            item_type_id INTEGER,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            price_unit INTEGER NOT NULL,
+            stall_npc_entity_id INTEGER NOT NULL,
+            stall_label TEXT NOT NULL,
+            owner_name TEXT,
+            source TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(observed_at, item_name, stall_npc_entity_id, price_unit)
+        );
+        CREATE INDEX idx_spo_item ON stall_price_observations(item_type_id);
+        CREATE INDEX idx_spo_observed ON stall_price_observations(observed_at DESC);
+        CREATE INDEX idx_spo_stall ON stall_price_observations(stall_npc_entity_id);"
     )?;
     Ok(())
 }

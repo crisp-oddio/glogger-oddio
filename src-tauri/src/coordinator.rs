@@ -12,7 +12,7 @@ use crate::stall_year_resolver::base_year_for_live;
 use crate::game_state::GameStateManager;
 use crate::log_watchers::{ChatLogWatcher, LogEvent, LogFileWatcher, PlayerLogWatcher};
 use crate::parsers::chat_local_to_utc;
-use crate::player_event_parser::PlayerEvent;
+use crate::player_event_parser::{ActivitySource, ItemProvenance, PlayerEvent};
 use crate::settings::SettingsManager;
 use crate::survey::aggregator::{SurveyAggregatorEvent, SurveySessionAggregator};
 use crate::watch_rules::evaluate_rules;
@@ -930,6 +930,48 @@ impl DataIngestCoordinator {
                                     }
                                 }
                             }
+                        }
+                        // Stall price capture: purchases from other players'
+                        // stalls arrive as ItemAdded attributed to
+                        // VendorBrowsing with the stall's npc id. Price is
+                        // never logged (wallet spends invisible) — record a
+                        // sentinel row the user fills in later.
+                        PlayerEvent::ItemAdded {
+                            is_new: true,
+                            item_name,
+                            initial_quantity,
+                            timestamp,
+                            provenance: ItemProvenance::Attributed {
+                                source:
+                                    ActivitySource::VendorBrowsing {
+                                        npc_entity_id: npc_id,
+                                        ..
+                                    },
+                                ..
+                            },
+                            ..
+                        } => {
+                            self.record_purchase_observation(
+                                *npc_id, item_name, *initial_quantity, timestamp,
+                            );
+                        }
+                        // Stall price capture: another player's stall UI
+                        // opened — tell the frontend so the capture panel can
+                        // appear. No DB write for browsing alone.
+                        PlayerEvent::VendorScreenOpened {
+                            timestamp,
+                            npc_entity_id,
+                            ..
+                        } => {
+                            self.app_handle
+                                .emit(
+                                    "stall-browse-started",
+                                    serde_json::json!({
+                                        "npc_entity_id": npc_entity_id,
+                                        "timestamp": timestamp,
+                                    }),
+                                )
+                                .ok();
                         }
                         _ => {}
                     }
@@ -2497,6 +2539,75 @@ impl DataIngestCoordinator {
             }
         }
     }
+
+    /// Record an auto-detected purchase from another player's stall in
+    /// `stall_price_observations`. Price is never logged (wallet spends are
+    /// invisible to Player.log), so the row carries the `price_unit = 0`
+    /// sentinel for the user to fill in from the Market tab. `INSERT OR
+    /// IGNORE` keeps re-runs and replays from duplicating rows.
+    fn record_purchase_observation(
+        &self,
+        npc_entity_id: u32,
+        item_name: &str,
+        quantity: u32,
+        timestamp: &str,
+    ) {
+        let Some((character, server)) = self.active_character_server() else {
+            return;
+        };
+
+        // Resolve display name + CDN id + internal name in one read borrow.
+        let (display_name, item_type_id, internal_name): (String, Option<i64>, Option<String>) =
+            self.game_data
+                .try_read()
+                .ok()
+                .and_then(|gd| {
+                    gd.resolve_item(item_name).map(|info| {
+                        (
+                            info.name.clone(),
+                            Some(info.id as i64),
+                            info.internal_name.clone(),
+                        )
+                    })
+                })
+                .unwrap_or_else(|| (item_name.to_string(), None, None));
+
+        // Player.log timestamps are UTC HH:MM:SS; attach today's UTC date
+        // (base_date_override handles replay/reparse).
+        let observed_at = crate::parsers::to_utc_datetime_with_base(timestamp, None);
+
+        let Ok(conn) = self.db_pool.get() else {
+            return;
+        };
+        let result = conn.execute(
+            "INSERT OR IGNORE INTO stall_price_observations
+                (character_name, server_name, item_name, internal_name, item_type_id,
+                 quantity, price_unit, stall_npc_entity_id, stall_label, owner_name,
+                 source, observed_at, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 'Unidentified Stall', NULL,
+                     'purchase', ?8, NULL)",
+            rusqlite::params![
+                character,
+                server,
+                display_name,
+                internal_name,
+                item_type_id,
+                quantity as i64,
+                npc_entity_id as i64,
+                observed_at,
+            ],
+        );
+        match result {
+            Ok(1) => {
+                self.app_handle.emit("stall-prices-updated", 1).ok();
+            }
+            Ok(_) => {} // duplicate — OR IGNORE swallowed it
+            Err(e) => {
+                eprintln!("[coordinator] Failed to record stall purchase observation: {e}")
+            }
+        }
+    }
+
 
     /// Parse a PlayerShopLog book body and persist its entries to the
     /// `stall_events` table, stamped with the active character as owner.

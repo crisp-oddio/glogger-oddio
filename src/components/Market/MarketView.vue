@@ -165,6 +165,84 @@
       </div>
     </AccordionSection>
 
+    <!-- Stall price observations (other players' stalls) -->
+    <AccordionSection :default-open="false" class="shrink-0">
+      <template #title>Stall Price Observations</template>
+      <p class="text-text-dim text-xs mt-2 mb-2">
+        Prices seen at other players' stalls — typed in from the live capture panel
+        (opens automatically when you browse a stall) or auto-detected purchases.
+      </p>
+      <EmptyState
+        v-if="stallPriceStore.observations.length === 0"
+        primary="No stall prices captured yet"
+        secondary="Browse another player's stall in game — a capture panel will appear. Or scan the stall window from that panel." />
+      <div v-else class="overflow-y-auto max-h-80 border border-border-default rounded">
+        <table class="w-full text-xs">
+          <thead class="sticky top-0 bg-surface-elevated">
+            <tr class="text-left text-text-secondary">
+              <th class="px-2 py-1.5 font-medium">Item</th>
+              <th class="px-2 py-1.5 font-medium text-right">Qty</th>
+              <th class="px-2 py-1.5 font-medium text-right">Price</th>
+              <th class="px-2 py-1.5 font-medium">Stall</th>
+              <th class="px-2 py-1.5 font-medium">Seen</th>
+              <th class="px-2 py-1.5 font-medium">Source</th>
+              <th class="px-2 py-1.5"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="obs in stallPriceStore.observations"
+              :key="obs.id"
+              class="border-t border-border-default">
+              <td class="px-2 py-1.5">
+                <ItemInline v-if="obs.item_type_id != null" :reference="obs.item_name" />
+                <span v-else class="text-amber-400" :title="'Unresolved item name — click Set price to fix'">
+                  {{ obs.item_name }} (unresolved)
+                </span>
+              </td>
+              <td class="px-2 py-1.5 text-right tabular-nums">{{ obs.quantity }}</td>
+              <td class="px-2 py-1.5 text-right tabular-nums">
+                <template v-if="obs.source === 'purchase' && obs.price_unit === 0">
+                  <input
+                    v-model.number="stallPriceEdit[obs.id]"
+                    type="number"
+                    min="1"
+                    class="input w-20 text-xs py-0.5"
+                    placeholder="price?"
+                    @keydown.enter="setPurchasePrice(obs)" />
+                  <button
+                    class="btn btn-secondary text-[10px] py-0.5 px-1.5 ml-1"
+                    @click="setPurchasePrice(obs)">
+                    Set
+                  </button>
+                </template>
+                <template v-else>{{ obs.price_unit.toLocaleString() }}g</template>
+              </td>
+              <td class="px-2 py-1.5 text-text-secondary truncate max-w-40" :title="obs.stall_label">
+                {{ obs.stall_label }}<span v-if="obs.owner_name" class="text-text-dim"> ({{ obs.owner_name }})</span>
+              </td>
+              <td class="px-2 py-1.5 text-text-dim whitespace-nowrap">{{ formatRelative(obs.observed_at) }}</td>
+              <td class="px-2 py-1.5">
+                <span
+                  class="px-1.5 py-0.5 rounded-sm text-[10px] uppercase tracking-wide"
+                  :class="obs.source === 'purchase' ? 'bg-sky-900/40 text-sky-300' : 'bg-emerald-900/40 text-emerald-300'">
+                  {{ obs.source }}
+                </span>
+              </td>
+              <td class="px-2 py-1.5 text-right">
+                <button
+                  class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs"
+                  title="Delete observation"
+                  @click="deleteObservation(obs)">
+                  &times;
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </AccordionSection>
+
     <!-- Bulk action bar -->
     <div v-if="selectedIds.size > 0" class="flex items-center gap-3 shrink-0 px-3 py-2 bg-surface-elevated border border-accent-gold/30 rounded">
       <span class="text-text-primary text-xs font-semibold">{{ selectedIds.size }} selected</span>
@@ -421,6 +499,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Stall price capture overlay (teleports to body; shows on browse event) -->
+    <StallPriceCapturePanel />
   </div>
 </template>
 
@@ -435,11 +516,15 @@ import type { ItemInfo } from '../../types/gameData'
 import EmptyState from '../Shared/EmptyState.vue'
 import AccordionSection from '../Shared/AccordionSection.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
+import StallPriceCapturePanel from './StallPriceCapturePanel.vue'
+import { useStallPriceStore } from '../../stores/stallPriceStore'
+import type { StallPriceObservation } from '../../types/stallPrices'
 
 const toast = useToast()
 const marketStore = useMarketStore()
 const settingsStore = useSettingsStore()
 const gameDataStore = useGameDataStore()
+const stallPriceStore = useStallPriceStore()
 
 const search = ref('')
 const sortField = ref<'item_name' | 'market_value' | 'updated_at'>('item_name')
@@ -772,5 +857,32 @@ onMounted(() => {
   if (marketStore.values.length === 0) {
     marketStore.loadAll()
   }
+  if (stallPriceStore.observations.length === 0) {
+    void stallPriceStore.loadObservations()
+  }
 })
+
+// ── Stall price observations ────────────────────────────────────────────────
+
+/** Per-row price edit inputs for purchase-sentinel rows. */
+const stallPriceEdit = ref<Record<number, number | undefined>>({})
+
+async function setPurchasePrice(obs: StallPriceObservation): Promise<void> {
+  const value = stallPriceEdit.value[obs.id]
+  if (value == null || value < 1 || !Number.isFinite(value)) return
+  try {
+    await stallPriceStore.updateObservation(obs.id, value)
+    stallPriceEdit.value[obs.id] = undefined
+  } catch (e) {
+    toast.error('Failed to set price: ' + String(e))
+  }
+}
+
+async function deleteObservation(obs: StallPriceObservation): Promise<void> {
+  try {
+    await stallPriceStore.deleteObservation(obs.id)
+  } catch (e) {
+    toast.error('Failed to delete observation: ' + String(e))
+  }
+}
 </script>

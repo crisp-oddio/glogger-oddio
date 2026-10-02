@@ -28,6 +28,7 @@ pub mod poem_commands;
 #[allow(dead_code)]
 pub mod price_helper_commands;
 pub mod queries;
+pub mod stall_commands;
 pub mod stall_tracker_commands;
 // Reads survey_types (CDN-populated reference table) — useful raw material
 // for the future Analytics rebuild. No active consumer right now since the

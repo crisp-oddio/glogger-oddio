@@ -699,9 +699,14 @@ Relevant for features that depend on weather conditions (e.g., some Fletching re
 [HH:MM:SS] LocalPlayer: ProcessPlayerVendorScreen(npcId, "", System.Collections.Generic.List`1[PlayerVendorItemForSale], slotCount, bool, bool, ...)
 ```
 
-**When it fires:** Player opens their own vendor stall management UI.
+**When it fires:** Player opens a vendor stall UI. The 5th positional arg is
+the manager flag: `True` = own stall (management mode), `False` = someone
+else's stall (buy mode).
 
-**NOT YET PARSED.**
+**Parsed:** yes (`VendorScreenOpened`, emitted only for OTHERS' stalls —
+own-stall activity is covered by PlayerShopLog books). Drives the stall price
+capture panel (see `docs/features/screens/economics/economics-market.md`).
+The listing contents/prices are not in the log line itself.
 
 ### ProcessPlayerVendorScreenUpdate — Player shop item update
 
@@ -719,9 +724,12 @@ Relevant for features that depend on weather conditions (e.g., some Fletching re
 [HH:MM:SS] LocalPlayer: ProcessPlayerVendorScreenRemove(npcId, instanceId)
 ```
 
-**When it fires:** Item removed from player's vendor stall.
+**When it fires:** Item removed from a player's vendor stall — a purchase from
+another player's stall, or collecting your own listing back.
 
-**NOT YET PARSED.**
+**Parsed:** yes (`VendorItemTaken`, emitted only when the open screen is
+someone ELSE's stall; the item/quantity arrive via the paired `ProcessAddItem`
+provenance join).
 
 ### ProcessSetDisabledEquipment — Disabled equipment slots
 

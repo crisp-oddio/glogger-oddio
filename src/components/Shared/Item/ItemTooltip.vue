@@ -23,6 +23,10 @@
         Effective: {{ effectiveValue.toLocaleString() }}g
         <span class="text-text-dim">({{ valuationModeLabel }})</span>
       </div>
+      <div v-if="stallObservation" class="text-text-secondary text-xs mt-0.5">
+        Last seen: {{ stallObservation.quantity }}x {{ stallObservation.price_unit === 0 ? 'price?' : stallObservation.price_unit.toLocaleString() + 'g' }} at {{ stallObservation.stall_label }}
+        <span class="text-text-dim">({{ formatRelative(stallObservation.observed_at) }})</span>
+      </div>
     </div>
   </div>
 
@@ -135,8 +139,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { useGameDataStore } from "../../../stores/gameDataStore";
 import { useGameStateStore } from "../../../stores/gameStateStore";
 import { useMarketStore } from "../../../stores/marketStore";
+import { useStallPriceStore } from "../../../stores/stallPriceStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
-import { formatStaleness } from "../../../composables/useTimestamp";
+import { formatStaleness, formatRelative } from "../../../composables/useTimestamp";
 import { findInterestedNpcs } from "../../../composables/useNpcGiftMatching";
 import { getStoreService, maxGoldCap } from "../../../composables/useNpcServices";
 import type { ItemInfo } from "../../../types/gameData";
@@ -164,6 +169,7 @@ const props = defineProps<{
 const gameDataStore = useGameDataStore();
 const gameStateStore = useGameStateStore();
 const marketStore = useMarketStore();
+const stallPriceStore = useStallPriceStore();
 const settingsStore = useSettingsStore();
 const ownedCount = computed(() => gameStateStore.ownedItemCounts[props.item.name] ?? 0);
 
@@ -212,6 +218,9 @@ const matchingVendors = computed(() => {
 // Market value
 const marketEntry = computed(() => marketStore.valuesByItemId[props.item.id] ?? null);
 const marketValue = computed(() => marketEntry.value?.market_value ?? null);
+
+// Most recent stall observation (other players' stalls) for this item.
+const stallObservation = computed(() => stallPriceStore.observationsByItemId[props.item.id] ?? null);
 const marketStaleness = computed(() => {
   if (!marketEntry.value) return ''
   return formatStaleness(marketEntry.value.updated_at)

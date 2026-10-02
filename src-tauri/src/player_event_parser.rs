@@ -64,6 +64,22 @@ pub enum PlayerEvent {
         interaction_type: u32,
         npc_name: String,
     },
+    /// Another player's stall UI opened (is_own_stall False) or the player's
+    /// own stall management screen (True). Emitted only for others' stalls —
+    /// own-stall opens are already covered by PlayerShopLog books.
+    VendorScreenOpened {
+        timestamp: String,
+        npc_entity_id: u32,
+        is_own_stall: bool,
+    },
+    /// Purchase-or-collect from a vendor screen: pairs with the ItemAdded
+    /// that follows (item/quantity live there; this supplies the stall).
+    VendorItemTaken {
+        timestamp: String,
+        npc_entity_id: u32,
+        instance_id: u64,
+        is_own_stall: bool,
+    },
     FavorChanged {
         timestamp: String,
         npc_id: u32,
@@ -844,6 +860,12 @@ pub struct PlayerEventParser {
     /// consumed when "Note Sent" confirmation appears.
     pending_stall_note_send: Option<PendingStallNoteSend>,
 
+    /// Current vendor screen: (npc_entity_id, is_own_stall). Set by
+    /// ProcessPlayerVendorScreen (arg layout: npcId, helpText, listType,
+    /// slotCount, isManager, ...); consumed by ProcessPlayerVendorScreenRemove;
+    /// cleared by ProcessEndInteraction. None when no screen is open.
+    vendor_screen: Option<(u32, bool)>,
+
     /// Last item event emitted in this process_line call. Used by parse_remove_loot
     /// to identify the item for stacking cases where RemoveLoot has an orphaned instance_id.
     last_item_event: Option<LastItemEvent>,
@@ -912,6 +934,7 @@ impl PlayerEventParser {
             pending_chat_gains: Vec::new(),
             pending_pigeon_send: None,
             pending_stall_note_send: None,
+            vendor_screen: None,
             last_item_event: None,
             skill_levels: HashMap::new(),
             last_anatomy: None,
@@ -1254,6 +1277,17 @@ impl PlayerEventParser {
             // for pigeon sends and stall note sends.
             self.flush_pending_deletes(&mut events);
             self.handle_talk_screen(line, &mut events);
+        } else if line.contains("ProcessPlayerVendorScreen(") {
+            // Player-stall screens: (npcId, helpText, listType, slotCount,
+            // isManager, ...). Tracked as a session for price-capture;
+            // ShopLog books (own stall) are handled by parse_book separately.
+            self.flush_pending_deletes(&mut events);
+            self.handle_player_vendor_screen(line, &mut events);
+        } else if line.contains("ProcessPlayerVendorScreenRemove(") {
+            // Item taken off a player-stall screen (purchase from another
+            // player, or collecting your own listing back).
+            self.flush_pending_deletes(&mut events);
+            self.handle_player_vendor_screen_remove(line, &mut events);
         } else if line.contains("ProcessVendorScreen(") {
             // Context-only: vendor window open.
             self.flush_pending_deletes(&mut events);
@@ -2542,6 +2576,110 @@ impl PlayerEventParser {
         }
     }
 
+    /// ProcessPlayerVendorScreen(npcId, helpText, listType, slotCount,
+    /// isManager, ...) — another player's stall UI (isManager False) or the
+    /// player's own stall management screen (True). Sets the vendor_screen
+    /// session used by ProcessPlayerVendorScreenRemove; emits
+    /// VendorScreenOpened only for OTHERS' stalls (own-stall activity is
+    /// already covered by PlayerShopLog books via parse_book).
+    fn handle_player_vendor_screen(&mut self, line: &str, events: &mut Vec<PlayerEvent>) {
+        let ts = match parse_timestamp(line) {
+            Some(t) => t,
+            None => return,
+        };
+        let marker = "ProcessPlayerVendorScreen(";
+        let args_start = match line.find(marker) {
+            Some(i) => i + marker.len(),
+            None => return,
+        };
+        let args = &line[args_start..];
+
+        let first_comma = match args.find(',') {
+            Some(i) => i,
+            None => return,
+        };
+        let npc_id: u32 = match args[..first_comma].trim().parse() {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+
+        // The isManager flag is the 5th positional arg. Args are comma-space
+        // separated, but the helpText arg can contain commas inside its
+        // quoted string, so split on ", " boundaries at paren-depth 0 —
+        // quote-aware scan instead of a naive split.
+        let is_own_stall = match extract_positional_bool(args, 4) {
+            Some(b) => b,
+            None => {
+                // Arg layout changed or unparseable: treat as someone else's
+                // stall (the common case for captures; purchases are gated
+                // on Remove anyway).
+                false
+            }
+        };
+
+        self.vendor_screen = Some((npc_id, is_own_stall));
+
+        if !is_own_stall {
+            events.push(PlayerEvent::VendorScreenOpened {
+                timestamp: ts,
+                npc_entity_id: npc_id,
+                is_own_stall: false,
+            });
+        }
+    }
+
+    /// ProcessPlayerVendorScreenRemove(npcId, instanceId, ...) — an item was
+    /// taken off the currently-open player stall screen: a purchase from
+    /// another player's stall, or collecting your own listing. Emits
+    /// VendorItemTaken only when the open screen is someone ELSE's stall.
+    fn handle_player_vendor_screen_remove(&mut self, line: &str, events: &mut Vec<PlayerEvent>) {
+        let ts = match parse_timestamp(line) {
+            Some(t) => t,
+            None => return,
+        };
+        let marker = "ProcessPlayerVendorScreenRemove(";
+        let args_start = match line.find(marker) {
+            Some(i) => i + marker.len(),
+            None => return,
+        };
+        let args = &line[args_start..];
+
+        let first_comma = match args.find(',') {
+            Some(i) => i,
+            None => return,
+        };
+        let npc_id: u32 = match args[..first_comma].trim().parse() {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        let rest = &args[first_comma + 1..];
+        let instance_id: u64 = match rest.find(',') {
+            Some(i) => match rest[..i].trim().parse() {
+                Ok(v) => v,
+                Err(_) => return,
+            },
+            None => {
+                // Last arg (instanceId) may terminate the arg list.
+                let end = rest.find(')').unwrap_or(rest.len());
+                match rest[..end].trim().parse() {
+                    Ok(v) => v,
+                    Err(_) => return,
+                }
+            }
+        };
+
+        if let Some((screen_npc, is_own)) = self.vendor_screen {
+            if screen_npc == npc_id && !is_own {
+                events.push(PlayerEvent::VendorItemTaken {
+                    timestamp: ts,
+                    npc_entity_id: npc_id,
+                    instance_id,
+                    is_own_stall: false,
+                });
+            }
+        }
+    }
+
     /// ProcessVendorScreen(npcId, ...) — opens VendorBrowsing context.
     /// The NPC name is enriched from a recent ProcessStartInteraction when
     /// available; it is not derivable from the VendorScreen args themselves.
@@ -2638,6 +2776,8 @@ impl PlayerEventParser {
 
         // Clear interaction context
         self.current_interaction = None;
+        // The stall-price capture session ends with the interaction too.
+        self.vendor_screen = None;
 
         // Close any activity contexts keyed to this entity_id. `entity_id` is
         // signed (occasional negative values for special targets like doors);
@@ -3393,6 +3533,63 @@ fn parse_equipment_bonus(body: &str) -> Option<u32> {
         .take_while(|c| c.is_ascii_digit())
         .collect();
     digits.parse().ok()
+}
+
+/// Extract the nth positional arg (0-indexed) from a comma-separated log arg
+/// list, ignoring commas inside double-quoted strings. Returns the raw
+/// untrimmed text of that arg, or None when the list ends first.
+fn extract_positional_arg(text: &str, n: usize) -> Option<&str> {
+    let mut depth = 0usize; // paren nesting inside args, e.g. List`1[...](...)
+    let mut in_quotes = false;
+    let mut arg_start = 0usize;
+    let mut index = 0usize;
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_quotes {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_quotes = false;
+            }
+        } else {
+            match c {
+                b'"' => in_quotes = true,
+                b'(' | b'[' => depth += 1,
+                b')' | b']' => {
+                    if depth > 0 {
+                        depth -= 1
+                    }
+                }
+                b',' if depth == 0 => {
+                    if index == n {
+                        return Some(&text[arg_start..i]);
+                    }
+                    index += 1;
+                    arg_start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if index == n {
+        // Final arg runs to end of the scanned text (caller bounds it with ')').
+        return Some(&text[arg_start..]);
+    }
+    None
+}
+
+/// Parse the nth positional arg as a Rust-style bool (`True`/`False`).
+fn extract_positional_bool(text: &str, n: usize) -> Option<bool> {
+    match extract_positional_arg(text, n)?.trim() {
+        "True" => Some(true),
+        "False" => Some(false),
+        _ => None,
+    }
 }
 
 /// Extract the nth quoted string from text (0-indexed)
@@ -5293,6 +5490,127 @@ mod tests {
             }
             other => panic!("Expected VendorBrowsing, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_player_vendor_screen_other_stall_emits_opened() {
+        let mut parser = PlayerEventParser::new();
+        let events = parser.process_line(
+            r#"[12:29:24] LocalPlayer: ProcessPlayerVendorScreen(13676, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, False, False, [], System.String[], 1)"#,
+        );
+
+        let opened: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, PlayerEvent::VendorScreenOpened { .. }))
+            .collect();
+        assert_eq!(opened.len(), 1);
+        match &opened[0] {
+            PlayerEvent::VendorScreenOpened {
+                timestamp,
+                npc_entity_id,
+                is_own_stall,
+            } => {
+                assert_eq!(timestamp, "12:29:24");
+                assert_eq!(*npc_entity_id, 13676);
+                assert!(!*is_own_stall);
+            }
+            other => panic!("Expected VendorScreenOpened, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_player_vendor_screen_own_stall_emits_nothing() {
+        let mut parser = PlayerEventParser::new();
+        // 5th arg True = own stall management mode: no capture signal.
+        let events = parser.process_line(
+            r#"[12:30:00] LocalPlayer: ProcessPlayerVendorScreen(9999, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, True, False, [], System.String[], 1)"#,
+        );
+
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, PlayerEvent::VendorScreenOpened { .. })),
+            "own-stall open must not emit VendorScreenOpened"
+        );
+        // But the session is still tracked: a Remove on it must not count as a
+        // purchase either.
+        let events = parser
+            .process_line(r#"[12:30:10] LocalPlayer: ProcessPlayerVendorScreenRemove(9999, 42)"#);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, PlayerEvent::VendorItemTaken { .. })),
+            "collecting own listing must not emit VendorItemTaken"
+        );
+    }
+
+    #[test]
+    fn test_player_vendor_purchase_emits_item_taken() {
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[12:29:24] LocalPlayer: ProcessPlayerVendorScreen(13676, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, False, False, [], System.String[], 1)"#,
+        );
+        parser
+            .process_line(r#"[12:29:45] LocalPlayer: ProcessAddItem(CantaloupeWine(256596391), -1, True)"#);
+        let events = parser.process_line(
+            r#"[12:29:45] LocalPlayer: ProcessPlayerVendorScreenRemove(13676, 256596391)"#,
+        );
+
+        let taken: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, PlayerEvent::VendorItemTaken { .. }))
+            .collect();
+        assert_eq!(taken.len(), 1);
+        match &taken[0] {
+            PlayerEvent::VendorItemTaken {
+                timestamp,
+                npc_entity_id,
+                instance_id,
+                is_own_stall,
+            } => {
+                assert_eq!(timestamp, "12:29:45");
+                assert_eq!(*npc_entity_id, 13676);
+                assert_eq!(*instance_id, 256596391);
+                assert!(!*is_own_stall);
+            }
+            other => panic!("Expected VendorItemTaken, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_end_interaction_clears_vendor_screen_session() {
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[12:29:24] LocalPlayer: ProcessPlayerVendorScreen(13676, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, False, False, [], System.String[], 1)"#,
+        );
+        parser
+            .process_line(r#"[12:29:40] LocalPlayer: ProcessEndInteraction(13676)"#);
+        // A later Remove from a DIFFERENT npc (no screen open) must stay silent.
+        let events = parser
+            .process_line(r#"[12:30:10] LocalPlayer: ProcessPlayerVendorScreenRemove(8888, 77)"#);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, PlayerEvent::VendorItemTaken { .. })),
+            "EndInteraction must clear the vendor session"
+        );
+    }
+
+    #[test]
+    fn test_player_vendor_screen_remove_wrong_npc_no_event() {
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[12:29:24] LocalPlayer: ProcessPlayerVendorScreen(13676, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, False, False, [], System.String[], 1)"#,
+        );
+        // Remove for a different npc id than the open screen: not our stall.
+        let events = parser
+            .process_line(r#"[12:29:45] LocalPlayer: ProcessPlayerVendorScreenRemove(8888, 256596391)"#);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, PlayerEvent::VendorItemTaken { .. })),
+            "Remove from a non-matching npc must not emit"
+        );
     }
 
     #[test]

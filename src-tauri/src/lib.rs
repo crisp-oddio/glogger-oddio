@@ -22,6 +22,7 @@ mod settings;
 mod setup_commands;
 mod shop_log_parser;
 mod stall_aggregations;
+mod stall_ocr;
 mod stall_year_resolver;
 mod survey;
 mod external_fetch;
@@ -1005,6 +1006,16 @@ pub fn run() {
             db::stall_tracker_commands::import_shop_log_file,
             db::stall_tracker_commands::export_shop_log_files,
             db::stall_tracker_commands::seed_stall_events_dev,
+            // Stall Price Capture
+            db::stall_commands::get_stall_price_observations,
+            db::stall_commands::record_stall_prices,
+            db::stall_commands::update_stall_price_observation,
+            db::stall_commands::delete_stall_price_observation,
+            // Stall OCR (Phase B)
+            stall_ocr::scan_stall_window,
+            stall_ocr::ocr_check_status,
+            stall_ocr::ocr_download,
+            stall_ocr::ocr_launch_setup,
             // Hoplology
             db::hoplology_commands::get_hoplology_studies,
             db::hoplology_commands::get_hoplology_stats,
