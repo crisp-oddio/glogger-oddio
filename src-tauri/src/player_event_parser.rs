@@ -87,11 +87,11 @@ pub enum PlayerEvent {
         delta: f32,
         is_gift: bool,
     },
-    /// The game's authoritative weekly gift count for an NPC, parsed from the
-    /// "<Npc> will accept up to <b>N</b> gifts per calendar week and has received
-    /// <b>M</b> so far this week" note shown by gift-capped (Statehelm) NPCs.
-    /// Used to reconcile the gift log — bulk-gifting a stack emits a single
-    /// ProcessDeltaFavor line, so counting favor events alone undercounts.
+    // The game's authoritative weekly gift count for an NPC, parsed from the
+    // "<Npc> will accept up to <b>N</b> gifts per calendar week and has received
+    // <b>M</b> so far this week" note shown by gift-capped (Statehelm) NPCs.
+    // Used to reconcile the gift log — bulk-gifting a stack emits a single
+    // ProcessDeltaFavor line, so counting favor events alone undercounts.
     GiftCountObserved {
         timestamp: String,
         npc_name: String,
@@ -1566,8 +1566,27 @@ impl PlayerEventParser {
         // load AddItems (is_new=false) aren't gains — mark them NotApplicable
         // so downstream aggregates can filter them out without caring about
         // the surrounding context (which could be anything at login time).
+        //
+        // Exception: a new item arriving while another player's stall screen
+        // session is open is a stall purchase. The activity-context variant of
+        // VendorBrowsing expires after 30s (players browse long before buying),
+        // so the authoritative purchase signal is the vendor_screen session —
+        // set on ProcessPlayerVendorScreen and cleared on EndInteraction.
+        // The paired ProcessPlayerVendorScreenRemove that follows confirms the
+        // purchase (same instance_id); without it the provisional stamp is
+        // harmless: provenance is informational, and the coordinator records
+        // the purchase row from the Remove event, not from this stamp.
         let provenance = if !is_new {
             ItemProvenance::NotApplicable
+        } else if let Some((npc_id, false)) = self.vendor_screen {
+            ItemProvenance::Attributed {
+                source: ActivitySource::VendorBrowsing {
+                    npc_entity_id: npc_id,
+                    npc_name: None,
+                },
+                confidence: AttributionConfidence::Confident,
+                survey_use_id: None,
+            }
         } else {
             self.compute_provenance()
         };

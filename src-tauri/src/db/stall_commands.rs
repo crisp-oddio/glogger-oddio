@@ -36,6 +36,7 @@ pub struct StallPriceObservation {
 
 /// One quick-entry line from the capture panel.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StallPriceEntry {
     /// Display name, internal name, or numeric CDN item id.
     pub item_query: String,
