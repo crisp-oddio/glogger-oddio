@@ -73,7 +73,13 @@ fn scan_books_dir(
     else {
         return;
     };
-    let server = settings.active_server_name.as_deref().unwrap_or("").to_string();
+    // Mirror the live `active_character_server()` guard: persisting under an
+    // empty server would land rows the UI (scoped to the active server) never
+    // sees, and once the real server is detected the same books would be
+    // persisted again as a second row set.
+    let Some(server) = opt_nonempty(settings.active_server_name.as_deref().unwrap_or("")) else {
+        return;
+    };
 
     let books_dir = Path::new(&game_data_path).join("Books");
     if !books_dir.is_dir() {
@@ -84,8 +90,7 @@ fn scan_books_dir(
         return;
     };
 
-    let mut current: HashMap<PathBuf, SystemTime> = HashMap::new();
-    let mut to_process: Vec<PathBuf> = Vec::new();
+    let mut to_process: Vec<(PathBuf, SystemTime)> = Vec::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -105,13 +110,10 @@ fn scan_books_dir(
         else {
             continue;
         };
-        current.insert(path.clone(), mtime);
         if seen.get(&path) != Some(&mtime) {
-            to_process.push(path);
+            to_process.push((path, mtime));
         }
     }
-
-    *seen = current;
 
     if to_process.is_empty() {
         return;
@@ -125,25 +127,30 @@ fn scan_books_dir(
         return;
     };
 
-    for path in to_process {
+    for (path, mtime) in to_process {
         let file_name = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_string();
-        match std::fs::read_to_string(&path) {
-            Ok(content) => match process_book_file(
-                &path, &content, &character, &server, db, &ops_lock, app,
-            ) {
-                Ok(note) => {
-                    eprintln!("[books-watcher] {file_name}: {note}");
-                }
-                Err(e) => {
-                    eprintln!("[books-watcher] {file_name}: failed: {e}");
-                }
-            },
-            Err(e) => {
-                eprintln!("[books-watcher] {file_name}: unreadable: {e}");
+        match std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| {
+                process_book_file(
+                    &path, &content, &character, &server, db, &ops_lock, app,
+                )
+                .ok()
+                .map(|note| (note, content))
+            }) {
+            Some((note, _)) => {
+                // Mark the file seen only after successful processing so a
+                // transient failure (pool exhaustion, missing managed state,
+                // unreadable file) retries on the next tick.
+                seen.insert(path.clone(), mtime);
+                eprintln!("[books-watcher] {file_name}: {note}");
+            }
+            None => {
+                eprintln!("[books-watcher] {file_name}: failed this tick; will retry");
             }
         }
     }
