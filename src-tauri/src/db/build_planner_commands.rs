@@ -139,7 +139,7 @@ pub fn create_build_preset(
     input: CreateBuildPresetInput,
 ) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(
@@ -208,7 +208,7 @@ pub fn update_build_preset(
     input: UpdateBuildPresetInput,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(
@@ -235,7 +235,7 @@ pub fn update_build_preset(
 #[tauri::command]
 pub fn delete_build_preset(db: State<'_, DbPool>, preset_id: i64) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute("DELETE FROM build_presets WHERE id = ?1", [preset_id])
@@ -291,7 +291,7 @@ pub fn set_build_preset_mods(
     mods: Vec<BuildPresetModInput>,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Delete existing mods
@@ -338,7 +338,7 @@ pub fn set_build_preset_slot_item(
     input: SetSlotItemInput,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(
@@ -381,7 +381,7 @@ pub fn update_build_preset_slot_props(
     slot_skill_secondary: Option<String>,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Build dynamic SET clause for provided fields
@@ -445,7 +445,7 @@ pub fn clear_build_preset_slot_item(
     equip_slot: String,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(
@@ -741,7 +741,7 @@ pub fn set_build_preset_abilities(
     abilities: Vec<BuildPresetAbilityInput>,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Delete existing abilities for this bar
@@ -867,7 +867,7 @@ pub fn clone_build_preset(
     new_name: String,
 ) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Get the source preset
@@ -948,7 +948,7 @@ pub fn set_build_preset_cp_recipes(
     recipes: Vec<BuildPresetCpRecipeInput>,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Delete existing CP recipes for this slot
@@ -1186,7 +1186,7 @@ pub fn import_build_preset(
     }
 
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(

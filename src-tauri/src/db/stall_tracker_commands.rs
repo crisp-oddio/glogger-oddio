@@ -505,7 +505,7 @@ pub fn toggle_stall_event_ignored(
         .ok_or_else(|| "toggle_stall_event_ignored requires an owner".to_string())?
         .to_string();
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
     conn.execute(
         "UPDATE stall_events SET ignored = ?1 WHERE id = ?2 AND owner = ?3",
@@ -770,7 +770,7 @@ pub fn clear_stall_events(
         .map_err(|e| format!("StallOpsLock poisoned: {e}"))?;
 
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
     let deleted = conn
         .execute(

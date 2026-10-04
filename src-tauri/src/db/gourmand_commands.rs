@@ -137,7 +137,7 @@ pub fn import_gourmand_report(
     let entries = parse_gourmand_report(&content)?;
 
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Delete only non-manual entries; manual marks are preserved
@@ -217,7 +217,7 @@ pub fn toggle_food_eaten_status(
     food_name: String,
 ) -> Result<bool, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Check if the food is already in the eaten table
@@ -312,7 +312,7 @@ pub fn import_latest_gourmand_report(
     }
 
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Check if we already have this exact data (avoid unnecessary re-imports)

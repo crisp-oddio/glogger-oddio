@@ -172,7 +172,7 @@ pub fn import_character_report_internal(
     }
 
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // 4. Begin transaction

@@ -150,7 +150,7 @@ pub async fn force_rebuild_cdn_tables(
     cdn_state: State<'_, crate::cdn_commands::GameDataState>,
 ) -> Result<String, String> {
     let mut conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Get the current game data from memory
@@ -263,7 +263,7 @@ pub fn purge_player_data(
     options: PurgeOptions,
 ) -> Result<PurgeResult, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let cutoff = if options.purge_all {
@@ -301,7 +301,7 @@ pub struct CompactResult {
 #[tauri::command]
 pub fn compact_database(db: State<'_, DbPool>) -> Result<CompactResult, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let bytes_before = db_size_bytes(&conn);

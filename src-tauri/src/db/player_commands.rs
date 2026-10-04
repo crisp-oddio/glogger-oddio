@@ -18,7 +18,7 @@ pub struct MarketPriceInput {
 #[tauri::command]
 pub fn add_market_price(db: State<'_, DbPool>, input: MarketPriceInput) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     queries::player_data::insert_market_price(
@@ -105,7 +105,7 @@ pub struct SaleInput {
 #[tauri::command]
 pub fn add_sale(db: State<'_, DbPool>, input: SaleInput) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     queries::player_data::insert_sale(
@@ -190,7 +190,7 @@ pub struct LogEventInput {
 #[tauri::command]
 pub fn log_event(db: State<'_, DbPool>, input: LogEventInput) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let event_data_json = serde_json::to_string(&input.event_data)

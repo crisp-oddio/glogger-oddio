@@ -106,7 +106,7 @@ pub fn save_farming_session(
     input: SaveFarmingSessionInput,
 ) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
     save_farming_session_impl(&conn, &input)
 }
@@ -365,7 +365,7 @@ pub fn update_farming_session(
     notes: String,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(
@@ -380,7 +380,7 @@ pub fn update_farming_session(
 #[tauri::command]
 pub fn delete_farming_session(db: State<'_, DbPool>, session_id: i64) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute("DELETE FROM farming_sessions WHERE id = ?1", [session_id])

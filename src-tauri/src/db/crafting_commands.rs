@@ -107,7 +107,7 @@ pub fn create_crafting_project(
     input: CreateProjectInput,
 ) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let default_fee = r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
@@ -232,7 +232,7 @@ pub fn update_crafting_project(
     input: UpdateProjectInput,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(
@@ -248,7 +248,7 @@ pub fn update_crafting_project(
 #[tauri::command]
 pub fn delete_crafting_project(db: State<'_, DbPool>, project_id: i64) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute("DELETE FROM crafting_projects WHERE id = ?1", [project_id])
@@ -263,7 +263,7 @@ pub fn add_project_entry(
     input: AddProjectEntryInput,
 ) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Get next sort_order
@@ -298,7 +298,7 @@ pub fn update_project_entry(
     input: UpdateProjectEntryInput,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let ids_json = serde_json::to_string(&input.expanded_ingredient_ids)
@@ -329,7 +329,7 @@ pub fn batch_update_entry_expansions(
     entries: Vec<BatchUpdateExpansionsEntry>,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     for entry in &entries {
@@ -358,7 +358,7 @@ pub fn batch_update_entry_expansions(
 #[tauri::command]
 pub fn remove_project_entry(db: State<'_, DbPool>, entry_id: i64) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Touch the project's updated_at before deleting
@@ -384,7 +384,7 @@ pub fn reorder_project_entries(
     input: ReorderEntriesInput,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     for (index, entry_id) in input.entry_ids.iter().enumerate() {
@@ -408,7 +408,7 @@ pub fn reorder_project_entries(
 #[tauri::command]
 pub fn duplicate_crafting_project(db: State<'_, DbPool>, project_id: i64) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Get original project
@@ -528,7 +528,7 @@ fn export_crafting_project_impl(
 #[tauri::command]
 pub fn import_crafting_project(db: State<'_, DbPool>, encoded: String) -> Result<i64, String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
     import_crafting_project_impl(&conn, &encoded)
 }

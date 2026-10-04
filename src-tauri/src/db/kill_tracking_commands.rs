@@ -1352,7 +1352,7 @@ pub fn import_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
         .unwrap_or_else(|| "imported".to_string());
 
     let mut conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let tx = conn.transaction().map_err(|e| format!("Failed to start transaction: {e}"))?;
@@ -1461,7 +1461,7 @@ pub fn list_imported_sources(db: State<'_, DbPool>) -> Result<Vec<ImportedSource
 #[tauri::command]
 pub fn delete_imported_source(db: State<'_, DbPool>, source_label: String) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
     conn.execute(
         "DELETE FROM imported_kill_sources WHERE source_label = ?1",

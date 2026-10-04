@@ -627,16 +627,19 @@ pub fn ingest_kill_loot_from_logs(
         std::fs::read(&player_log_path).map_err(|e| format!("Failed to read Player.log: {e}"))?;
     let hash = content_hash(&player_bytes);
 
-    let conn = db.get_write().map_err(|e| format!("DB connection error: {e}"))?;
-
-    // Idempotency: skip if this exact Player.log content was already ingested.
-    let already: bool = conn
+    // Idempotency probe on a READ connection: the whole parse below must not
+    // hold the sole write connection (a long session's Player-prev.log can
+    // parse for tens of seconds; holding the writer that long starves live
+    // ingest and can drop chat batches past the 30s r2d2 wait).
+    let probe = db.get().map_err(|e| format!("DB connection error: {e}"))?;
+    let already: bool = probe
         .query_row(
             "SELECT 1 FROM player_prev_ingests WHERE content_hash = ?1",
             [&hash],
             |_| Ok(true),
         )
         .unwrap_or(false);
+    drop(probe);
     if already {
         return Ok(IngestResult {
             kills_added: 0,
@@ -734,6 +737,8 @@ pub fn ingest_kill_loot_from_logs(
     }
 
     // --- Pass B: persist kills, then attribute loot ---
+    // The parse is done; only NOW take the dedicated write connection.
+    let conn = db.get_write().map_err(|e| format!("DB connection error: {e}"))?;
     let mut result = IngestResult {
         kills_added: 0,
         loot_added: 0,

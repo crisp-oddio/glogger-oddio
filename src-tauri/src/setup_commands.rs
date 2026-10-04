@@ -157,7 +157,7 @@ pub fn save_user_character(
     source: String,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     conn.execute(
@@ -218,7 +218,7 @@ pub fn set_active_character(
     server_name: String,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // Clear all active flags
@@ -259,7 +259,7 @@ pub fn delete_character(
     server_name: String,
 ) -> Result<(), String> {
     let conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     // All character-scoped tables to cascade delete

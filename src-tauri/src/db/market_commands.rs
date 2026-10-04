@@ -339,7 +339,9 @@ fn get_market_values_internal(
             .unwrap_or_else(|| "*".to_string())
     };
 
-    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
+    // Read-only helper (single SELECT) — keep on the read pool; routing it to
+    // get_write() would queue market reads behind live ingest for no reason.
+    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
     let mut stmt = conn
         .prepare(
             "SELECT server_name, item_type_id, item_name, market_value, notes, updated_at
