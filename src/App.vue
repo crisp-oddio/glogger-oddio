@@ -109,6 +109,10 @@
         @update:show="showQuickSearch = $event"
         @navigate="handleSearchNavigate"
       />
+      <!-- Stall capture overlay lives in the app shell (not the Market tab):
+           browsing someone else's stall from ANY screen must raise the panel,
+           and the store's Tauri listeners need an always-mounted owner. -->
+      <StallPriceCapturePanel />
     </template>
   </div>
 </template>
@@ -127,6 +131,7 @@ import { provideEntityNavigation } from "./composables/useEntityNavigation";
 import { useDataBrowserStore, entityTypeToTab } from "./stores/dataBrowserStore";
 import { provideViewNavigation } from "./composables/useViewNavigation";
 import MenuBar, { type AppView } from "./components/MenuBar.vue";
+import StallPriceCapturePanel from "./components/Market/StallPriceCapturePanel.vue";
 import DashboardView from "./components/Dashboard/DashboardView.vue";
 import CharacterView from "./components/Character/CharacterView.vue";
 import InventoryWrapper from "./components/Inventory/InventoryWrapper.vue";

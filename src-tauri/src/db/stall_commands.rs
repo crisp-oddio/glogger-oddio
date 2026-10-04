@@ -67,12 +67,16 @@ pub fn get_stall_price_observations(
                 source, observed_at, notes
          FROM stall_price_observations",
     );
-    let mut clauses: Vec<&str> = Vec::new();
+    let mut clauses: Vec<String> = Vec::new();
     if server_name.is_some() {
-        clauses.push("server_name = ?1");
+        clauses.push("server_name = ?1".to_string());
     }
     if item_type_id.is_some() {
-        clauses.push("item_type_id = ?2");
+        // Placeholder index follows whichever filters precede it: with only
+        // the item filter the SQL must reference ?1, not ?2 (the tooltip's
+        // item-only query path was a guaranteed binding-count error).
+        let idx = if server_name.is_some() { 2 } else { 1 };
+        clauses.push(format!("item_type_id = ?{idx}"));
     }
     if !clauses.is_empty() {
         sql.push_str(" WHERE ");
@@ -172,6 +176,18 @@ pub fn record_stall_prices(
     if entries.is_empty() {
         return Ok(0);
     }
+    // Captured listings must be at least one council. Zero is reserved for
+    // auto-detected purchase sentinels (`price_unit = 0` means "pending a
+    // manual price") — a zero-valued capture row would be indistinguishable
+    // from a sentinel and corrupt the tooltip logic.
+    for entry in &entries {
+        if entry.price_unit <= 0 {
+            return Err(format!(
+                "Invalid price for '{}': captured prices must be at least 1 council",
+                entry.item_query
+            ));
+        }
+    }
     let server_name = settings_manager
         .get()
         .active_server_name
@@ -182,7 +198,9 @@ pub fn record_stall_prices(
         .unwrap_or_else(|| "Unknown".to_string());
     let observed_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database error: {e}"))?;
 
     let mut inserted = 0usize;
     for entry in &entries {

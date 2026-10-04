@@ -955,7 +955,7 @@ mod capture {
             if hdc_window.is_invalid() {
                 return Err("GetDC(window) failed".to_string());
             }
-            let result = bit_blt_region(hdc_window, w, h);
+            let result = bit_blt_region(hdc_window, w, h, 0, 0);
             ReleaseDC(Some(hwnd), hdc_window);
             result
         }
@@ -963,15 +963,19 @@ mod capture {
 
     fn capture_via_screen_dc(hwnd: HWND, w: u32, h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         // Crop to the window's screen rect (fallback for exclusive fullscreen).
+        // BitBlt must source from the window's actual screen position — the
+        // hardcoded (0,0) grabbed the desktop's top-left whenever the game
+        // window wasn't at the origin.
         let mut wrect = RECT::default();
         unsafe { GetWindowRect(hwnd, &mut wrect) }
             .map_err(|e| format!("GetWindowRect failed: {e}"))?;
+        let (src_x, src_y) = (wrect.left, wrect.top);
         unsafe {
             let hdc_screen = GetDC(None);
             if hdc_screen.is_invalid() {
                 return Err("GetDC(screen) failed".to_string());
             }
-            let result = bit_blt_region(hdc_screen, w, h);
+            let result = bit_blt_region(hdc_screen, w, h, src_x, src_y);
             ReleaseDC(None, hdc_screen);
             result.map(|pixels| (w, h, pixels))
         }
@@ -981,6 +985,8 @@ mod capture {
         source_dc: windows::Win32::Graphics::Gdi::HDC,
         w: u32,
         h: u32,
+        src_x: i32,
+        src_y: i32,
     ) -> Result<Vec<u8>, String> {
         unsafe {
             let mem_dc = CreateCompatibleDC(Some(source_dc));
@@ -1000,8 +1006,8 @@ mod capture {
                 w as i32,
                 h as i32,
                 Some(source_dc),
-                0,
-                0,
+                src_x,
+                src_y,
                 SRCCOPY | CAPTUREBLT,
             );
             let pixels = if ok.is_ok() {

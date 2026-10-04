@@ -125,12 +125,19 @@ const parsed = computed(() => {
       unresolvedLines.push(line)
       continue
     }
+    const price = parseInt(match.groups.price.replace(/,/g, ''), 10)
+    if (!Number.isFinite(price) || price <= 0) {
+      // Zero/NaN prices are reserved for auto-detected purchase sentinels;
+      // surface the line as unresolved instead of creating an ambiguous row.
+      unresolvedLines.push(line)
+      continue
+    }
     out.push({
       raw: line,
       entry: {
         itemQuery: item,
         quantity: match.groups.qty ? parseInt(match.groups.qty, 10) : 1,
-        priceUnit: parseInt(match.groups.price.replace(/,/g, ''), 10),
+        priceUnit: price,
         stallNpcEntityId: stallPriceStore.pendingCapture?.npcEntityId ?? 0,
         stallLabel: stallLabel.value.trim() || null,
         ownerName: ownerName.value.trim() || null,

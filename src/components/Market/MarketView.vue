@@ -500,8 +500,8 @@
       </div>
     </div>
 
-    <!-- Stall price capture overlay (teleports to body; shows on browse event) -->
-    <StallPriceCapturePanel />
+    <!-- Stall price capture overlay now mounts in the app shell (App.vue) so
+         browsing a stall from any screen can raise it. -->
   </div>
 </template>
 
@@ -516,7 +516,6 @@ import type { ItemInfo } from '../../types/gameData'
 import EmptyState from '../Shared/EmptyState.vue'
 import AccordionSection from '../Shared/AccordionSection.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
-import StallPriceCapturePanel from './StallPriceCapturePanel.vue'
 import { useStallPriceStore } from '../../stores/stallPriceStore'
 import type { StallPriceObservation } from '../../types/stallPrices'
 

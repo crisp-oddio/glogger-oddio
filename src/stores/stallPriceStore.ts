@@ -18,6 +18,8 @@ export const useStallPriceStore = defineStore('stallPrice', () => {
   const observations = ref<StallPriceObservation[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  /** Guards against redundant loads before the first one resolves. */
+  let loadedOnce = false
 
   /** Active stall-browse session awaiting capture, or null. */
   const pendingCapture = ref<{ npcEntityId: number; startedAt: string } | null>(null)
@@ -35,6 +37,10 @@ export const useStallPriceStore = defineStore('stallPrice', () => {
   })
 
   async function loadObservations(): Promise<void> {
+    // One load per app run is enough: the `stall-prices-updated` listener
+    // refreshes on changes. Avoids hammering the query on every tooltip.
+    if (loadedOnce) return
+    loadedOnce = true
     loading.value = true
     error.value = null
     try {
@@ -103,6 +109,11 @@ export const useStallPriceStore = defineStore('stallPrice', () => {
       void loadObservations()
     }, 500)
   })
+
+  // Load persisted observations once at store creation so item tooltips on
+  // ANY screen have prices — not just after the user visits the Market tab.
+  // The `stall-prices-updated` listener above keeps them fresh.
+  void loadObservations()
 
   return {
     observations,
