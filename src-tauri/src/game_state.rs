@@ -1122,7 +1122,7 @@ impl GameStateManager {
             _ => return vec![],
         };
 
-        let conn = match db.get() {
+        let conn = match db.get_write() {
             Ok(c) => c,
             Err(_) => return vec![],
         };

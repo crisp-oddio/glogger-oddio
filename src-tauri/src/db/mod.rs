@@ -79,14 +79,6 @@ impl DbPool {
     ) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, r2d2::Error> {
         self.writes.get()
     }
-
-    /// Wait-for-writer helper: blocks until the write connection is
-    /// free and returns nothing. Used by startup steps that want to
-    /// ensure prior writes are drained without doing any themselves.
-    pub fn drain_writes(&self) -> Result<(), r2d2::Error> {
-        let _guard = self.writes.get()?;
-        Ok(())
-    }
 }
 
 /// Initialize the database pool pair with the given path.

@@ -400,7 +400,7 @@ impl DataIngestCoordinator {
             if let Some(path) = self.settings.get_player_log_path() {
                 let conn = self
                     .db_pool
-                    .get()
+                    .get_write()
                     .map_err(|e| format!("Database error: {}", e))?;
                 log_positions::update_position(
                     &conn,
@@ -522,7 +522,7 @@ impl DataIngestCoordinator {
 
             let conn = self
                 .db_pool
-                .get()
+                .get_write()
                 .map_err(|e| format!("Database error: {}", e))?;
             let metadata = serde_json::json!({ "file_name": file_name }).to_string();
             log_positions::update_position(
@@ -1480,7 +1480,7 @@ impl DataIngestCoordinator {
         if !messages.is_empty() {
             let conn = self
                 .db_pool
-                .get()
+                .get_write()
                 .map_err(|e| format!("Database error: {}", e))?;
 
             // Use the actual file name from the watcher, not the position
@@ -1598,7 +1598,7 @@ impl DataIngestCoordinator {
 
         let conn = self
             .db_pool
-            .get()
+            .get_write()
             .map_err(|e| format!("Database connection error: {e}"))?;
         conn.execute(
             "INSERT INTO character_deaths
@@ -1893,7 +1893,7 @@ impl DataIngestCoordinator {
 
         let conn = self
             .db_pool
-            .get()
+            .get_write()
             .map_err(|e| format!("Database connection error: {e}"))?;
         conn.execute(
             "INSERT INTO character_resuscitations
@@ -3374,7 +3374,7 @@ pub fn ingest_teleport_binds_content(
     let primary = extract_bind_field(content, "Primary Bind Location:");
     let secondary = extract_bind_field(content, "Secondary Bind Location:");
 
-    let conn = match db.get() {
+    let conn = match db.get_write() {
         Ok(c) => c,
         Err(_) => return,
     };
@@ -3413,7 +3413,7 @@ pub fn ingest_hoplology_content(
     server: &str,
     content: &str,
 ) -> usize {
-    let conn = match db.get() {
+    let conn = match db.get_write() {
         Ok(c) => c,
         Err(_) => return 0,
     };
