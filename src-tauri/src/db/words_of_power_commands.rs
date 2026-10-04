@@ -341,16 +341,11 @@ pub fn backfill_used_words_from_chat_logs(
         .min()
         .map(|d| d - chrono::Duration::days(1));
 
-    // BEGIN IMMEDIATE, not the default DEFERRED: this runs on startup alongside
-    // other backfills, and an autocommit DELETE on a connection that has
-    // already read (the SELECT above) upgrades read→write mid-statement and
-    // gets an instant SQLITE_BUSY (deadlock avoidance) that busy_timeout can't
-    // retry. Holding the write lock for the whole scan makes busy_timeout
-    // apply to the initial acquisition instead.
+    // BEGIN IMMEDIATE (not DEFERRED) so busy_timeout applies to acquisition;
+    // one transaction per file keeps each write-lock hold short — a
+    // whole-scan transaction starves the concurrent startup backfills'
+    // busy_timeout (5s). Deletes are idempotent, so per-file is safe.
     let mut conn = conn;
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     let mut deleted = 0usize;
     for entry in std::fs::read_dir(&dir)
@@ -372,6 +367,9 @@ pub fn backfill_used_words_from_chat_logs(
         let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| format!("Failed to begin transaction: {e}"))?;
         let reader = std::io::BufReader::new(file);
         for line in reader.lines().map_while(Result::ok) {
             let Some(msg) = parse_chat_line(&line) else {
@@ -384,9 +382,9 @@ pub fn backfill_used_words_from_chat_logs(
                     .map_err(|e| format!("Delete error: {e}"))?;
             }
         }
+        tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     }
 
-    tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     Ok(deleted)
 }
 

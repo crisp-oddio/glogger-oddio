@@ -147,14 +147,6 @@ pub fn backfill_from_chat_logs(
     let entries = fs::read_dir(&dir).map_err(|e| format!("Failed to read ChatLogs dir: {e}"))?;
 
     let mut inserted = 0usize;
-    // BEGIN IMMEDIATE, not the default DEFERRED: this runs on startup alongside
-    // other backfills, and a deferred transaction that upgrades read→write on
-    // its first INSERT gets an instant SQLITE_BUSY (deadlock avoidance) that the
-    // connection's busy_timeout can't retry. Acquiring the write lock up front
-    // makes busy_timeout apply, so we wait for contention instead of erroring.
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -168,6 +160,13 @@ pub fn backfill_from_chat_logs(
         }
 
         let Ok(file) = File::open(&path) else { continue };
+        // One IMMEDIATE transaction per file: startup backfills run
+        // concurrently and a whole-scan transaction holds the write lock
+        // long enough for the others' busy_timeout (5s) to expire.
+        // Inserts are idempotent (unique index), so per-file is safe.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| format!("Failed to begin transaction: {e}"))?;
         let reader = BufReader::new(file);
         for line in reader.lines().map_while(Result::ok) {
             let Some(msg) = parse_chat_line(&line) else {
@@ -186,9 +185,9 @@ pub fn backfill_from_chat_logs(
                 inserted += n;
             }
         }
+        tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     }
 
-    tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     Ok(inserted)
 }
 
