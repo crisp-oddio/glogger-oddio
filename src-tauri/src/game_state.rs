@@ -132,7 +132,7 @@ impl GameStateManager {
         self.active_character = Some(name.to_string());
         self.active_server = Some(server.to_string());
 
-        let conn = match db.get() {
+        let conn = match db.get_write() {
             Ok(c) => c,
             Err(e) => {
                 startup_log!("[game_state] DB error on set_active_character: {e}");
@@ -209,7 +209,7 @@ impl GameStateManager {
             Some(s) => s.clone(),
             None => return ProcessResult { domains_updated: vec![] },
         };
-        let conn = match db.get() {
+        let conn = match db.get_write() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[game_state] DB error on process_events_batch: {e}");

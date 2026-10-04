@@ -78,7 +78,7 @@ pub fn save_user_timer(
     server_name: String,
     timer: SaveTimerInput,
 ) -> Result<UserTimer, String> {
-    let conn = db.get().map_err(|e| e.to_string())?;
+    let conn = db.get_write().map_err(|e| e.to_string())?;
     let source = timer.source.as_deref().unwrap_or("manual");
 
     if let Some(id) = timer.id {
@@ -146,7 +146,7 @@ pub fn save_user_timer(
 
 #[tauri::command]
 pub fn delete_user_timer(db: State<'_, DbPool>, id: i64) -> Result<(), String> {
-    let conn = db.get().map_err(|e| e.to_string())?;
+    let conn = db.get_write().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM user_timers WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())

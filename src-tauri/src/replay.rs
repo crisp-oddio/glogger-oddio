@@ -443,7 +443,7 @@ fn run_replay(
                 let active_server = game_state.get_active_server().map(String::from);
                 for pe in p_events.iter_mut() {
                     if let (Some(character), Some(server), Ok(conn)) =
-                        (&active_char, &active_server, db.get())
+                        (&active_char, &active_server, db.get_write())
                     {
                         let _ = survey_aggregator.process_event(pe, &conn, character, server, None);
                     }
@@ -627,7 +627,7 @@ pub fn ingest_kill_loot_from_logs(
         std::fs::read(&player_log_path).map_err(|e| format!("Failed to read Player.log: {e}"))?;
     let hash = content_hash(&player_bytes);
 
-    let conn = db.get().map_err(|e| format!("DB connection error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("DB connection error: {e}"))?;
 
     // Idempotency: skip if this exact Player.log content was already ingested.
     let already: bool = conn

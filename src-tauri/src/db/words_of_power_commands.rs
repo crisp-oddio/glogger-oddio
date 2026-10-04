@@ -110,7 +110,7 @@ pub fn add_word_of_power(
     server_name: String,
     input: AddWordInput,
 ) -> Result<WordOfPower, String> {
-    let conn = db.get().map_err(|e| e.to_string())?;
+    let conn = db.get_write().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     conn.execute(
@@ -142,7 +142,7 @@ pub fn add_word_of_power(
 
 #[tauri::command]
 pub fn delete_word_of_power(db: State<'_, DbPool>, id: i64) -> Result<(), String> {
-    let conn = db.get().map_err(|e| e.to_string())?;
+    let conn = db.get_write().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM words_of_power WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -173,7 +173,7 @@ pub fn import_words_of_power_csv(
     let col_time = find_header_opt(&headers, &["Time", "time"]);
     let col_desc = find_header_opt(&headers, &["Description", "description"]);
 
-    let conn = db.get().map_err(|e| e.to_string())?;
+    let conn = db.get_write().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let mut imported = 0usize;

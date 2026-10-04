@@ -604,7 +604,7 @@ pub fn set_tracked_skills(
     server_name: String,
     skills: Vec<TrackedSkillEntry>,
 ) -> Result<(), String> {
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     conn.execute(
         "DELETE FROM tracked_skills WHERE character_name = ?1 AND server_name = ?2",
@@ -681,7 +681,7 @@ pub fn add_manual_gift(
     npc_key: String,
     npc_name: String,
 ) -> Result<(), String> {
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     conn.execute(
         "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
@@ -700,7 +700,7 @@ pub fn remove_last_gift(
     npc_key: String,
     week_start: String,
 ) -> Result<(), String> {
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
     conn.execute(
         "DELETE FROM game_state_gift_log WHERE id = (
             SELECT id FROM game_state_gift_log
@@ -769,7 +769,7 @@ pub fn set_manual_vendor_gold(
     gold_max: i64,
     reset_hours_remaining: Option<f64>,
 ) -> Result<(), String> {
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
     let now = chrono::Utc::now();
     let now_str = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let timer_start: Option<String> = if gold_available >= gold_max {
@@ -1507,7 +1507,7 @@ pub async fn set_mushroom_circles(
     circle_2: Option<String>,
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
-    let conn = db.get().map_err(|e| e.to_string())?;
+    let conn = db.get_write().map_err(|e| e.to_string())?;
     let dt = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO game_state_teleportation

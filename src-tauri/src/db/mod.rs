@@ -39,10 +39,57 @@ pub mod hoplology_commands;
 pub mod word_of_power_catalog;
 pub mod words_of_power_commands;
 
-pub type DbPool = r2d2::Pool<SqliteConnectionManager>;
 pub type DbConnection = r2d2::PooledConnection<SqliteConnectionManager>;
 
-/// Initialize the database pool with the given path.
+/// A pool pair for a WAL-mode SQLite database: a read pool (multiple
+/// connections — WAL readers never block the writer) and a single-connection
+/// write pool. All writers queue in the app on `get_write()` instead of
+/// fighting over SQLite's write lock via `busy_timeout`, which cannot queue
+/// fairly and starves under back-to-back holders.
+///
+/// `get()` returns a read connection; `get_write()` returns the dedicated
+/// write connection. Signatures keep taking `&DbPool`, so routing a call site
+/// is a one-word change (`get()` → `get_write()`).
+#[derive(Clone)]
+pub struct DbPool {
+    reads: r2d2::Pool<SqliteConnectionManager>,
+    writes: r2d2::Pool<SqliteConnectionManager>,
+}
+
+impl DbPool {
+    /// Test/dev constructor: build a pool pair around existing pools.
+    #[cfg(test)]
+    pub fn from_pools(
+        reads: r2d2::Pool<SqliteConnectionManager>,
+        writes: r2d2::Pool<SqliteConnectionManager>,
+    ) -> Self {
+        Self { reads, writes }
+    }
+
+    /// Get a read connection (concurrent with the writer and other readers).
+    pub fn get(&self) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, r2d2::Error> {
+        self.reads.get()
+    }
+
+    /// Get the dedicated write connection. Max one exists, so concurrent
+    /// writers queue here in the app (fair FIFO via r2d2) rather than racing
+    /// SQLite's busy handler.
+    pub fn get_write(
+        &self,
+    ) -> Result<r2d2::PooledConnection<SqliteConnectionManager>, r2d2::Error> {
+        self.writes.get()
+    }
+
+    /// Wait-for-writer helper: blocks until the write connection is
+    /// free and returns nothing. Used by startup steps that want to
+    /// ensure prior writes are drained without doing any themselves.
+    pub fn drain_writes(&self) -> Result<(), r2d2::Error> {
+        let _guard = self.writes.get()?;
+        Ok(())
+    }
+}
+
+/// Initialize the database pool pair with the given path.
 /// `tz_offset_seconds` is needed for one-time migration to fix historical timestamps.
 pub fn init_pool(db_path: PathBuf, tz_offset_seconds: Option<i32>) -> Result<DbPool, Box<dyn std::error::Error>> {
     // Create parent directory if it doesn't exist
@@ -58,16 +105,32 @@ pub fn init_pool(db_path: PathBuf, tz_offset_seconds: Option<i32>) -> Result<DbP
                  PRAGMA foreign_keys=ON;",
         )
     });
-    let pool = r2d2::Pool::builder()
-        .max_size(15) // Allow multiple concurrent connections
+
+    // Writes: exactly one connection — app-side serialization of every writer.
+    let writes = r2d2::Pool::builder()
+        .max_size(1)
+        .min_idle(Some(1))
         .build(manager)?;
 
-    // Run migrations on a connection
-    let conn = pool.get()?;
-    migrations::run_migrations(&conn, tz_offset_seconds)?;
-    drop(conn); // Release connection back to pool
+    // Reads: concurrent in WAL mode, never block the writer.
+    let reads = r2d2::Pool::builder()
+        .max_size(12)
+        .build(SqliteConnectionManager::file(&db_path).with_init(|conn| {
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                     PRAGMA busy_timeout=5000;
+                     PRAGMA synchronous=NORMAL;
+                     PRAGMA foreign_keys=ON;",
+            )
+        }))?;
 
-    Ok(pool)
+    // Run migrations on the write connection (schema changes are writes).
+    {
+        let conn = writes.get()?;
+        migrations::run_migrations(&conn, tz_offset_seconds)?;
+    } // Released back to the write pool here.
+
+    Ok(DbPool { reads, writes })
 }
 
 /// Get current schema version

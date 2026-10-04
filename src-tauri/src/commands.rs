@@ -98,7 +98,7 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
             // Run survey aggregator before batching
             for pe in events.iter_mut() {
                 if let (Some(character), Some(server), Ok(conn)) =
-                    (active_char.as_deref(), active_server.as_deref(), db.get())
+                    (active_char.as_deref(), active_server.as_deref(), db.get_write())
                 {
                     let _ = survey_aggregator.process_event(pe, &conn, character, server, None);
                 }
@@ -162,7 +162,7 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
         if !flush_events.is_empty() {
             for pe in flush_events.iter_mut() {
                 if let (Some(character), Some(server), Ok(conn)) =
-                    (active_char.as_deref(), active_server.as_deref(), db.get())
+                    (active_char.as_deref(), active_server.as_deref(), db.get_write())
                 {
                     let _ = survey_aggregator.process_event(pe, &conn, character, server, None);
                 }

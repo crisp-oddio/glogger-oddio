@@ -47,7 +47,7 @@ pub async fn scan_chat_logs(
             },
         );
 
-        let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
+        let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
 
         let file_path_str = log_file.file_path.to_string_lossy().to_string();
         let start_position = log_positions::get_position(&conn, &file_path_str)
@@ -106,7 +106,7 @@ pub async fn scan_chat_logs(
     // Bulk backfill done: rebuild the FTS index so it's guaranteed consistent
     // even if any historical insert missed the sync trigger.
     if total_messages > 0 {
-        let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
+        let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
         chat_commands::rebuild_chat_fts(&conn)
             .map_err(|e| format!("Failed to rebuild chat search index: {e}"))?;
     }
@@ -147,7 +147,7 @@ pub async fn scan_chat_log_file(
         .ok_or("Invalid file name")?
         .to_string();
 
-    let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     let file_path_str = log_path.to_string_lossy().to_string();
     let start_position = log_positions::get_position(&conn, &file_path_str)
@@ -351,7 +351,7 @@ pub async fn tail_chat_log(
         return Err(format!("Chat log file not found: {}", chat_log_file));
     }
 
-    let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     let file_path_str = log_path.to_string_lossy().to_string();
     let start_position = log_positions::get_position(&conn, &file_path_str)
@@ -460,7 +460,7 @@ pub async fn get_tell_conversations(
 
 #[tauri::command]
 pub async fn purge_chat_messages(days: u32, db_pool: State<'_, DbPool>) -> Result<usize, String> {
-    let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     let cutoff_date = chrono::Utc::now() - chrono::Duration::days(days as i64);
     let cutoff_str = cutoff_date.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -485,7 +485,7 @@ pub async fn purge_chat_messages(days: u32, db_pool: State<'_, DbPool>) -> Resul
 
 #[tauri::command]
 pub async fn delete_all_chat_messages(db_pool: State<'_, DbPool>) -> Result<usize, String> {
-    let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     // Delete item links first (in case foreign_keys pragma wasn't active for older data)
     conn.execute("DELETE FROM chat_item_links", [])

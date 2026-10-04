@@ -132,7 +132,7 @@ pub fn set_market_value(
     server_name: Option<String>,
 ) -> Result<(), String> {
     let server = resolve_server(&settings_manager, &server_name);
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     conn.execute(
         "INSERT INTO market_values (server_name, item_type_id, item_name, market_value, notes, updated_at)
@@ -156,7 +156,7 @@ pub fn delete_market_value(
     server_name: Option<String>,
 ) -> Result<(), String> {
     let server = resolve_server(&settings_manager, &server_name);
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     conn.execute(
         "DELETE FROM market_values WHERE server_name = ?1 AND item_type_id = ?2",
@@ -189,7 +189,7 @@ pub fn import_market_values(
         serde_json::from_str(&json_data).map_err(|e| format!("Invalid JSON: {e}"))?;
 
     let server = resolve_server(&settings_manager, &server_name);
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     let mut imported = 0usize;
     let mut skipped = 0usize;
@@ -265,7 +265,7 @@ pub fn bulk_update_market_values(
     server_name: Option<String>,
 ) -> Result<usize, String> {
     let server = resolve_server(&settings_manager, &server_name);
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     conn.execute("BEGIN", []).ok();
 
@@ -299,7 +299,7 @@ pub fn bulk_delete_market_values(
         return Ok(0);
     }
     let server = resolve_server(&settings_manager, &server_name);
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
     // Build parameterized IN clause
     let placeholders: Vec<String> = item_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
@@ -339,7 +339,7 @@ fn get_market_values_internal(
             .unwrap_or_else(|| "*".to_string())
     };
 
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
     let mut stmt = conn
         .prepare(
             "SELECT server_name, item_type_id, item_name, market_value, notes, updated_at

@@ -587,7 +587,7 @@ pub fn run() {
             {
                 let s = settings_manager.get();
                 if s.auto_purge_enabled {
-                    match db_pool.get() {
+                    match db_pool.get_write() {
                         Ok(conn) => {
                             match db::admin_commands::check_auto_purge(&conn, Some(s.auto_purge_days)) {
                                 Ok(r) if r.bytes_reclaimed > 0 => {
@@ -642,7 +642,7 @@ pub fn run() {
 
                         // Persist CDN data to database only if version changed
                         if let Some(pool) = app_handle.try_state::<db::DbPool>() {
-                            if let Ok(mut conn) = pool.get() {
+                            if let Ok(mut conn) = pool.get_write() {
                                 let db_version = db::queries::cdn_data::get_cdn_version(&conn).ok().flatten();
                                 if db_version == Some(data.version) {
                                     startup_log!("CDN v{} already persisted to database, skipping", data.version);

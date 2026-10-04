@@ -120,7 +120,7 @@ pub fn delete_brewing_discovery(
     discovery_id: i64,
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
-    let conn = db.get().map_err(|e| format!("DB error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("DB error: {e}"))?;
     conn.execute("DELETE FROM brewing_discoveries WHERE id = ?1", params![discovery_id])
         .map_err(|e| format!("Delete error: {e}"))?;
     Ok(())
@@ -136,7 +136,7 @@ pub fn add_brewing_discovery_manual(
     effect_label: Option<String>,
     db: State<'_, DbPool>,
 ) -> Result<BrewingDiscovery, String> {
-    let conn = db.get().map_err(|e| format!("DB error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("DB error: {e}"))?;
 
     let mut sorted_ids = ingredient_ids;
     sorted_ids.sort();
@@ -192,7 +192,7 @@ pub async fn scan_snapshot_for_brewing_discoveries(
     game_data: State<'_, GameDataState>,
 ) -> Result<BrewingScanResult, String> {
     let data = game_data.read().await;
-    let conn = db.get().map_err(|e| format!("DB error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("DB error: {e}"))?;
     scan_snapshot_internal(snapshot_id, &conn, &data)
 }
 
@@ -273,7 +273,7 @@ pub async fn scan_all_snapshots_for_brewing(
     game_data: State<'_, GameDataState>,
 ) -> Result<BrewingScanResult, String> {
     let data = game_data.read().await;
-    let conn = db.get().map_err(|e| format!("DB error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("DB error: {e}"))?;
 
     // Get all snapshot IDs for this character
     let mut stmt = conn
@@ -466,7 +466,7 @@ pub async fn import_brewing_discoveries_csv(
     game_data: State<'_, GameDataState>,
 ) -> Result<BrewingScanResult, String> {
     let data = game_data.read().await;
-    let conn = db.get().map_err(|e| format!("DB error: {e}"))?;
+    let conn = db.get_write().map_err(|e| format!("DB error: {e}"))?;
 
     let csv_content =
         std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {e}"))?;

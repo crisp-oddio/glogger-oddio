@@ -70,7 +70,7 @@ pub fn insert_stall_events(
         .map_err(|e| format!("StallOpsLock poisoned: {e}"))?;
 
     let mut conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
     let tx = conn
