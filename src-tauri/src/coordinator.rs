@@ -346,8 +346,7 @@ impl DataIngestCoordinator {
             .ok()
             .map(|mtime| chrono::DateTime::<chrono::Utc>::from(mtime).date_naive());
 
-        let mut conn = self.db_pool.get().map_err(|e| e.to_string())?;
-59751d4 (fix(startup): use BEGIN IMMEDIATE for all startup backfill transactions)
+        let mut conn = self.db_pool.get_write().map_err(|e| e.to_string())?;
         // BEGIN IMMEDIATE: runs at startup alongside other backfills; a deferred
         // tx that upgrades read→write on its first INSERT gets an instant
         // SQLITE_BUSY that busy_timeout can't retry. Acquiring the write lock up
