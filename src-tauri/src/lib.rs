@@ -1,4 +1,5 @@
 mod arena_parser;
+mod books_watcher;
 mod cdn;
 mod cdn_commands;
 mod cdn_diff;
@@ -517,6 +518,20 @@ pub fn run() {
             // them removes the contention entirely; the scans also share file
             // cache. Catch-up/chat polling still interleaves fine (its bursts
             // are short and its writers wait, not starve).
+            // Step 5c+1: Books-dir backfill watcher — ingests the game's
+            // <game_data>/Books/*.txt book exports (written both live and while
+            // glogger was closed), mirroring the live ProcessBook ingest via
+            // coordinator's shared ingestion helpers. Per-file mtime tracking,
+            // 30s cadence.
+            books_watcher::spawn_books_watcher(
+                settings_manager.clone(),
+                db_pool.clone(),
+                app_handle.clone(),
+            );
+
+            // Step 5d: One-shot backfill of Combat Wisdom awards from the
+            // historical ChatLogs so the Combat Wisdom widget's per-monster
+            // cooldowns are populated immediately. Idempotent (unique index).
             {
                 let sm = settings_manager.clone();
                 let dbp = db_pool.clone();

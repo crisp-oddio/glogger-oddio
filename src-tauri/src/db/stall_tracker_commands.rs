@@ -805,9 +805,10 @@ pub struct ExportResult {
 }
 
 /// Scan a filename for a 4-digit year between 2000 and 2099. Falls back to
-/// the current local year if no match. Used by Import to seed the year
-/// resolver when the book content itself doesn't carry an explicit year.
-fn year_from_filename(path: &Path) -> i32 {
+/// the current local year if no match. Used by Import and the Books-directory
+/// watcher to seed the year resolver when the book content itself doesn't
+/// carry an explicit year.
+pub(crate) fn year_from_filename(path: &Path) -> i32 {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())

@@ -4069,6 +4069,36 @@ mod tests {
         }
     }
 
+    /// Live ProcessBook content carries escaped newlines; the coordinator's
+    /// bind extraction must see real line breaks after normalization
+    /// (historically it split on '\n' and silently matched no fields).
+    #[test]
+    fn test_parse_book_bind_report_keeps_escaped_newlines() {
+        let mut parser = PlayerEventParser::new();
+        let events = parser.process_line(
+            r#"[19:00:01] LocalPlayer: ProcessBook("Skill Info: Teleportation", "Teleportation Status:\n\nPrimary Bind Location: Serbule\nSecondary Bind Location: (none)\n", "SkillReport", "", "", False, False, False, False, False, "")"#
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            PlayerEvent::BookOpened { content, book_type, .. } => {
+                assert_eq!(book_type, "SkillReport");
+                // Content is NOT pre-unescaped by the parser — the coordinator
+                // normalizes. Prove both: raw is escaped; after the same
+                // normalize the coordinator runs, bind fields resolve.
+                assert!(content.contains("\\n"));
+                let normalized = content.replace("\\n", "\n");
+                let primary = normalized
+                    .lines()
+                    .map(str::trim)
+                    .find_map(|l| l.strip_prefix("Primary Bind Location:"))
+                    .map(str::trim)
+                    .map(str::to_string);
+                assert_eq!(primary.as_deref(), Some("Serbule"));
+            }
+            _ => panic!("Expected BookOpened"),
+        }
+    }
+
     #[test]
     fn test_non_player_line_ignored() {
         let mut parser = PlayerEventParser::new();
