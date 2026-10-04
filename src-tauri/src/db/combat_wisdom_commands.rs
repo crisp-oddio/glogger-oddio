@@ -193,8 +193,13 @@ pub fn backfill_from_chat_logs(
     let entries = fs::read_dir(&dir).map_err(|e| format!("Failed to read ChatLogs dir: {e}"))?;
 
     let mut inserted = 0usize;
+    // BEGIN IMMEDIATE, not the default DEFERRED: this runs on startup alongside
+    // other backfills, and a deferred transaction that upgrades read→write on
+    // its first INSERT gets an instant SQLITE_BUSY (deadlock avoidance) that the
+    // connection's busy_timeout can't retry. Acquiring the write lock up front
+    // makes busy_timeout apply, so we wait for contention instead of erroring.
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     for entry in entries.flatten() {

@@ -341,11 +341,22 @@ pub fn backfill_used_words_from_chat_logs(
         .min()
         .map(|d| d - chrono::Duration::days(1));
 
-    let entries =
-        std::fs::read_dir(&dir).map_err(|e| format!("Failed to read ChatLogs dir: {e}"))?;
+    // BEGIN IMMEDIATE, not the default DEFERRED: this runs on startup alongside
+    // other backfills, and an autocommit DELETE on a connection that has
+    // already read (the SELECT above) upgrades read→write mid-statement and
+    // gets an instant SQLITE_BUSY (deadlock avoidance) that busy_timeout can't
+    // retry. Holding the write lock for the whole scan makes busy_timeout
+    // apply to the initial acquisition instead.
+    let mut conn = conn;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     let mut deleted = 0usize;
-    for entry in entries.flatten() {
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read ChatLogs dir: {e}"))?
+        .flatten()
+    {
         let path = entry.path();
         let Some(file_date) = path
             .file_name()
@@ -369,12 +380,13 @@ pub fn backfill_used_words_from_chat_logs(
             if let Some(ChatStatusEvent::WordOfPowerUsed { word, .. }) =
                 parse_status_message(&msg)
             {
-                deleted += delete_words_by_word(&conn, &word)
+                deleted += delete_words_by_word(&tx, &word)
                     .map_err(|e| format!("Delete error: {e}"))?;
             }
         }
     }
 
+    tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     Ok(deleted)
 }
 
