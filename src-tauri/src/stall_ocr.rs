@@ -49,10 +49,10 @@ const OCR_EXE_NAME: &str = "tesseract.exe";
 /// UB-Mannheim portable build used by PG Emissary's install instructions.
 // NB: the original URL (5.5.0 "zip") 404s — UB-Mannheim never published a
 // 5.5.0 zip release. The server (digi.bib.uni-mannheim.de/tesseract) hosts
-// ONLY Inno Setup .exe installers, zero .zip archives. The downloader
-// therefore runs the installer with silent flags pointed at the sidecar
-// dir. Users with a system install never reach this URL (see
-// `ocr_download`'s system-install short-circuit).
+// ONLY .exe installers — **NSIS** builds (Nullsoft signature verified in
+// the 5.3.0 binary). The downloader runs it with NSIS silent flags pointed
+// at the sidecar dir. Users with a system install never reach this URL
+// (see `ocr_download`'s system-install short-circuit).
 const OCR_DOWNLOAD_URL: &str =
     "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.0.20221222.exe";
 const OCR_SETUP_PAGE: &str = "https://github.com/UB-Mannheim/tesseract/wiki";
@@ -148,18 +148,20 @@ pub async fn ocr_download(app: tauri::AppHandle) -> Result<OcrStatus, String> {
     let dir = ocr_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create OCR dir: {e}"))?;
 
-    // The Mannheim server hosts Inno Setup .exe installers (no zips). Run it
-    // silently, pointed at the sidecar dir; Inno writes tesseract.exe (and
-    // tessdata) there directly.
+    // The Mannheim server hosts **NSIS** installers (verified: 'Nullsoft'
+    // signature in the binary; the comment above saying "Inno Setup" was
+    // wrong). NSIS silent flags: /S (capital, no slash-form /VERYSILENT —
+    // that is Inno Setup syntax and NSIS ignores it, popping the wizard),
+    // /NCRC to skip the CRC prompt, and /D=<dir> (no quotes, must be the
+    // LAST argument) to target the sidecar dir.
     let installer_path = dir.join("tesseract-setup.exe");
     std::fs::write(&installer_path, &bytes).map_err(|e| format!("Failed to write download: {e}"))?;
 
     let status = std::process::Command::new(&installer_path)
         .args([
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            &format!("/DIR={}", dir.display()),
+            "/S",
+            "/NCRC",
+            &format!("/D={}", dir.display()),
         ])
         .status()
         .map_err(|e| format!("Failed to run installer: {e}"))?;
