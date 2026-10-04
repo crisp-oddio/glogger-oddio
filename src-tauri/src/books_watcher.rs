@@ -116,6 +116,9 @@ fn scan_books_dir(
     }
 
     if to_process.is_empty() {
+        // Still prune: removed files must leave the map or it grows
+        // unboundedly (and switching game_data_path strands every entry).
+        seen.retain(|path, _| path.is_file() && path.starts_with(&books_dir));
         return;
     }
 
@@ -154,6 +157,12 @@ fn scan_books_dir(
             }
         }
     }
+
+    // Prune removed files so the tracking map never grows unboundedly
+    // (the doc comment promises this; wrongly pruning a transiently
+    // unreadable file is harmless — ingestion is idempotent and the
+    // mtime tracking reprocesses it).
+    seen.retain(|path, _| path.is_file() && path.starts_with(&books_dir));
 }
 
 /// `Some(s)` when the string is non-empty after trim, else `None`.
@@ -234,7 +243,7 @@ pub(crate) fn process_book_file(
     let content = crate::coordinator::normalize_book_content(content);
 
     match kind {
-        BookKind::ShopLog => ingest_shop_log_file(&title, &content, path, character, db, ops_lock, app),
+        BookKind::ShopLog => ingest_shop_log_file(&title, &content, character, db, ops_lock, app),
         BookKind::SkillReport => {
             let mut notes: Vec<String> = Vec::new();
 
@@ -285,20 +294,32 @@ pub(crate) fn process_book_file(
 fn ingest_shop_log_file(
     title: &str,
     content: &str,
-    path: &Path,
     character: &str,
     db: &DbPool,
     ops_lock: &StallOpsLock,
     app: &AppHandle,
 ) -> Result<String, String> {
     // Probe parse (base year 1970) only to learn whether the file has any
-    // parseable entries at all; the real parse uses the filename year.
+    // parseable entries at all; the real parse uses the resolved base year.
     let probe = parse_shop_log(title, content, "imported", 1970);
     if probe.entries.is_empty() {
         return Err("no parseable shop-log entries".to_string());
     }
 
-    let base_year = crate::db::stall_tracker_commands::year_from_filename(path);
+    // Game-written books are named PlayerShopLog_YYMMDD_HHMMSS.txt — no
+    // 4-digit year, so year_from_filename always falls back to the current
+    // year. That is wrong for the watcher's flagship scenario (glogger closed
+    // across the New Year): a December book first scanned in January would
+    // resolve its entries a year in the future. Use the live path's resolver
+    // instead: wrap to the previous year when the oldest entry is in the
+    // future relative to now.
+    let base_year = crate::stall_year_resolver::base_year_for_live(
+        probe
+            .entries
+            .first()
+            .map(|e| e.timestamp.as_str())
+            .unwrap_or_default(),
+    );
     let shop_log = parse_shop_log(title, content, "imported", base_year);
 
     // Owner resolution (mirrors import_shop_log_file): the parsed advisory
