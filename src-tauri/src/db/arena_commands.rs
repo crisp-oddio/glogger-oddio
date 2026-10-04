@@ -396,12 +396,15 @@ pub fn backfill_bets_from_player_logs(
         return Ok(0);
     }
 
+    // Writes route through the dedicated write connection like every other
+    // writer (single-writer queue); BEGIN IMMEDIATE makes busy_timeout apply
+    // to acquisition. One transaction PER FILE: a whole-scan transaction
+    // holds the write lock across both Player logs while live ingest waits.
+    // The bet tracker still spans files in order — only the transaction
+    // boundary is per file. Idempotent (unique index), so per-file is safe.
     let mut conn = db
-        .get()
+        .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     let mut tracker = ArenaBetTracker::new();
     let mut inserted = 0usize;
@@ -416,6 +419,9 @@ pub fn backfill_bets_from_player_logs(
         let Ok(text) = fs::read_to_string(path) else {
             continue;
         };
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| format!("Failed to begin transaction: {e}"))?;
         for line in text.lines() {
             // Cheap pre-filter — bet lines are a tiny fraction of Player.log.
             if !line.contains("You are betting ")
@@ -437,9 +443,9 @@ pub fn backfill_bets_from_player_logs(
                 )?;
             }
         }
+        tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     }
 
-    tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     Ok(inserted)
 }
 
